@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — issuer console
@@ -53,65 +54,6 @@ const tone = (s) => {
   if (s === "Locked" || s === "PendingRedemption") return [T.red, "#F0E0DF"];
   return [T.inkSoft, T.wash];
 };
-
-/* ---------------- seed ---------------- */
-
-const BONDS = [
-  { id: "KPII-0001-BD", face: 100000000, total: 100000000, unassigned: 99765000, redeemed: 0, prior: [],
-    registered: "Mar 4, 2026", instrumentHash: "0xa41b7c…88e2", declarationHash: "0xd90f23…1c55" },
-  { id: "KPII-0002-BD", face: 100000000, total: 100000000, unassigned: 99950000, redeemed: 0, prior: [],
-    registered: "May 19, 2026", instrumentHash: "0xb72e04…3af1", declarationHash: "0x6c1a89…7d20" },
-  { id: "KPII-0003-BD", face: 100000000, total: 100000000, unassigned: 100000000, redeemed: 0, prior: [],
-    registered: "Sep 1, 2026", instrumentHash: "0x0e55ab…9140", declarationHash: "0x33d71f…b602" },
-];
-
-const SEED = [
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00001", parent: null, origin: "Issuer", assignor: "Issuer of record",
-    party: "Company A", contact: "D. Hargrove", position: "Authorized Representative",
-    address: "Company A\nAttn: D. Hargrove\n501 Mercer Street\nColumbus, OH 43215",
-    units: 170000, issuedUnits: 200000, status: "Accepted", created: "Mar 6, 2026", accepted: "Mar 11, 2026",
-    docHash: "0x83a4c7…2d17", filingRef: "0x5f21ab…9c40", deliveryRef: "0x1b77de…04a2",
-    instrumentMail: "RE 123 456 789 US", passkeyMail: "RE 123 456 790 US", credLocked: false },
-
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00002", parent: null, origin: "Issuer", assignor: "Issuer of record",
-    party: "Company B", contact: "L. Whitfield", position: "Managing Member",
-    address: "Company B\nAttn: L. Whitfield\n22 Canal Road\nProvidence, RI 02903",
-    units: 30000, issuedUnits: 30000, status: "Accepted", created: "Jun 18, 2026", accepted: "Jun 22, 2026",
-    docHash: "0xc1f802…9b40", filingRef: "0x77a3e1…5512", deliveryRef: "0x9e44bc…7731",
-    instrumentMail: "9407 1000 0000 0000 0000 02", passkeyMail: "9407 1000 0000 0000 0000 09", credLocked: false },
-
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00003", parent: "KPII-0001-BD-A00001", origin: "AssignOut", assignor: "Company A",
-    party: "Company D", contact: "M. Osei", position: "Treasurer",
-    address: "Company D\nAttn: M. Osei\n88 Front Avenue\nAustin, TX 78701",
-    units: 30000, issuedUnits: 30000, status: "CredentialRequested", created: "Sep 14, 2026", accepted: null,
-    docHash: "0x4a8813…0fd2", filingRef: null, deliveryRef: null,
-    instrumentMail: null, passkeyMail: null, credLocked: false,
-    requestedParty: "Company D", requestedBy: "M. Osei, Treasurer", requestedContact: "+1 512 555 0148", requestedOn: "Oct 9, 2026" },
-
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00004", parent: null, origin: "Issuer", assignor: "Issuer of record",
-    party: "Company C", contact: "R. Alvarez", position: "Chief Financial Officer",
-    address: "Company C\nAttn: R. Alvarez\n1400 Harbor Street\nWilmington, DE 19801",
-    units: 5000, issuedUnits: 5000, status: "Issued", created: "Oct 2, 2026", accepted: null,
-    docHash: "0x62de91…c7b8", filingRef: "0x30ba77…e1d9", deliveryRef: "0x8c02fa…66b4",
-    instrumentMail: "9407 1000 0000 0000 0000 18", passkeyMail: "9407 1000 0000 0000 0000 25", credLocked: false },
-
-  { bond: "KPII-0002-BD", id: "KPII-0002-BD-A00001", parent: null, origin: "Issuer", assignor: "Issuer of record",
-    party: "Company E", contact: "P. Nakamura", position: "Director of Finance",
-    address: "Company E\nAttn: P. Nakamura\n9 Bridgeway\nSavannah, GA 31401",
-    units: 50000, issuedUnits: 50000, status: "Locked", created: "May 22, 2026", accepted: "May 26, 2026",
-    docHash: "0x7f3d20…aa18", filingRef: "0x118cc4…6e37", deliveryRef: "0x44b9f0…2d81",
-    instrumentMail: "9407 1000 0000 0000 0000 07", passkeyMail: "9407 1000 0000 0000 0000 11", credLocked: false,
-    lockKind: "compromise", lockReason: "Passkey may be compromised", lockedOn: "Oct 11, 2026", rotationRequested: true },
-];
-
-const SEED_EVENTS = [
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00003", t: "Oct 9, 2026 16:12", ev: "CredentialRequested", actor: "RELAYER", ref: "—" },
-  { bond: "KPII-0002-BD", id: "KPII-0002-BD-A00001", t: "Oct 11, 2026 08:47", ev: "Locked", actor: "RELAYER", ref: "—" },
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00004", t: "Oct 2, 2026 10:05", ev: "DeliveryRecorded", actor: "ISSUER", ref: "0x8c02fa…66b4" },
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00004", t: "Oct 2, 2026 09:41", ev: "AssignmentIssued", actor: "ISSUER", ref: "0x62de91…c7b8" },
-  { bond: "KPII-0001-BD", id: "KPII-0001-BD-A00003", t: "Sep 14, 2026 14:22", ev: "AssignedOut", actor: "RELAYER", ref: "0x4a8813…0fd2" },
-  { bond: "KPII-0001-BD", id: "—", t: "Mar 4, 2026 07:54", ev: "BondAnchored", actor: "ISSUER", ref: "0xa41b7c…88e2" },
-];
 
 /* ---------------- pieces ---------------- */
 
@@ -209,9 +151,8 @@ function Sheet({ title, children, onClose }) {
 /* ---------------- console ---------------- */
 
 export default function IssuerConsole() {
-  const [reg, setReg] = useState(SEED);
-  const [events, setEvents] = useState(SEED_EVENTS);
-  const [bonds, setBonds] = useState(BONDS);
+  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload } =
+    useRegistry({ onNotice: (m) => flash(m) });
   const [activeBond, setActiveBond] = useState("KPII-0001-BD");
   const [tab, setTab] = useState("queue");
   const [sheet, setSheet] = useState(null);
@@ -286,7 +227,7 @@ export default function IssuerConsole() {
 
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2800); };
   const emit = (bid, id, ev, actor, ref) =>
-    setEvents((e) => [{ bond: bid, id, t: "Oct 17, 2026 · now", ev, actor, ref: ref || "—" }, ...e]);
+    setEvents((e) => [{ eid: newEid(), bond: bid, id, t: stamp(), ev, actor, ref: ref || "—" }, ...e]);
 
   const patch = (id, fields) => setReg((r) => r.map((a) => (a.id === id ? { ...a, ...fields } : a)));
 
@@ -300,13 +241,25 @@ export default function IssuerConsole() {
      No paper, no record: every action below carries the hash of the document
      that authorizes it. Mail numbers never go on-chain in plain text. */
 
-  function issueCredential(a) {
+  // The passkey is generated here and shown once for the passkey document.
+  // Only its hash is stored, on the server.
+  async function newPasskey(id) {
+    const passkey = generatePasskey();
+    await api.setPasskey(id, passkey);
+    return passkey;
+  }
+  const showPasskey = (id, passkey, why) => setSheet({ k: "passkey", id, passkey, why });
+
+  async function issueCredential(a) {
     if (!mail.trim() || !a.filingRef) return;
+    let passkey;
+    try { passkey = await newPasskey(a.id); } catch (e) { return flash(e.message); }
     const deliveryRef = fakeHash();
     patch(a.id, { status: "Issued", passkeyMail: mail.trim(), deliveryRef });
     emit(a.bond, a.id, "CredentialIssued", "ISSUER", deliveryRef);
     emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", deliveryRef);
     done("Credential issued and mailing recorded. Multisig " + THRESHOLD + " signed.");
+    showPasskey(a.id, passkey, "Credential issued to " + a.party + ".");
   }
 
   function rejectCredentialRequest(a) {
@@ -338,17 +291,20 @@ export default function IssuerConsole() {
     done("Unlocked. Returned to Accepted.");
   }
 
-  function rotate(a) {
+  async function rotate(a) {
     if (!mail.trim() || !docRef.trim()) return;
-    patch(a.id, { passkeyMail: mail.trim(), rotationRequested: false, credLocked: false });
+    let passkey;
+    try { passkey = await newPasskey(a.id); } catch (e) { return flash(e.message); }
+    patch(a.id, { passkeyMail: mail.trim(), rotationRequested: false });
     emit(a.bond, a.id, "PasskeyRotated", "ISSUER", docRef.trim());
-    done("New passkey mailed. The old hash has been discarded. The record stays locked until you unlock it.");
+    done("New passkey issued. The old one no longer works. The record stays locked until you unlock it.");
+    showPasskey(a.id, passkey, "Replacement passkey for " + a.party + ".");
   }
 
-  // The credential is off-chain; clearing a lockout is a register and audit entry only.
-  function unlockCredential(a) {
-    patch(a.id, { credLocked: false });
-    done("Credential lockout cleared and logged in the register.");
+  // The credential is off-chain; clearing a lockout touches the credential store only.
+  async function unlockCredential(a) {
+    try { await api.clearLockout(a.id); await reload(); } catch (e) { return flash(e.message); }
+    done("Credential lockout cleared.");
   }
 
   function approveRedemption(a) {
@@ -389,7 +345,7 @@ export default function IssuerConsole() {
     done("Mailings recorded. Only their hash goes on-chain.");
   }
 
-  function replaceAssignment(a) {
+  async function replaceAssignment(a) {
     if (!["Accepted", "Issued"].includes(a.status) || pendingOf(a.id).length > 0) return;
     if (!rpParty.trim() || !rpContact.trim() || !rpAddress.trim() || !rpDoc.trim()) return;
     const seq = String(reg.filter((x) => x.bond === a.bond).length + 1).padStart(5, "0");
@@ -397,14 +353,17 @@ export default function IssuerConsole() {
       bond: a.bond, id: a.bond + "-A" + seq, parent: a.id, origin: "Replacement",
       assignor: "Issuer of record (replacement)",
       party: rpParty.trim(), contact: rpContact.trim(), position: "", address: rpAddress.trim(),
-      units: a.units, issuedUnits: a.units, status: "Issued", created: "Oct 17, 2026", accepted: null,
-      docHash: fakeHash(), filingRef: null, deliveryRef: null,
-      instrumentMail: null, passkeyMail: null, credLocked: false,
+      units: a.units, issuedUnits: a.units, status: "Issued", created: today(), accepted: null,
+      docHash: fakeHash(), filingRef: null, deliveryRef: null, tx: fakeHash(),
+      instrumentMail: null, passkeyMail: null,
     };
+    let passkey;
+    try { passkey = await newPasskey(rec.id); } catch (e) { return flash(e.message); }
     setReg((r) => [rec, ...r.map((x) => (x.id === a.id ? { ...x, status: "Superseded" } : x))]);
     emit(a.bond, a.id, "AssignmentReplaced", "ISSUER", rpDoc.trim());
     emit(a.bond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
     done(a.id + " replaced by " + rec.id + ". Mail the new instrument and passkey, then file the UCC-3.");
+    showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ", replacing " + a.id + ".");
   }
 
   /* --- prior instruments ---
@@ -421,7 +380,7 @@ export default function IssuerConsole() {
     if (u > bond.unassigned) return setPErr("Unassigned balance is " + num(bond.unassigned) + " units.");
     setPErr("");
     const entry = { id: "P" + String(bond.prior.length + 1).padStart(3, "0"), ref, units: u,
-      recordedOn: "Oct 17, 2026", reversed: false };
+      recordedOn: today(), reversed: false };
     setBonds((bs) => bs.map((b) => (b.id === activeBond
       ? { ...b, unassigned: b.unassigned - u, prior: [...b.prior, entry] } : b)));
     emit(activeBond, ref, "PriorInstrumentRecorded", "ISSUER", fakeHash());
@@ -440,7 +399,7 @@ export default function IssuerConsole() {
     done(entry.ref + " reversed. " + usd(entry.units) + " returned to unassigned.");
   }
 
-  function issueAssignment() {
+  async function issueAssignment() {
     const u = parseInt(nUnits.replace(/[^0-9]/g, ""), 10);
     if (!u || u <= 0) return setNErr("Enter a whole number of units.");
     if (u > bond.unassigned) return setNErr("Unassigned balance is " + num(bond.unassigned) + " units.");
@@ -452,22 +411,31 @@ export default function IssuerConsole() {
     const rec = {
       bond: activeBond, id: activeBond + "-A" + seq, parent: null, origin: "Issuer", assignor: "Issuer of record",
       party: nParty.trim(), contact: nContact.trim(), position: nPosition.trim(), address: nAddress.trim(),
-      units: u, issuedUnits: u, status: "Issued", created: "Oct 17, 2026", accepted: null,
+      units: u, issuedUnits: u, status: "Issued", created: today(), accepted: null,
       docHash: fakeHash(),
-      filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null, credLocked: false,
+      filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null, tx: fakeHash(),
     };
+    let passkey;
+    try { passkey = await newPasskey(rec.id); } catch (e) { return setNErr(e.message); }
     setReg((r) => [rec, ...r]);
     setBonds((bs) => bs.map((b) => (b.id === activeBond ? { ...b, unassigned: b.unassigned - u } : b)));
     emit(activeBond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
     setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress("");
     setTab("records");
     flash(rec.id + " issued. Mail both documents separately, then record the numbers.");
+    showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".");
   }
 
-  function reset() {
-    setReg(SEED); setEvents(SEED_EVENTS); setBonds(BONDS); setActiveBond("KPII-0001-BD");
+  // Resets the shared database, for both apps.
+  async function reset() {
+    if (!window.confirm("Reset the shared demo register? Every change made in both apps will be lost.")) return;
+    try { await api.reset(); await reload(); } catch (e) { return flash(e.message); }
+    setActiveBond("KPII-0001-BD");
     setTab("queue"); setSheet(null); clearForms(); setPRef(""); setPUnits(""); setPErr("");
+    flash("Demo register reset for both apps.");
   }
+
+  if (!ready || !bond) return <Loading error={error} />;
 
   const tabs = [["queue", "Approvals"], ["bonds", "Bonds"], ["records", "Records"], ["log", "Log"]];
 
@@ -489,7 +457,8 @@ export default function IssuerConsole() {
               <span style={{ display: "block", marginTop: 2 }}>ISSUER · multisig {THRESHOLD}</span>
             </button>
             <button onClick={reset} style={{ fontFamily: sans, fontSize: 11, color: T.inkSoft, background: "none",
-              border: "none", padding: "2px 0 0", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>
+              border: "none", padding: "2px 0 0", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2,
+              display: "block", marginLeft: "auto" }}>
               Reset demo
             </button>
           </div>
@@ -760,6 +729,26 @@ export default function IssuerConsole() {
       </div>
 
       {/* ============ switch bond ============ */}
+      {sheet?.k === "passkey" && (
+        <Sheet title="Passkey document" onClose={() => setSheet(null)}>
+          <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, marginBottom: 14 }}>{sheet.why}</p>
+          <Label>Assignment</Label>
+          <div style={{ fontSize: 15, color: T.ink, marginBottom: 14, fontVariantNumeric: "tabular-nums" }}>{sheet.id}</div>
+          <Label>Passkey</Label>
+          <div className="px-3 py-4 mb-4 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
+            fontSize: 24, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>
+            {sheet.passkey}
+          </div>
+          <Note kind="warn">
+            Shown once. Copy it onto the confidential passkey document and mail it by certified
+            post, separately from the instrument. Only its hash is stored — if it is lost, rotate it.
+          </Note>
+          <div className="mt-4">
+            <Button onClick={() => setSheet(null)}>I've recorded it</Button>
+          </div>
+        </Sheet>
+      )}
+
       {sheet?.k === "prior" && (
         <Sheet title={"Reverse " + sheet.entry.ref} onClose={() => { setSheet(null); clearForms(); }}>
           <Rows data={[

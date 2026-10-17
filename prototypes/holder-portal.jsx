@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useRegistry, api, today, stamp, newEid, Loading } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — holder portal
@@ -22,8 +23,6 @@ const T = {
 const serif = "'Spectral', Georgia, serif";
 const sans = "'IBM Plex Sans', system-ui, sans-serif";
 
-const BOND_TOTAL = { "KPII-0001-BD": 100000000 };
-const pct = (u, bond) => ((u / BOND_TOTAL[bond]) * 100).toFixed(6) + "%";
 const num = (u) => u.toLocaleString("en-US");
 const usd = (u) => "$" + u.toLocaleString("en-US");
 
@@ -47,8 +46,6 @@ const LOCK_KINDS = [
 // document behind it. The demo stands in a random hash for that document.
 const fakeHash = () =>
   "0x" + Math.random().toString(16).slice(2, 8) + "…" + Math.random().toString(16).slice(2, 6);
-
-const normKey = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 const pendingOf = (reg, id) =>
   reg.filter((c) => c.parent === id && c.origin === "AssignOut" && PENDING.includes(c.status));
@@ -80,124 +77,6 @@ const tone = (s) => {
   if (s === "Locked" || s === "PendingRedemption") return [T.red, "#F0E0DF"];
   return [T.inkSoft, T.wash];
 };
-
-/* ---------------- seed register ---------------- */
-
-const SEED = [
-  {
-    id: "KPII-0001-BD-A00001",
-    bond: "KPII-0001-BD",
-    parent: null,
-    origin: "Issuer",
-    passkey: "7KQM-R4XW-9TPH-C2NV",
-    assignor: "Issuer of record",
-    party: "Company A",
-    contact: "D. Hargrove",
-    position: "Authorized Representative",
-    units: 170000,
-    issuedUnits: 200000,
-    status: "Accepted",
-    created: "Mar 6, 2026",
-    accepted: "Mar 11, 2026",
-    docHash: "0x83a4c7…2d17",
-    filingRef: "0x5f21ab…9c40",
-    deliveryRef: "0x1b77de…04a2",
-    tx: "0x712c9f…a4e1",
-    attempts: 0,
-    credLocked: false,
-    lockReason: null,
-    lockedOn: null,
-    unlockRequested: false,
-    rotationRequested: false,
-  },
-  {
-    id: "KPII-0001-BD-A00002",
-    bond: "KPII-0001-BD",
-    parent: null,
-    origin: "Issuer",
-    passkey: "HD3F-W8ZK-QM6R-T2YB",
-    assignor: "Issuer of record",
-    party: "Company B",
-    contact: "L. Whitfield",
-    position: "Managing Member",
-    units: 30000,
-    issuedUnits: 30000,
-    status: "Accepted",
-    created: "Jun 18, 2026",
-    accepted: "Jun 22, 2026",
-    docHash: "0xc1f802…9b40",
-    filingRef: "0x77a3e1…5512",
-    deliveryRef: "0x9e44bc…7731",
-    tx: "0x9d410b…77c3",
-    attempts: 0,
-    credLocked: false,
-    lockReason: null,
-    lockedOn: null,
-    unlockRequested: false,
-    rotationRequested: false,
-  },
-  {
-    id: "KPII-0001-BD-A00003",
-    bond: "KPII-0001-BD",
-    parent: "KPII-0001-BD-A00001",
-    origin: "AssignOut",
-    passkey: null,
-    assignor: "Company A",
-    party: "Company D",
-    contact: "M. Osei",
-    position: "Treasurer",
-    units: 30000,
-    issuedUnits: 30000,
-    status: "AwaitingCredential",
-    created: "Sep 14, 2026",
-    accepted: null,
-    docHash: "0x4a8813…0fd2",
-    filingRef: null,
-    deliveryRef: null,
-    tx: "0x55b2e3…1a09",
-    attempts: 0,
-    credLocked: false,
-    lockReason: null,
-    lockedOn: null,
-    unlockRequested: false,
-    rotationRequested: false,
-  },
-  {
-    id: "KPII-0001-BD-A00004",
-    bond: "KPII-0001-BD",
-    parent: null,
-    origin: "Issuer",
-    passkey: "N4VP-K9TC-X3HW-R7MJ",
-    assignor: "Issuer of record",
-    party: "Company C",
-    contact: "R. Alvarez",
-    position: "Chief Financial Officer",
-    units: 5000,
-    issuedUnits: 5000,
-    status: "Issued",
-    created: "Oct 2, 2026",
-    accepted: null,
-    docHash: "0x62de91…c7b8",
-    filingRef: "0x30ba77…e1d9",
-    deliveryRef: "0x8c02fa…66b4",
-    tx: "0x3f81aa…02de",
-    attempts: 0,
-    credLocked: false,
-    lockReason: null,
-    lockedOn: null,
-    unlockRequested: false,
-    rotationRequested: false,
-  },
-];
-
-const SEED_EVENTS = [
-  { id: "KPII-0001-BD-A00003", t: "Sep 14, 2026 14:22", ev: "AssignedOut", actor: "RELAYER", ref: "0x4a8813…0fd2" },
-  { id: "KPII-0001-BD-A00004", t: "Oct 2, 2026 10:05", ev: "DeliveryRecorded", actor: "ISSUER", ref: "0x8c02fa…66b4" },
-  { id: "KPII-0001-BD-A00004", t: "Oct 2, 2026 09:41", ev: "AssignmentIssued", actor: "ISSUER", ref: "0x62de91…c7b8" },
-  { id: "KPII-0001-BD-A00002", t: "Jun 22, 2026 11:30", ev: "Accepted", actor: "RELAYER", ref: "—" },
-  { id: "KPII-0001-BD-A00001", t: "Mar 11, 2026 09:18", ev: "Accepted", actor: "RELAYER", ref: "—" },
-  { id: "KPII-0001-BD-A00001", t: "Mar 6, 2026 08:02", ev: "AssignmentIssued", actor: "ISSUER", ref: "0x83a4c7…2d17" },
-];
 
 /* ---------------- pieces ---------------- */
 
@@ -284,8 +163,12 @@ function Note({ children, kind = "quiet" }) {
 /* ---------------- app ---------------- */
 
 export default function HolderPortal() {
-  const [reg, setReg] = useState(SEED);
-  const [events, setEvents] = useState(SEED_EVENTS);
+  const { reg, setReg, bonds, events, setEvents, ready, error, reload } =
+    useRegistry({ onNotice: (m) => flash(m) });
+  const pct = (u, bondId) => {
+    const b = bonds.find((x) => x.id === bondId);
+    return b ? ((u / b.total) * 100).toFixed(6) + "%" : "—";
+  };
   const [tab, setTab] = useState("access");
   const [view, setView] = useState(null);
   const [openId, setOpenId] = useState(null);
@@ -332,8 +215,8 @@ export default function HolderPortal() {
   const pendingChildren = open ? pendingOf(reg, open.id) : [];
 
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2800); };
-  const emit = (id, ev, actor, ref) =>
-    setEvents((e) => [{ id, t: "Oct 17, 2026 · now", ev, actor, ref: ref || "—" }, ...e]);
+  const emit = (bond, id, ev, actor, ref) =>
+    setEvents((e) => [{ eid: newEid(), bond, id, t: stamp(), ev, actor, ref: ref || "—" }, ...e]);
 
   const chainOf = (a) => {
     const line = []; let cur = a;
@@ -342,44 +225,42 @@ export default function HolderPortal() {
   };
 
   /* --- sign in --- */
-  function signIn() {
+  async function signIn() {
     const id = qId.trim().toUpperCase();
     const rec = reg.find((a) => a.id.toUpperCase() === id);
     if (!rec) { setQErr("No assignment with that ID is on the register."); return; }
-    if (rec.credLocked) {
-      setQErr("This credential is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
+    let res;
+    try { res = await api.signIn(rec.id, qKey); } catch (e) { setQErr(e.message); return; }
+    if (!res.ok) {
+      if (res.code === "locked") {
+        await reload().catch(() => {});
+        setQErr("This credential is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
+      } else if (res.code === "nokey") {
+        setQErr("No passkey has been issued for this assignment yet. If you are the named assignee, use Request access.");
+      } else if (res.code === "mismatch") {
+        setQErr("That passkey doesn't match. " + res.left + (res.left === 1 ? " attempt" : " attempts") + " remaining before the credential locks.");
+      } else {
+        setQErr(res.error || "Sign-in failed.");
+      }
       return;
     }
-    if (!rec.passkey) {
-      setQErr("No passkey has been issued for this assignment yet. If you are the named assignee, use Request access.");
+    const fresh = (await reload().catch(() => null))?.reg.find((a) => a.id === rec.id) || rec;
+    if (["Redeemed", "Superseded", "Cancelled"].includes(fresh.status)) {
+      setQErr("This record is " + LABEL[fresh.status].toLowerCase() + " and can no longer be acted on.");
       return;
     }
-    if (normKey(rec.passkey) !== normKey(qKey)) {
-      const left = MAX_ATTEMPTS - (rec.attempts + 1);
-      setReg((r) => r.map((a) => a.id === rec.id
-        ? { ...a, attempts: a.attempts + 1, credLocked: a.attempts + 1 >= MAX_ATTEMPTS } : a));
-      setQErr(left > 0
-        ? "That passkey doesn't match. " + left + (left === 1 ? " attempt" : " attempts") + " remaining before the credential locks."
-        : "Credential locked after " + MAX_ATTEMPTS + " failed attempts. Contact the issuer.");
-      return;
-    }
-    if (["Redeemed", "Superseded", "Cancelled"].includes(rec.status)) {
-      setQErr("This record is " + LABEL[rec.status].toLowerCase() + " and can no longer be acted on.");
-      return;
-    }
-    setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, attempts: 0 } : a)));
     setQErr(""); setQKey("");
-    setOpenId(rec.id);
-    setView(rec.status === "Issued" ? "claim" : "position");
+    setOpenId(fresh.id);
+    setView(fresh.status === "Issued" ? "claim" : "position");
   }
 
   function accept() {
     // A child's acceptance may close its parent: zero units and nothing pending.
     setReg((r) => settleParent(
-      r.map((a) => (a.id === open.id ? { ...a, status: "Accepted", accepted: "Oct 17, 2026" } : a)),
+      r.map((a) => (a.id === open.id ? { ...a, status: "Accepted", accepted: today() } : a)),
       open.origin === "AssignOut" ? open.parent : null
     ));
-    emit(open.id, "Accepted", "RELAYER");
+    emit(open.bond, open.id, "Accepted", "RELAYER");
     setView("position");
     flash("Accepted. The relayer has written the transition on-chain.");
   }
@@ -407,7 +288,6 @@ export default function HolderPortal() {
       bond: open.bond,
       parent: open.id,
       origin: "AssignOut",
-      passkey: null,
       assignor: open.party,
       party: aParty.trim(),
       contact: aContact.trim(),
@@ -416,14 +296,12 @@ export default function HolderPortal() {
       units: u,
       issuedUnits: u,
       status: "AwaitingCredential",
-      created: "Oct 17, 2026",
+      created: today(),
       accepted: null,
       docHash: fakeHash(), // hash of the signed child instrument
       filingRef: null,
       deliveryRef: null,
       tx: fakeHash(),
-      attempts: 0,
-      credLocked: false,
       lockReason: null,
       lockedOn: null,
       unlockRequested: false,
@@ -434,7 +312,7 @@ export default function HolderPortal() {
       ...r.map((a) => (a.id === open.id ? { ...a, units: a.units - u } : a)),
       child,
     ]);
-    emit(child.id, "AssignedOut", "RELAYER", child.docHash);
+    emit(child.bond, child.id, "AssignedOut", "RELAYER", child.docHash);
     setChildIssued(child);
     setAUnits(""); setAParty(""); setAContact(""); setAPosition(""); setAAddress("");
     setStepUp(""); setStepUpNeeded(false);
@@ -451,17 +329,17 @@ export default function HolderPortal() {
       if (a.id === open.id) return { ...a, units: a.units + child.units };
       return a;
     }));
-    emit(child.id, "AssignOutCancelled", "RELAYER", fakeHash());
+    emit(child.bond, child.id, "AssignOutCancelled", "RELAYER", fakeHash());
     flash("Cancelled. " + usd(child.units) + " returned to your record.");
   }
 
   function lock() {
     const label = LOCK_KINDS.find(([k]) => k === lockKind)[1];
     setReg((r) => r.map((a) => (a.id === open.id
-      ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: "Oct 17, 2026",
+      ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: today(),
           rotationRequested: lockRotate, unlockRequested: false }
       : a)));
-    emit(open.id, "Locked", "RELAYER", fakeHash());
+    emit(open.bond, open.id, "Locked", "RELAYER", fakeHash());
     setLockKind("pledge"); setLockRotate(false);
     setView("position");
     flash(lockRotate
@@ -488,7 +366,7 @@ export default function HolderPortal() {
     if (stepUp.trim() !== STEP_UP_DEMO) return setRdErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
     setRdErr("");
     setReg((r) => r.map((a) => (a.id === open.id ? { ...a, status: "PendingRedemption" } : a)));
-    emit(open.id, "RedemptionRequested", "RELAYER", fakeHash());
+    emit(open.bond, open.id, "RedemptionRequested", "RELAYER", fakeHash());
     setStepUp(""); setStepUpNeeded(false);
     setView("position");
     flash("Redemption requested. The record is frozen pending issuer review.");
@@ -509,9 +387,9 @@ export default function HolderPortal() {
     const requestHash = fakeHash();
     setReg((r) => r.map((a) => (a.id === rec.id
       ? { ...a, status: "CredentialRequested", requestedParty: rParty.trim(), requestedBy: rContact.trim(),
-          requestedContact: rPhone.trim(), requestedOn: "Oct 17, 2026", requestHash }
+          requestedContact: rPhone.trim(), requestedOn: today(), requestHash }
       : a)));
-    emit(rec.id, "CredentialRequested", "RELAYER", requestHash);
+    emit(rec.bond, rec.id, "CredentialRequested", "RELAYER", requestHash);
     setRDone(rec);
     setRParty(""); setRContact(""); setRPhone(""); setRId("");
   }
@@ -535,15 +413,10 @@ export default function HolderPortal() {
     }
   }
 
-  function reset() {
-    setReg(SEED); setEvents(SEED_EVENTS); setTab("access"); setView(null); setOpenId(null);
-    setQId(""); setQKey(""); setQErr(""); setChildIssued(null); setRDone(null);
-    setVId(""); setVRec(null); setVErr(""); setVHash(null); setStepUpNeeded(false); setStepUp("");
-    setLockKind("pledge"); setLockRotate(false); setRdErr("");
-  }
-
   const tabs = [["access", "Holder access"], ["request", "Request access"], ["verify", "Verify"]];
   const inHolder = view && tab === "access";
+
+  if (!ready) return <Loading error={error} />;
 
   return (
     <div style={{ background: T.paper, minHeight: "100%", fontFamily: sans }}>
@@ -555,10 +428,6 @@ export default function HolderPortal() {
       <div className="mx-auto" style={{ maxWidth: 560, padding: "20px 18px 56px" }}>
         <div className="flex items-baseline justify-between">
           <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontWeight: 500 }}>Interest Registry</div>
-          <button onClick={reset} style={{ fontFamily: sans, fontSize: 12, color: T.inkSoft, background: "none",
-            border: "none", padding: 0, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}>
-            Reset demo
-          </button>
         </div>
 
         <div className="flex gap-4 mt-4 mb-5" style={{ borderBottom: "1px solid " + T.rule }}>
