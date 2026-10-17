@@ -38,6 +38,7 @@ Principles:
 | 12 | No paper, no record: every on-chain change requires a document hash. |
 | 13 | Unlocking a record locked for a pledge requires the pledgee's signed release. |
 | 14 | The assignor files the UCC-3 for a child. The issuer will not issue the child's credential until the filing is recorded, and may file it instead after the 30-day window. |
+| 15 | Instruments issued before the registry (for example promissory notes) are recorded as prior instruments: an identifier and an amount taken off the bond. No holder, passkey or workflow. |
 
 ## System architecture
 
@@ -61,6 +62,7 @@ Each assignment exists in three linked places: an on-chain record (public, minim
 | totalUnits | uint256 | Fixed at anchoring |
 | unassignedUnits | uint256 | Available for the issuer to assign |
 | redeemedUnits | uint256 | Retired by redemption; never reissued |
+| priorUnits | uint256 | Carried by instruments issued before the registry |
 
 ### On-chain assignment record
 
@@ -91,7 +93,7 @@ Assignment ID, passkey hash (Argon2id, per-record salt), created and rotated tim
 For every bond:
 
 ```
-sum(units of live records) + unassignedUnits + redeemedUnits == totalUnits
+priorUnits + sum(units of live records) + unassignedUnits + redeemedUnits == totalUnits
 ```
 
 Live means any status other than Redeemed, Superseded or Cancelled. The contract enforces this on every write. A Redeemed record keeps its `units` value as history; those units are counted once, in `redeemedUnits`.
@@ -124,6 +126,8 @@ Every function below takes a `docHash` (or `refHash`) argument and reverts if it
 |---|---|---|---|
 | anchorBond | ISSUER | new bondId | Bond record created; all units unassigned |
 | issueAssignment | ISSUER | units ≤ unassignedUnits | New record Issued, origin Issuer; units taken from unassigned |
+| recordPriorInstrument | ISSUER | refHash not already recorded on this bond; units ≤ unassignedUnits | priorUnits += units; unassigned −= units |
+| reversePriorInstrument | ISSUER | entry not already reversed | Entry marked reversed; units back to unassigned; event carries reason hash |
 | setDeliveryRef | ISSUER | live record | Reference stored; status unchanged |
 | setFilingRef | ISSUER | live record | Reference stored; status unchanged |
 | accept | RELAYER | Issued | Accepted. If origin AssignOut: parent.pendingChildren −1, and the parent becomes Superseded if it now has 0 units and 0 pending children |
@@ -150,7 +154,7 @@ Notes:
 
 ### Events
 
-BondAnchored, AssignmentIssued, Accepted, AssignedOut, AssignOutCancelled, CredentialRequested, CredentialRequestRejected, CredentialIssued, Locked, Unlocked, RedemptionRequested, Redeemed, RedemptionRejected, PasskeyRotated, AssignmentReplaced, FilingRecorded, DeliveryRecorded. Each carries assignmentId, actor role and the authorizing document hash.
+BondAnchored, PriorInstrumentRecorded, PriorInstrumentReversed, AssignmentIssued, Accepted, AssignedOut, AssignOutCancelled, CredentialRequested, CredentialRequestRejected, CredentialIssued, Locked, Unlocked, RedemptionRequested, Redeemed, RedemptionRejected, PasskeyRotated, AssignmentReplaced, FilingRecorded, DeliveryRecorded. Each carries assignmentId, actor role and the authorizing document hash.
 
 ### Build notes
 
@@ -196,6 +200,17 @@ The holder locks the record and requests a new passkey in the app. The issuer ve
 1. Hash the bond instrument and the interest declaration (SHA-256); store the PDFs in encrypted, versioned storage.
 2. Register: create the bond entry with total units.
 3. On-chain: `anchorBond` (multisig) with both hashes and totalUnits. Event BondAnchored.
+
+### A2. Record prior instruments (issuer)
+
+Instruments issued against the bond before the registry existed, such as promissory notes, did not use partial assignments. They are recorded so the bond's full amount is accounted for, without bringing those instruments into the assignment workflow.
+
+1. Issuer console: on the bond, enter the instrument's identifier (for example `PN-2024-007`) and the amount it takes off the bond.
+2. The console rejects an identifier already recorded on the bond, and any amount above the unassigned balance.
+3. On-chain: `recordPriorInstrument` with a hash of the identifier and the units. The units move from unassigned to `priorUnits`.
+4. An entry made in error is reversed, never deleted: `reversePriorInstrument` with a reason. The original line stays, marked reversed, and the units return to unassigned.
+
+Prior instruments have no holder, passkey, status or approvals, and they can be recorded at any time. They are not assignments and cannot be assigned out or redeemed through the registry; they only reduce what the bond has left to assign.
 
 ### B. Issue an assignment (issuer to first holder)
 
@@ -318,6 +333,7 @@ No single failure lets anyone redeem or move an interest without issuer approval
 | Same assignment sold or pledged twice | Public verification shows live status; lock for pledges; unlock needs the pledgee's release; terminal statuses can never revive |
 | Double redemption | approveRedemption is terminal; contract rejects any action on a Redeemed record |
 | Redeemed interest reissued | Redeemed units retired in redeemedUnits, outside the issuable pool |
+| Prior instrument counted twice | Identifier must be unique per bond; reversals keep the original line visible |
 | Platform writes a change with no paperwork | Every write needs a document hash; daily reconciliation flags any hash with no document in the register |
 | Stranger requests a credential for someone else's child | Issuer verification; rejectCredentialRequest returns the child to AwaitingCredential |
 | Passkey brute force | ~80 bits of randomness, Argon2id, 5-attempt lockout, rate limits per ID and IP |

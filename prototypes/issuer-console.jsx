@@ -57,11 +57,11 @@ const tone = (s) => {
 /* ---------------- seed ---------------- */
 
 const BONDS = [
-  { id: "KPII-0001-BD", face: 100000000, total: 100000000, unassigned: 99765000, redeemed: 0,
+  { id: "KPII-0001-BD", face: 100000000, total: 100000000, unassigned: 99765000, redeemed: 0, prior: [],
     registered: "Mar 4, 2026", instrumentHash: "0xa41b7c…88e2", declarationHash: "0xd90f23…1c55" },
-  { id: "KPII-0002-BD", face: 100000000, total: 100000000, unassigned: 99950000, redeemed: 0,
+  { id: "KPII-0002-BD", face: 100000000, total: 100000000, unassigned: 99950000, redeemed: 0, prior: [],
     registered: "May 19, 2026", instrumentHash: "0xb72e04…3af1", declarationHash: "0x6c1a89…7d20" },
-  { id: "KPII-0003-BD", face: 100000000, total: 100000000, unassigned: 100000000, redeemed: 0,
+  { id: "KPII-0003-BD", face: 100000000, total: 100000000, unassigned: 100000000, redeemed: 0, prior: [],
     registered: "Sep 1, 2026", instrumentHash: "0x0e55ab…9140", declarationHash: "0x33d71f…b602" },
 ];
 
@@ -237,6 +237,10 @@ export default function IssuerConsole() {
   const [nAddress, setNAddress] = useState("");
   const [nErr, setNErr] = useState("");
 
+  const [pRef, setPRef] = useState("");
+  const [pUnits, setPUnits] = useState("");
+  const [pErr, setPErr] = useState("");
+
   const bond = bonds.find((b) => b.id === activeBond);
   const scoped = reg.filter((a) => a.bond === activeBond);
   const scopedEvents = events.filter((e) => e.bond === activeBond);
@@ -271,10 +275,13 @@ export default function IssuerConsole() {
     reg.filter((a) => a.bond === bid && !TERMINAL.includes(a.status))
       .reduce((s, a) => s + a.units, 0);
 
-  // Units invariant: live + unassigned + redeemed = total.
+  // Units carried by instruments issued before the registry (reversed entries excluded).
+  const priorUnits = (b) => b.prior.filter((p) => !p.reversed).reduce((t, p) => t + p.units, 0);
+
+  // Units invariant: prior + live + unassigned + redeemed = total.
   const reconciled = (bid) => {
     const b = bonds.find((x) => x.id === bid);
-    return liveUnits(bid) + b.unassigned + b.redeemed === b.total;
+    return priorUnits(b) + liveUnits(bid) + b.unassigned + b.redeemed === b.total;
   };
 
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2800); };
@@ -400,6 +407,39 @@ export default function IssuerConsole() {
     done(a.id + " replaced by " + rec.id + ". Mail the new instrument and passkey, then file the UCC-3.");
   }
 
+  /* --- prior instruments ---
+     Promissory notes and other instruments issued before the registry. Each is
+     an identifier and an amount taken off the bond: no holder, no workflow. */
+
+  function recordPrior() {
+    const ref = pRef.trim();
+    const u = parseInt(pUnits.replace(/[^0-9]/g, ""), 10);
+    if (!ref) return setPErr("Enter the instrument's identifier.");
+    if (bond.prior.some((p) => !p.reversed && p.ref.toUpperCase() === ref.toUpperCase()))
+      return setPErr(ref + " is already recorded against " + activeBond + ".");
+    if (!u || u <= 0) return setPErr("Enter a whole number of units.");
+    if (u > bond.unassigned) return setPErr("Unassigned balance is " + num(bond.unassigned) + " units.");
+    setPErr("");
+    const entry = { id: "P" + String(bond.prior.length + 1).padStart(3, "0"), ref, units: u,
+      recordedOn: "Oct 17, 2026", reversed: false };
+    setBonds((bs) => bs.map((b) => (b.id === activeBond
+      ? { ...b, unassigned: b.unassigned - u, prior: [...b.prior, entry] } : b)));
+    emit(activeBond, ref, "PriorInstrumentRecorded", "ISSUER", fakeHash());
+    setPRef(""); setPUnits("");
+    flash(ref + " recorded. " + usd(u) + " taken off " + activeBond + ".");
+  }
+
+  // Append-only: a reversal is a new entry; the original line stays, marked reversed.
+  function reversePrior(bid, entry) {
+    if (!reason.trim()) return;
+    setBonds((bs) => bs.map((b) => (b.id === bid
+      ? { ...b, unassigned: b.unassigned + entry.units,
+          prior: b.prior.map((p) => (p.id === entry.id ? { ...p, reversed: true, reversedReason: reason.trim() } : p)) }
+      : b)));
+    emit(bid, entry.ref, "PriorInstrumentReversed", "ISSUER", fakeHash());
+    done(entry.ref + " reversed. " + usd(entry.units) + " returned to unassigned.");
+  }
+
   function issueAssignment() {
     const u = parseInt(nUnits.replace(/[^0-9]/g, ""), 10);
     if (!u || u <= 0) return setNErr("Enter a whole number of units.");
@@ -426,7 +466,7 @@ export default function IssuerConsole() {
 
   function reset() {
     setReg(SEED); setEvents(SEED_EVENTS); setBonds(BONDS); setActiveBond("KPII-0001-BD");
-    setTab("queue"); setSheet(null); clearForms();
+    setTab("queue"); setSheet(null); clearForms(); setPRef(""); setPUnits(""); setPErr("");
   }
 
   const tabs = [["queue", "Approvals"], ["bonds", "Bonds"], ["records", "Records"], ["log", "Log"]];
@@ -531,7 +571,7 @@ export default function IssuerConsole() {
                       </span>
                     </div>
                     <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
-                      unassigned · {b.redeemed > 0 ? usd(b.redeemed) + " retired · " : ""}{items.length} {items.length === 1 ? "record" : "records"} · anchored {b.registered}
+                      unassigned · {priorUnits(b) > 0 ? usd(priorUnits(b)) + " prior instruments · " : ""}{b.redeemed > 0 ? usd(b.redeemed) + " retired · " : ""}{items.length} {items.length === 1 ? "record" : "records"} · anchored {b.registered}
                     </div>
                     <div className="mt-2">
                       <Chip s={ok ? "Accepted" : "Locked"} text={ok ? "Reconciled" : "Mismatch — activity frozen"} />
@@ -602,11 +642,63 @@ export default function IssuerConsole() {
                 Issue
               </button>
             </div>
-            <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 16, fontVariantNumeric: "tabular-nums" }}>
-              {usd(bond.unassigned)} unassigned · {usd(liveUnits(activeBond))} in live records ·{" "}
-              {bond.redeemed > 0 ? usd(bond.redeemed) + " retired · " : ""}
-              {reconciled(activeBond) ? "reconciled" : "mismatch"}
+            <div className="mt-3 mb-5">
+              <Rows data={[
+                ["Bond total", usd(bond.total)],
+                ["Prior instruments", usd(priorUnits(bond))],
+                ["Assigned in live records", usd(liveUnits(activeBond))],
+                ["Redeemed and retired", usd(bond.redeemed)],
+                ["Unassigned", usd(bond.unassigned)],
+                ["Check", reconciled(activeBond) ? "Reconciled — the lines add up to the total" : "Mismatch — activity frozen"],
+              ]} />
             </div>
+
+            <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 4 }}>Prior instruments</div>
+            <p style={{ color: T.inkSoft, fontSize: 13, lineHeight: 1.6, marginBottom: 10, maxWidth: "62ch" }}>
+              Promissory notes and other instruments issued before this registry. Each one only takes
+              its amount off the bond — no holder, passkey or approvals.
+            </p>
+            {bond.prior.length > 0 && (
+              <div className="mb-3" style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
+                {bond.prior.map((p, i) => (
+                  <div key={p.id} className="flex justify-between items-center gap-3 px-3 py-2"
+                    style={{ background: i % 2 ? T.band : T.white, borderTop: i ? "1px solid " + T.rule : "none", fontSize: 14 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ color: p.reversed ? T.inkSoft : T.ink, textDecoration: p.reversed ? "line-through" : "none",
+                        wordBreak: "break-word" }}>{p.ref}</div>
+                      <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2 }}>
+                        Recorded {p.recordedOn}{p.reversed ? " · reversed: " + p.reversedReason : ""}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3" style={{ flexShrink: 0 }}>
+                      <span style={{ color: p.reversed ? T.inkSoft : T.ink, fontVariantNumeric: "tabular-nums",
+                        textDecoration: p.reversed ? "line-through" : "none" }}>{usd(p.units)}</span>
+                      {p.reversed ? <Chip s="Cancelled" text="Reversed" /> : (
+                        <button onClick={() => setSheet({ k: "prior", bond: activeBond, entry: p })}
+                          style={{ fontSize: 12, color: T.inkSoft, background: "none", border: "none", cursor: "pointer",
+                            textDecoration: "underline", textUnderlineOffset: 2, fontFamily: sans }}>
+                          Reverse
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="px-3 pt-3 pb-1 mb-6" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
+              <Field label="Instrument identifier" value={pRef} onChange={(v) => { setPRef(v); setPErr(""); }}
+                placeholder="PN-2024-007" />
+              <Field label="Amount taken off the bond (units)" value={pUnits} onChange={(v) => { setPUnits(v); setPErr(""); }}
+                placeholder="250,000" mono
+                hint={pUnits ? usd(parseInt(pUnits.replace(/[^0-9]/g, ""), 10) || 0) + " · " +
+                  pct(parseInt(pUnits.replace(/[^0-9]/g, ""), 10) || 0, bond.total) + " of the bond" : null} />
+              {pErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{pErr}</p>}
+              <div className="mb-3">
+                <Button variant="quiet" onClick={recordPrior}>Record prior instrument</Button>
+              </div>
+            </div>
+
+            <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 10 }}>Assignments</div>
 
             {scoped.length === 0 && (
               <div className="px-3 py-5 text-center" style={{ border: "1px solid " + T.rule, borderRadius: 2,
@@ -668,6 +760,29 @@ export default function IssuerConsole() {
       </div>
 
       {/* ============ switch bond ============ */}
+      {sheet?.k === "prior" && (
+        <Sheet title={"Reverse " + sheet.entry.ref} onClose={() => { setSheet(null); clearForms(); }}>
+          <Rows data={[
+            ["Bond", sheet.bond],
+            ["Instrument", sheet.entry.ref],
+            ["Amount", usd(sheet.entry.units)],
+            ["Recorded", sheet.entry.recordedOn],
+          ]} />
+          <div className="mt-4">
+            <Note kind="caution">
+              For an entry made in error. The original line stays on the record, marked reversed,
+              and {usd(sheet.entry.units)} returns to the unassigned balance.
+            </Note>
+          </div>
+          <div className="mt-4">
+            <Field label="Reason" value={reason} onChange={setReason} placeholder="Amount entered incorrectly" />
+            <Button variant="quiet" danger disabled={!reason.trim()} onClick={() => reversePrior(sheet.bond, sheet.entry)}>
+              Reverse entry
+            </Button>
+          </div>
+        </Sheet>
+      )}
+
       {sheet?.k === "switch" && (
         <Sheet title="Switch bond" onClose={() => setSheet(null)}>
           {bonds.map((b) => (
