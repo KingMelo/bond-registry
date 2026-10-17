@@ -7,3 +7,14 @@ A register of assigned interests in a private bond, mirrored to a public blockch
 - [`prototypes/holder-portal.jsx`](prototypes/holder-portal.jsx) — holder portal demo (claim, assign out, lock, redeem, request access, public verification).
 
 The prototypes are single-file React components styled with Tailwind utility classes. They hold all state in memory; nothing is written to a chain.
+
+## Running the demo
+
+```
+npm install
+npm run dev      # local development
+npm run build    # production build into dist/
+npm start        # serve dist/ on $PORT (used by Railway)
+```
+
+The demo opens on the holder portal; the bar at the top switches to the issuer console (`#holder` / `#issuer`).
