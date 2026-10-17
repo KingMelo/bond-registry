@@ -22,14 +22,44 @@ const T = {
 const serif = "'Spectral', Georgia, serif";
 const sans = "'IBM Plex Sans', system-ui, sans-serif";
 
-const TOTAL = 100000000;
-const pct = (u) => ((u / TOTAL) * 100).toFixed(6) + "%";
+const BOND_TOTAL = { "KPII-0001-BD": 100000000 };
+const pct = (u, bond) => ((u / BOND_TOTAL[bond]) * 100).toFixed(6) + "%";
 const num = (u) => u.toLocaleString("en-US");
 const usd = (u) => "$" + u.toLocaleString("en-US");
 
 const CONTRACT = "0x7A3f9C21D4e8B07a55F3cb1290Ae44D6b8E1B214";
 const CHAIN = "Polygon PoS · chain 137";
 const MAX_ATTEMPTS = 5;
+const STEP_UP_DEMO = "482913";
+
+// Children created by assignOut that are neither Accepted nor Cancelled.
+const PENDING = ["AwaitingCredential", "CredentialRequested", "Issued"];
+const TERMINAL = ["Redeemed", "Superseded", "Cancelled"];
+
+const LOCK_KINDS = [
+  ["pledge", "Pledged to a lender"],
+  ["sale", "Pending sale"],
+  ["compromise", "Passkey may be compromised"],
+  ["other", "Other"],
+];
+
+// No paper, no record: every on-chain write carries the hash of the signed
+// document behind it. The demo stands in a random hash for that document.
+const fakeHash = () =>
+  "0x" + Math.random().toString(16).slice(2, 8) + "…" + Math.random().toString(16).slice(2, 6);
+
+const normKey = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+const pendingOf = (reg, id) =>
+  reg.filter((c) => c.parent === id && c.origin === "AssignOut" && PENDING.includes(c.status));
+
+// A parent closes as Superseded only once it has no units and no pending children.
+const settleParent = (reg, parentId) => {
+  const p = reg.find((a) => a.id === parentId);
+  if (!p || p.units > 0 || pendingOf(reg, p.id).length > 0) return reg;
+  if (!["Accepted", "Locked"].includes(p.status)) return reg;
+  return reg.map((a) => (a.id === p.id ? { ...a, status: "Superseded" } : a));
+};
 
 const LABEL = {
   AwaitingCredential: "Awaiting credential",
@@ -58,7 +88,8 @@ const SEED = [
     id: "KPII-0001-BD-A00001",
     bond: "KPII-0001-BD",
     parent: null,
-    passkey: "MERCER-501-OH",
+    origin: "Issuer",
+    passkey: "7KQM-R4XW-9TPH-C2NV",
     assignor: "Issuer of record",
     party: "Company A",
     contact: "D. Hargrove",
@@ -74,12 +105,17 @@ const SEED = [
     tx: "0x712c9f…a4e1",
     attempts: 0,
     credLocked: false,
+    lockReason: null,
+    lockedOn: null,
+    unlockRequested: false,
+    rotationRequested: false,
   },
   {
     id: "KPII-0001-BD-A00002",
     bond: "KPII-0001-BD",
     parent: null,
-    passkey: "CANAL-22-RI",
+    origin: "Issuer",
+    passkey: "HD3F-W8ZK-QM6R-T2YB",
     assignor: "Issuer of record",
     party: "Company B",
     contact: "L. Whitfield",
@@ -95,11 +131,16 @@ const SEED = [
     tx: "0x9d410b…77c3",
     attempts: 0,
     credLocked: false,
+    lockReason: null,
+    lockedOn: null,
+    unlockRequested: false,
+    rotationRequested: false,
   },
   {
     id: "KPII-0001-BD-A00003",
     bond: "KPII-0001-BD",
     parent: "KPII-0001-BD-A00001",
+    origin: "AssignOut",
     passkey: null,
     assignor: "Company A",
     party: "Company D",
@@ -116,12 +157,17 @@ const SEED = [
     tx: "0x55b2e3…1a09",
     attempts: 0,
     credLocked: false,
+    lockReason: null,
+    lockedOn: null,
+    unlockRequested: false,
+    rotationRequested: false,
   },
   {
     id: "KPII-0001-BD-A00004",
     bond: "KPII-0001-BD",
     parent: null,
-    passkey: "HARBOR-1400-DE",
+    origin: "Issuer",
+    passkey: "N4VP-K9TC-X3HW-R7MJ",
     assignor: "Issuer of record",
     party: "Company C",
     contact: "R. Alvarez",
@@ -137,6 +183,10 @@ const SEED = [
     tx: "0x3f81aa…02de",
     attempts: 0,
     credLocked: false,
+    lockReason: null,
+    lockedOn: null,
+    unlockRequested: false,
+    rotationRequested: false,
   },
 ];
 
@@ -248,6 +298,11 @@ export default function HolderPortal() {
   const [stepUp, setStepUp] = useState("");
   const [stepUpNeeded, setStepUpNeeded] = useState(false);
 
+  // lock / redeem
+  const [lockKind, setLockKind] = useState("pledge");
+  const [lockRotate, setLockRotate] = useState(false);
+  const [rdErr, setRdErr] = useState("");
+
   // assign out
   const [aUnits, setAUnits] = useState("");
   const [aParty, setAParty] = useState("");
@@ -274,9 +329,7 @@ export default function HolderPortal() {
   const open = reg.find((a) => a.id === openId);
   const children = open ? reg.filter((a) => a.parent === open.id) : [];
   const liveChildren = children.filter((c) => !["Cancelled"].includes(c.status));
-  const pendingChildren = children.filter((c) =>
-    ["AwaitingCredential", "CredentialRequested", "Issued"].includes(c.status)
-  );
+  const pendingChildren = open ? pendingOf(reg, open.id) : [];
 
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2800); };
   const emit = (id, ev, actor, ref) =>
@@ -301,7 +354,7 @@ export default function HolderPortal() {
       setQErr("No passkey has been issued for this assignment yet. If you are the named assignee, use Request access.");
       return;
     }
-    if (rec.passkey.toUpperCase() !== qKey.trim().toUpperCase()) {
+    if (normKey(rec.passkey) !== normKey(qKey)) {
       const left = MAX_ATTEMPTS - (rec.attempts + 1);
       setReg((r) => r.map((a) => a.id === rec.id
         ? { ...a, attempts: a.attempts + 1, credLocked: a.attempts + 1 >= MAX_ATTEMPTS } : a));
@@ -321,7 +374,11 @@ export default function HolderPortal() {
   }
 
   function accept() {
-    setReg((r) => r.map((a) => (a.id === open.id ? { ...a, status: "Accepted", accepted: "Oct 17, 2026" } : a)));
+    // A child's acceptance may close its parent: zero units and nothing pending.
+    setReg((r) => settleParent(
+      r.map((a) => (a.id === open.id ? { ...a, status: "Accepted", accepted: "Oct 17, 2026" } : a)),
+      open.origin === "AssignOut" ? open.parent : null
+    ));
     emit(open.id, "Accepted", "RELAYER");
     setView("position");
     flash("Accepted. The relayer has written the transition on-chain.");
@@ -334,13 +391,14 @@ export default function HolderPortal() {
   }
 
   function assignOut() {
+    if (open.status !== "Accepted") return setAErr("Only an accepted, unlocked record can assign out.");
     const u = parseInt(aUnits.replace(/[^0-9]/g, ""), 10);
     if (!u || u <= 0) return setAErr("Enter a whole number of units.");
     if (u > open.units) return setAErr("You hold " + num(open.units) + " units.");
     if (!aParty.trim()) return setAErr("Enter the assignee's legal name.");
     if (!aContact.trim()) return setAErr("Name the person the assignment is addressed to.");
     if (!aAddress.trim()) return setAErr("Add a mailing address.");
-    if (stepUp.trim() !== "482913") return setAErr("Enter the 6-digit code sent to your verified contact. Demo code: 482913");
+    if (stepUp.trim() !== STEP_UP_DEMO) return setAErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
     setAErr("");
 
     const seq = String(reg.filter((a) => a.bond === open.bond).length + 1).padStart(5, "0");
@@ -348,6 +406,7 @@ export default function HolderPortal() {
       id: open.bond + "-A" + seq,
       bond: open.bond,
       parent: open.id,
+      origin: "AssignOut",
       passkey: null,
       assignor: open.party,
       party: aParty.trim(),
@@ -359,17 +418,20 @@ export default function HolderPortal() {
       status: "AwaitingCredential",
       created: "Oct 17, 2026",
       accepted: null,
-      docHash: "0x" + Math.random().toString(16).slice(2, 8) + "…" + Math.random().toString(16).slice(2, 6),
+      docHash: fakeHash(), // hash of the signed child instrument
       filingRef: null,
       deliveryRef: null,
-      tx: "0x" + Math.random().toString(16).slice(2, 8) + "…" + Math.random().toString(16).slice(2, 6),
+      tx: fakeHash(),
       attempts: 0,
       credLocked: false,
+      lockReason: null,
+      lockedOn: null,
+      unlockRequested: false,
+      rotationRequested: false,
     };
-    const remaining = open.units - u;
+    // The parent keeps its status, even at zero units, until every child settles.
     setReg((r) => [
-      ...r.map((a) => (a.id === open.id
-        ? { ...a, units: remaining, status: remaining === 0 ? "Superseded" : a.status } : a)),
+      ...r.map((a) => (a.id === open.id ? { ...a, units: a.units - u } : a)),
       child,
     ]);
     emit(child.id, "AssignedOut", "RELAYER", child.docHash);
@@ -380,25 +442,54 @@ export default function HolderPortal() {
   }
 
   function cancelAssignOut(child) {
+    // Once the assignee has requested access, only the issuer can cancel.
+    if (child.status !== "AwaitingCredential") return;
+    if (open.status === "PendingRedemption") return;
+    // Units go back; the parent's status is never touched, so a lock stays a lock.
     setReg((r) => r.map((a) => {
       if (a.id === child.id) return { ...a, status: "Cancelled" };
-      if (a.id === open.id) return { ...a, units: a.units + child.units, status: "Accepted" };
+      if (a.id === open.id) return { ...a, units: a.units + child.units };
       return a;
     }));
-    emit(child.id, "AssignOutCancelled", "RELAYER");
+    emit(child.id, "AssignOutCancelled", "RELAYER", fakeHash());
     flash("Cancelled. " + usd(child.units) + " returned to your record.");
   }
 
   function lock() {
-    setReg((r) => r.map((a) => (a.id === open.id ? { ...a, status: "Locked" } : a)));
-    emit(open.id, "Locked", "RELAYER");
+    const label = LOCK_KINDS.find(([k]) => k === lockKind)[1];
+    setReg((r) => r.map((a) => (a.id === open.id
+      ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: "Oct 17, 2026",
+          rotationRequested: lockRotate, unlockRequested: false }
+      : a)));
+    emit(open.id, "Locked", "RELAYER", fakeHash());
+    setLockKind("pledge"); setLockRotate(false);
     setView("position");
-    flash("Locked. Only the issuer can unlock it.");
+    flash(lockRotate
+      ? "Locked, and a new passkey requested. Only the issuer can unlock it."
+      : "Locked. Only the issuer can unlock it.");
+  }
+
+  // Holder requests are register entries for the issuer queue, not chain writes.
+  function requestUnlock() {
+    setReg((r) => r.map((a) => (a.id === open.id ? { ...a, unlockRequested: true } : a)));
+    flash(open.lockKind === "pledge"
+      ? "Unlock requested. The issuer will need your lender's signed release."
+      : "Unlock requested. The issuer will verify your identity first.");
+  }
+
+  function requestRotation() {
+    setReg((r) => r.map((a) => (a.id === open.id ? { ...a, rotationRequested: true } : a)));
+    flash("New passkey requested. The issuer will verify your identity and mail it.");
   }
 
   function requestRedemption() {
+    if (open.status !== "Accepted" || open.units <= 0) return setRdErr("Only an accepted record with units can be redeemed.");
+    if (pendingChildren.length > 0) return setRdErr("Settle your pending transfers first. Each must be accepted or cancelled.");
+    if (stepUp.trim() !== STEP_UP_DEMO) return setRdErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
+    setRdErr("");
     setReg((r) => r.map((a) => (a.id === open.id ? { ...a, status: "PendingRedemption" } : a)));
-    emit(open.id, "RedemptionRequested", "RELAYER");
+    emit(open.id, "RedemptionRequested", "RELAYER", fakeHash());
+    setStepUp(""); setStepUpNeeded(false);
     setView("position");
     flash("Redemption requested. The record is frozen pending issuer review.");
   }
@@ -411,10 +502,16 @@ export default function HolderPortal() {
       return setRErr("A credential request is already open on this assignment. The issuer is verifying it.");
     if (rec.status !== "AwaitingCredential")
       return setRErr("This assignment is " + LABEL[rec.status].toLowerCase() + ". A credential can only be requested while it awaits one.");
-    if (!rParty.trim() || !rContact.trim()) return setRErr("Enter the legal name of the assignee and your own name.");
+    if (!rParty.trim() || !rContact.trim() || !rPhone.trim())
+      return setRErr("Enter the assignee's legal name, your own name and position, and a contact for verification.");
     setRErr("");
-    setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, status: "CredentialRequested" } : a)));
-    emit(rec.id, "CredentialRequested", "RELAYER");
+    // The details stay in the register; only a hash of the request goes on-chain.
+    const requestHash = fakeHash();
+    setReg((r) => r.map((a) => (a.id === rec.id
+      ? { ...a, status: "CredentialRequested", requestedParty: rParty.trim(), requestedBy: rContact.trim(),
+          requestedContact: rPhone.trim(), requestedOn: "Oct 17, 2026", requestHash }
+      : a)));
+    emit(rec.id, "CredentialRequested", "RELAYER", requestHash);
     setRDone(rec);
     setRParty(""); setRContact(""); setRPhone(""); setRId("");
   }
@@ -442,6 +539,7 @@ export default function HolderPortal() {
     setReg(SEED); setEvents(SEED_EVENTS); setTab("access"); setView(null); setOpenId(null);
     setQId(""); setQKey(""); setQErr(""); setChildIssued(null); setRDone(null);
     setVId(""); setVRec(null); setVErr(""); setVHash(null); setStepUpNeeded(false); setStepUp("");
+    setLockKind("pledge"); setLockRotate(false); setRdErr("");
   }
 
   const tabs = [["access", "Holder access"], ["request", "Request access"], ["verify", "Verify"]];
@@ -484,7 +582,7 @@ export default function HolderPortal() {
             </p>
 
             <Field label="Assignment ID" value={qId} onChange={setQId} placeholder="KPII-0001-BD-A00001" mono />
-            <Field label="Passkey" value={qKey} onChange={setQKey} placeholder="From the passkey document" mono />
+            <Field label="Passkey" value={qKey} onChange={setQKey} placeholder="XXXX-XXXX-XXXX-XXXX" mono />
 
             {qErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{qErr}</p>}
 
@@ -495,8 +593,8 @@ export default function HolderPortal() {
                 The passkey arrives in its own certified mailing, on a different day from the
                 instrument. Nothing from the registry will ever email you one or ask for it.
                 <div style={{ marginTop: 8, color: T.ink, fontVariantNumeric: "tabular-nums" }}>
-                  Demo · accepted: …A00001 / MERCER-501-OH
-                  <br />Demo · awaiting claim: …A00004 / HARBOR-1400-DE
+                  Demo · accepted: …A00001 / 7KQM-R4XW-9TPH-C2NV
+                  <br />Demo · awaiting claim: …A00004 / N4VP-K9TC-X3HW-R7MJ
                 </div>
               </Note>
             </div>
@@ -518,7 +616,7 @@ export default function HolderPortal() {
                 {usd(open.units)}
               </div>
               <div style={{ fontSize: 14, color: T.inkSoft, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
-                {num(open.units)} units · {pct(open.units)} of {open.bond}
+                {num(open.units)} units · {pct(open.units, open.bond)} of {open.bond}
               </div>
               <div className="mt-4 pt-3" style={{ borderTop: "1px solid " + T.rule, fontSize: 14, color: T.ink, lineHeight: 1.6 }}>
                 Check this against the instrument in front of you before accepting.
@@ -586,16 +684,25 @@ export default function HolderPortal() {
               <Chip s={open.status} />
             </div>
             <div style={{ fontSize: 14, color: T.inkSoft, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
-              {num(open.units)} units · {pct(open.units)} of {open.bond}
+              {num(open.units)} units · {pct(open.units, open.bond)} of {open.bond}
               {open.issuedUnits !== open.units ? " · issued at " + usd(open.issuedUnits) : ""}
             </div>
 
             {open.status === "Locked" && (
               <div className="mt-4">
                 <Note kind="warn">
-                  This record is locked. Assigning out and redemption are blocked until the
-                  issuer unlocks it. Request an unlock or a passkey rotation in writing.
+                  This record is locked{open.lockReason ? " (" + open.lockReason.toLowerCase() + ")" : ""}.
+                  Assigning out and redemption are blocked until the issuer unlocks it.
+                  {open.lockKind === "pledge" && " The issuer will need your lender's signed release to unlock it."}
                 </Note>
+                <div className="mt-3 space-y-3">
+                  <Button variant="quiet" disabled={open.unlockRequested} onClick={requestUnlock}>
+                    {open.unlockRequested ? "Unlock requested — with the issuer" : "Request unlock"}
+                  </Button>
+                  <Button variant="quiet" disabled={open.rotationRequested} onClick={requestRotation}>
+                    {open.rotationRequested ? "New passkey requested — with the issuer" : "Request a new passkey"}
+                  </Button>
+                </div>
               </div>
             )}
             {open.status === "PendingRedemption" && (
@@ -609,8 +716,16 @@ export default function HolderPortal() {
             {open.status === "Superseded" && (
               <div className="mt-4">
                 <Note>
-                  Every unit under this record has been assigned out, so it is superseded. It
-                  stays on the register as the parent of what came after it.
+                  Every unit under this record has been assigned out and accepted, so it is
+                  superseded. It stays on the register as the parent of what came after it.
+                </Note>
+              </div>
+            )}
+            {open.units === 0 && pendingChildren.length > 0 && (
+              <div className="mt-4">
+                <Note>
+                  Every unit has been assigned out. This record stays open until each pending
+                  transfer is accepted or cancelled, so cancelled units always have somewhere to return.
                 </Note>
               </div>
             )}
@@ -621,7 +736,16 @@ export default function HolderPortal() {
                   Assign out
                 </Button>
                 <Button variant="quiet" onClick={() => setView("lockConfirm")}>Lock this record</Button>
-                <Button variant="quiet" onClick={() => setView("redeemConfirm")}>Request redemption</Button>
+                <Button variant="quiet" disabled={open.units <= 0 || pendingChildren.length > 0}
+                  onClick={() => { setRdErr(""); requestStepUp("redeemConfirm"); }}>
+                  Request redemption
+                </Button>
+                {pendingChildren.length > 0 && open.units > 0 && (
+                  <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5 }}>
+                    Redemption opens once your pending transfers are accepted or cancelled.
+                    To redeem part of your holding, assign that portion to yourself first.
+                  </div>
+                )}
               </div>
             )}
 
@@ -686,17 +810,22 @@ export default function HolderPortal() {
                   </span>
                   <Chip s={c.status} />
                 </div>
-                {["AwaitingCredential", "CredentialRequested"].includes(c.status) && (
+                {c.status === "AwaitingCredential" && open.status !== "PendingRedemption" && (
                   <div className="mt-3">
                     <Button variant="quiet" danger onClick={() => cancelAssignOut(c)}>
                       Cancel — return {usd(c.units)}
                     </Button>
                   </div>
                 )}
+                {c.status === "CredentialRequested" && (
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8, lineHeight: 1.5 }}>
+                    {c.party} has requested access. Only the issuer can cancel this transfer now,
+                    after hearing from both sides.
+                  </div>
+                )}
                 {c.status === "Issued" && (
                   <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8, lineHeight: 1.5 }}>
-                    The passkey has been mailed. Once accepted the transfer is final and can no
-                    longer be cancelled.
+                    The passkey has been mailed. This transfer can no longer be cancelled.
                   </div>
                 )}
               </div>
@@ -738,7 +867,7 @@ export default function HolderPortal() {
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Confirm it's you</div>
             <Field label="Code sent to your verified contact" value={stepUp} onChange={(v) => { setStepUp(v); setAErr(""); }}
-              placeholder="6 digits" mono hint="Demo code: 482913" />
+              placeholder="6 digits" mono hint={"Demo code: " + STEP_UP_DEMO} />
 
             {aErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{aErr}</p>}
 
@@ -768,7 +897,7 @@ export default function HolderPortal() {
               ["Position", childIssued.position || "—"],
               ["Units", num(childIssued.units)],
               ["Value", usd(childIssued.units)],
-              ["Proportion", pct(childIssued.units)],
+              ["Proportion", pct(childIssued.units, childIssued.bond)],
               ["Status", LABEL[childIssued.status]],
               ["Document hash", childIssued.docHash],
               ["Transaction", childIssued.tx],
@@ -784,8 +913,9 @@ export default function HolderPortal() {
 
             <div className="mt-4">
               <Note kind="caution">
-                You can still cancel this and take the {usd(childIssued.units)} back, right up
-                until {childIssued.party} accepts. After that the transfer is final.
+                You can cancel this yourself and take the {usd(childIssued.units)} back only
+                until {childIssued.party} requests access. After that only the issuer can cancel
+                it, and once their passkey is mailed it can't be cancelled at all.
               </Note>
             </div>
 
@@ -800,13 +930,32 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Lock this record</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              Locking takes effect immediately and blocks assigning out and redemption. Use it
-              for a pledge, a pending sale, or if you think the passkey has been compromised.
+              Locking takes effect immediately and blocks assigning out and redemption. A signed
+              lock notice is recorded with the reason you give.
             </p>
+
+            <Label>Reason</Label>
+            <div className="mb-4" style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
+              {LOCK_KINDS.map(([k, l], i) => (
+                <label key={k} className="flex items-center gap-3 px-3 py-2"
+                  style={{ background: i % 2 ? T.band : T.white, fontSize: 14, color: T.ink, cursor: "pointer" }}>
+                  <input type="radio" name="lockKind" checked={lockKind === k} onChange={() => setLockKind(k)} />
+                  {l}
+                </label>
+              ))}
+            </div>
+            <label className="flex items-center gap-3 mb-4" style={{ fontSize: 14, color: T.ink, cursor: "pointer" }}>
+              <input type="checkbox" checked={lockRotate} onChange={(e) => setLockRotate(e.target.checked)} />
+              Also request a new passkey
+            </label>
+
             <Note kind="caution">
-              Only the issuer can unlock it, and only after verifying your identity. If you're
-              locking because the passkey may be compromised, request a rotation at the same
-              time — a new passkey will be mailed and the old hash discarded.
+              Only the issuer can unlock it.{" "}
+              {lockKind === "pledge"
+                ? "For a pledge, they will need your lender's signed release first."
+                : "They will verify your identity first."}{" "}
+              If the passkey may be compromised, request a new one — it is mailed to you and the
+              old one stops working.
             </Note>
             <div className="mt-5 space-y-3">
               <Button onClick={lock}>Lock it</Button>
@@ -826,9 +975,15 @@ export default function HolderPortal() {
             <Note kind="warn">
               If the issuer approves, the record becomes Redeemed. That is terminal — the
               contract will not accept any further action on it, ever. If they reject it, the
-              record returns to Accepted.
+              record returns to Accepted. Redemption covers the whole record.
             </Note>
-            <div className="mt-5 space-y-3">
+            <div className="mt-5">
+              <Field label="Code sent to your verified contact" value={stepUp}
+                onChange={(v) => { setStepUp(v); setRdErr(""); }}
+                placeholder="6 digits" mono hint={"Demo code: " + STEP_UP_DEMO} />
+            </div>
+            {rdErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{rdErr}</p>}
+            <div className="space-y-3">
               <Button onClick={requestRedemption}>Request redemption</Button>
               <Button variant="quiet" onClick={() => setView("position")}>Cancel</Button>
             </div>
@@ -920,7 +1075,7 @@ export default function HolderPortal() {
                   ["Assignment", vRec.id],
                   ["Bond", vRec.bond],
                   ["Units", num(vRec.units)],
-                  ["Proportion", pct(vRec.units)],
+                  ["Proportion", pct(vRec.units, vRec.bond)],
                   ["Parent", vRec.parent || "Issuer-originated"],
                   ["Document hash", vRec.docHash],
                   ["UCC-3 filing ref", vRec.filingRef || "Not yet filed"],
