@@ -432,6 +432,7 @@ export default function PlatformApp() {
                   <Rows data={[
                     ["Instrument hash", <Hash value={b.instrumentHash} />],
                     ...ucc1Rows(b),
+                    b.legacyHash && ["Earlier second document", <Hash value={b.legacyHash} file={b.legacyFile} />],
                   ]} />
                 </div>
               </Card>

@@ -829,7 +829,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   ["Filed copy", (bond.ucc1.file ? bond.ucc1.file + " · " : "") + bond.ucc1.hash.slice(0, 10) + "…" + bond.ucc1.hash.slice(-6)],
                 ]} />
               )}
-              {bond.review === "pending" && !ucOpen && (
+              {(bond.review === "pending" || (bond.review === "approved" && !ucc1Done(bond.ucc1))) && !ucOpen && (
                 <div className="mt-2">
                   <Button variant="quiet" onClick={() => { setUcEdit(bond.ucc1 ? { number: bond.ucc1.number, office: bond.ucc1.office,
                     date: bond.ucc1.date, file: bond.ucc1.hash ? { name: bond.ucc1.file || "Recorded copy", hash: bond.ucc1.hash } : null } : blankUcc1);
@@ -848,7 +848,17 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   </div>
                 </div>
               )}
-              {!ucc1Done(bond.ucc1) && bond.review !== "pending" && <Note>No UCC-1 recorded.</Note>}
+              {!ucc1Done(bond.ucc1) && bond.review === "approved" && !ucOpen && (
+                <div className="mt-2" style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5 }}>
+                  This bond was registered before UCC-1s were recorded. You can add it once; after that it's fixed.
+                </div>
+              )}
+              {!ucc1Done(bond.ucc1) && bond.review === "rejected" && <Note>No UCC-1 recorded.</Note>}
+              {bond.declarationHash && (
+                <div className="mt-2" style={{ fontSize: 12, color: T.inkSoft }}>
+                  Earlier second document: {bond.declarationFile ? bond.declarationFile + " · " : ""}{bond.declarationHash.slice(0, 10)}…{bond.declarationHash.slice(-6)}
+                </div>
+              )}
               {bond.masterHash && (
                 <div className="mt-2" style={{ fontSize: 12, color: T.inkSoft }}>
                   Master collateral assignment agreement: {bond.masterFile ? bond.masterFile + " · " : ""}{bond.masterHash.slice(0, 10)}…{bond.masterHash.slice(-6)}

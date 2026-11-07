@@ -617,8 +617,11 @@ if (APP === "issuer") {
         // agreement can be added or corrected until the bond is approved, then they are fixed too.
         if (owner && ["total", "instrumentHash"].some((k) => owner.data[k] !== b[k]))
           throw new Reject(422, b.id + " was registered with a fixed total and instrument hash; they can't change.");
-        if (owner?.review === "approved" && (!sameUcc1(owner.data.ucc1, b.ucc1) || (owner.data.masterHash || null) !== (b.masterHash || null)))
-          throw new Reject(422, b.id + " is approved, so its UCC-1 and agreement are fixed.");
+        // An approved bond registered before UCC-1s were recorded may add one, once.
+        if (owner?.review === "approved" && ucc1Complete(owner.data) && !sameUcc1(owner.data.ucc1, b.ucc1))
+          throw new Reject(422, b.id + " is approved, so its UCC-1 is fixed.");
+        if (owner?.review === "approved" && (owner.data.masterHash || null) !== (b.masterHash || null))
+          throw new Reject(422, b.id + " is approved, so its master agreement is fixed.");
         if (b.ucc1 && !ucc1Complete(b)) throw new Reject(400, "Enter the UCC-1's filing number, office, date and filed copy.");
         if (m.trusted && ucc1Complete(b) && (!owner || owner.review === "pending")) review.set(b.id, "approved");
         else if (!owner) review.set(b.id, "pending");
@@ -795,6 +798,7 @@ if (APP === "platform") {
         liveRecords: x.live_records, allRecords: x.all_records,
         instrumentHash: x.data.instrumentHash, instrumentFile: x.data.instrumentFile || null,
         ucc1: x.data.ucc1 || null, ucc1Complete: ucc1Complete(x.data),
+        legacyHash: x.data.declarationHash || null, legacyFile: x.data.declarationFile || null,
         masterHash: x.data.masterHash || null, masterFile: x.data.masterFile || null,
       };
     }) });
