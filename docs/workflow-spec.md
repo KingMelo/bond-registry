@@ -39,22 +39,27 @@ Principles:
 | 13 | Unlocking a record locked for a pledge requires the pledgee's signed release. |
 | 14 | The assignor files the UCC-3 for a child. The issuer will not issue the child's credential until the filing is recorded, and may file it instead after the 30-day window. |
 | 15 | Instruments issued before the registry (for example promissory notes) are recorded as prior instruments: an identifier and an amount taken off the bond. No holder, passkey or workflow. |
-| 16 | Many issuers share the platform. Each has an account, a permanent issuer code and its own bonds; the platform owner approves new issuers before anything they issue goes public. |
+| 16 | Many issuers share the platform. The platform reviews each issuer before it can register bonds, then each bond before anything is issued against it or shown publicly. Platform staff work in a separate console that shows bond totals but no holder data. |
 
-## Issuers and accounts
+## Issuers, bonds and platform review
 
-The platform hosts many issuers. One public registry shows every approved issuer's assignments; each issuer works in its own console and sees only its own bonds.
+The platform hosts many issuers. One public registry shows every approved bond's assignments; each issuer works in its own console and sees only its own bonds; the platform runs a separate back office that never deals with holders.
 
 | Role | Who | Can do |
 |---|---|---|
-| Platform owner | Created once with the platform's setup code | Approve, suspend or reinstate issuers |
+| Platform owner | Created once with the platform's setup code | Review issuers and bonds; invite platform staff |
+| Platform staff | Joined with a one-time code from the owner | Review issuers and bonds |
 | Issuer owner | The person who created the issuer account | Everything an issuer can do, plus invite teammates |
-| Issuer member | Joined with a one-time invite code | Everything an issuer can do |
+| Issuer member | Joined with a one-time code from the issuer's owner | Everything an issuer can do |
 
-- **Sign-up.** Open to anyone: legal name, a permanent 3–6 character issuer code, and the owner's name, email and password. Bond IDs take the form `CODE-NNNN-BD`, so IDs never collide on the shared registry.
-- **Pending.** A new issuer can register bonds and record prior instruments. It cannot issue assignments, and none of its bonds appear on the public registry, until the platform owner approves it.
-- **Suspended.** No changes of any kind. The issuer's records stay publicly verifiable.
-- **Registering a bond.** Name, total units (one unit is $1 of face value) and the signed bond instrument and interest declaration, which are hashed in the browser; only the SHA-256 hashes are kept. The total and both hashes are fixed once registered.
+Two reviews stand between a new issuer and the public registry:
+
+1. **Issuer application.** Anyone can apply on the issuer console: legal name, a permanent 3–6 character issuer code, and the owner's name, email and password. Until the platform approves the application the issuer can't register bonds.
+2. **Bond review.** An approved issuer registers a bond: name, total units (one unit is $1 of face value), and the signed bond instrument and interest declaration, hashed in the browser so only their SHA-256 hashes are kept. The total and both hashes are fixed once registered. The bond waits for platform review. Meanwhile the issuer can record prior instruments, but can't issue against it and it isn't public. Staff check the documents against the hashes and approve, or decline with a reason the issuer sees. A declined bond can't be changed; the issuer registers a corrected one instead. Each decision is recorded in the event log (BondApproved, BondRejected) with who made it.
+
+- **Bond directory.** Platform staff see every bond: issuer, status, total, prior instruments, units assigned to holders, redeemed and unassigned, holder record counts and document hashes. No holder names or contact details.
+- **Suspended issuers** can't change anything. Their live records stay publicly verifiable.
+- **IDs.** Bonds are `CODE-NNNN-BD` and assignments `CODE-NNNN-BD-ANNNNN`, so IDs never collide on the shared registry.
 - **Multisig.** Each issuer's ISSUER role is its own 2-of-3 Safe. Today any one team member can act; when the Safe is connected, each signer is a team member and consequential actions need two of them.
 
 ## System architecture

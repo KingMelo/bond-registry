@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading } from "../src/registry.jsx";
 
 /* ================================================================
@@ -177,7 +177,7 @@ export function Sheet({ title, children, onClose }) {
 
 /* ---------------- console ---------------- */
 
-export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
+export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssuerStatus }) {
   const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo } =
     useRegistry({ issuer: issuerId, onNotice: (m) => flash(m) });
   const [pickedBond, setActiveBond] = useState(null);
@@ -218,11 +218,15 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
   const [rbOpen, setRbOpen] = useState(false);
 
   const status = issuerInfo?.status;
+  // Lets the account header follow an approval or suspension without a reload.
+  useEffect(() => { if (status) onIssuerStatus?.(status); }, [status]);
   const approved = status === "approved";
   const issuerName = issuerInfo?.legalName || "Issuer of record";
+  const REVIEW_LABEL = { pending: "Waiting for platform review", rejected: "Not approved by the platform" };
 
   const bond = bonds.find((b) => b.id === activeBond);
   const scoped = reg.filter((a) => a.bond === activeBond);
+  const bondLive = bond?.review === "approved";
   const scopedEvents = events.filter((e) => e.bond === activeBond);
 
   const pendingOf = (id) =>
@@ -477,12 +481,12 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
     const id = issuerInfo.code + "-" + String(bonds.length + 1).padStart(4, "0") + "-BD";
     const b = { id, title: rbTitle.trim(), face: u, total: u, unassigned: u, redeemed: 0, prior: [],
       registered: today(), instrumentHash: rbInstr.hash, declarationHash: rbDecl.hash,
-      instrumentFile: rbInstr.name, declarationFile: rbDecl.name };
+      instrumentFile: rbInstr.name, declarationFile: rbDecl.name, review: "pending" };
     setBonds((bs) => [...bs, b]);
     emit(id, "—", "BondAnchored", "ISSUER", rbInstr.hash);
     setActiveBond(id);
     setRbTitle(""); setRbUnits(""); setRbInstr(null); setRbDecl(null); setRbOpen(false);
-    flash(id + " registered" + (approved ? "." : ". It goes public once your issuer account is approved."));
+    flash(id + " registered. The platform reviews it before you can issue against it.");
   }
 
   if (!ready) return <Loading error={error} />;
@@ -518,17 +522,16 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
         {status === "pending" && (
           <div className="mt-4">
             <Note kind="caution">
-              <strong style={{ fontWeight: 600 }}>Waiting for approval.</strong> The platform owner reviews
-              every new issuer. Until {issuerName} is approved you can register bonds and record prior
-              instruments; issuing assignments opens after approval, and nothing appears on the public
-              registry until then.
+              <strong style={{ fontWeight: 600 }}>Waiting for approval.</strong> The platform reviews
+              every new issuer. Once {issuerName} is approved you can register bonds; each bond is then
+              reviewed too before you can issue against it or it appears on the public registry.
             </Note>
           </div>
         )}
         {status === "suspended" && (
           <div className="mt-4">
             <Note kind="warn">
-              <strong style={{ fontWeight: 600 }}>Suspended.</strong> The platform owner has suspended
+              <strong style={{ fontWeight: 600 }}>Suspended.</strong> The platform has suspended
               {" "}{issuerName}. Its records stay publicly verifiable, but nothing can be changed.
             </Note>
           </div>
@@ -627,9 +630,15 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
                     <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
                       unassigned · {priorUnits(b) > 0 ? usd(priorUnits(b)) + " prior instruments · " : ""}{b.redeemed > 0 ? usd(b.redeemed) + " retired · " : ""}{items.length} {items.length === 1 ? "record" : "records"} · anchored {b.registered}
                     </div>
-                    <div className="mt-2">
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {b.review !== "approved" && (
+                        <Chip s={b.review === "pending" ? "Issued" : "Locked"} text={REVIEW_LABEL[b.review]} />
+                      )}
                       <Chip s={ok ? "Accepted" : "Locked"} text={ok ? "Reconciled" : "Mismatch — activity frozen"} />
                     </div>
+                    {b.review === "rejected" && b.reviewNote && (
+                      <div style={{ fontSize: 12, color: T.red, marginTop: 6, lineHeight: 1.5 }}>Reason: {b.reviewNote}</div>
+                    )}
                   </button>
                 );
               })}
@@ -638,16 +647,20 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
             {bonds.length === 0 && (
               <div className="px-3 py-5 mt-5 text-center" style={{ border: "1px solid " + T.rule, borderRadius: 2,
                 fontSize: 14, color: T.inkSoft, lineHeight: 1.6 }}>
-                No bonds yet. Register one with its total units and the hashes of its signed documents.
+                {approved
+                  ? "No bonds yet. Register one with its total units and the hashes of its signed documents."
+                  : "Bonds can be registered once the platform approves your issuer account."}
               </div>
             )}
 
             {bond && (
               <div className="mt-4">
-                <Button disabled={!approved} onClick={() => setTab("issue")}>Issue an assignment from {activeBond}</Button>
-                {!approved && (
+                <Button disabled={!approved || !bondLive} onClick={() => setTab("issue")}>Issue an assignment from {activeBond}</Button>
+                {approved && !bondLive && (
                   <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 6, lineHeight: 1.5 }}>
-                    Issuing opens once the platform owner approves your issuer account.
+                    {bond.review === "pending"
+                      ? "Issuing opens once the platform approves this bond. You can record prior instruments meanwhile."
+                      : "This bond was not approved, so nothing can be issued against it."}
                   </div>
                 )}
               </div>
@@ -655,7 +668,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
 
             <div className="mt-4">
               {!rbOpen ? (
-                <Button variant="quiet" disabled={status === "suspended"} onClick={() => setRbOpen(true)}>Register a bond</Button>
+                <Button variant="quiet" disabled={!approved} onClick={() => setRbOpen(true)}>Register a bond</Button>
               ) : (
                 <div className="px-3 pt-3 pb-1" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
                   <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 10 }}>Register a bond</div>
@@ -713,7 +726,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
 
             {nErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 14 }}>{nErr}</p>}
 
-            <Button disabled={!approved} onClick={issueAssignment}>Issue — multisig {THRESHOLD}</Button>
+            <Button disabled={!approved || !bondLive} onClick={issueAssignment}>Issue — multisig {THRESHOLD}</Button>
             <div className="mt-3">
               <Button variant="quiet" onClick={() => setTab("bonds")}>Cancel</Button>
             </div>
@@ -738,6 +751,16 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
                 Issue
               </button>
             </div>
+            {!bondLive && (
+              <div className="mt-3">
+                <Note kind={bond.review === "rejected" ? "warn" : "caution"}>
+                  {bond.review === "pending"
+                    ? "Waiting for platform review. You can record prior instruments now; issuing opens once the bond is approved, and it isn't on the public registry yet."
+                    : "Not approved by the platform" + (bond.reviewNote ? ": " + bond.reviewNote : ".") + " Nothing can be changed or issued on this bond."}
+                </Note>
+              </div>
+            )}
+
             <div className="mt-3 mb-5">
               <Rows data={[
                 ["Bond total", usd(bond.total)],

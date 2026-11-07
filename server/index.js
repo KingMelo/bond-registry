@@ -1,7 +1,8 @@
 // API and static server for the registry.
-// The same code runs as two Railway services against one Postgres:
-//   APP=holder  the public interest registry, shared by every approved issuer
-//   APP=issuer  the issuer console: issuer accounts, each seeing only its own bonds
+// The same code runs as three Railway services against one Postgres:
+//   APP=holder    the public interest registry, shared by every approved issuer
+//   APP=issuer    the issuer console: issuer accounts, each seeing only its own bonds
+//   APP=platform  the platform console: staff review issuers and bonds; no holder data
 
 import express from "express";
 import pg from "pg";
@@ -11,7 +12,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { ISSUERS, BONDS, ASSIGNMENTS, PASSKEYS, EVENTS } from "./seed.js";
 
-const APP = process.env.APP === "issuer" ? "issuer" : "holder";
+const APP = ["issuer", "platform"].includes(process.env.APP) ? process.env.APP : "holder";
 const PORT = Number(process.env.PORT) || 3000;
 const PEPPER = process.env.PASSKEY_PEPPER || "";
 const MAX_ATTEMPTS = 5;
@@ -84,6 +85,19 @@ async function migrate() {
         token_hash text primary key, user_id text not null references users(id) on delete cascade,
         created_at timestamptz not null default now(), expires_at timestamptz not null);
       alter table bonds add column if not exists issuer_id text;
+      -- Each bond waits for platform review; bonds from before reviews existed count as approved.
+      alter table bonds add column if not exists review text not null default 'approved';
+      alter table bonds add column if not exists review_note text;
+      alter table bonds add column if not exists reviewed_by text;
+      alter table bonds add column if not exists reviewed_at timestamptz;
+      alter table issuers add column if not exists reviewed_by text;
+      alter table users add column if not exists platform_role text;
+      alter table invites add column if not exists kind text not null default 'issuer';
+      alter table invites alter column issuer_id drop not null;
+      update users set platform_role = 'owner' where is_admin and platform_role is null;
+      -- Each bond and record carries its own revision, so a stale save is caught per record.
+      alter table bonds add column if not exists rev bigint not null default 0;
+      alter table assignments add column if not exists rev bigint not null default 0;
     `);
     const { rows } = await c.query("select version from meta where k = 'v'");
     if (rows.length === 0) await seed(c, 1);
@@ -200,16 +214,16 @@ async function tx(fn) {
 /* Reads the register for a set of bonds. The holder portal hides contact details. */
 async function readState(bondFilter, params) {
   const [bonds, regs, creds, events] = await Promise.all([
-    pool.query(`select data, issuer_id from bonds b where ${bondFilter} order by id`, params),
-    pool.query(`select a.data from assignments a join bonds b on b.id = a.bond where ${bondFilter} order by a.created_at, a.id`, params),
+    pool.query(`select data, issuer_id, review, review_note, rev from bonds b where ${bondFilter} order by id`, params),
+    pool.query(`select a.data, a.rev from assignments a join bonds b on b.id = a.bond where ${bondFilter} order by a.created_at, a.id`, params),
     pool.query(`select k.id, k.locked from credentials k join assignments a on a.id = k.id join bonds b on b.id = a.bond where ${bondFilter}`, params),
     pool.query(`select e.eid, e.data from events e join bonds b on b.id = e.bond where ${bondFilter} order by e.seq desc`, params),
   ]);
   const cred = new Map(creds.rows.map((r) => [r.id, r]));
   return {
-    bonds: bonds.rows.map((r) => ({ ...r.data, issuerId: r.issuer_id })),
-    reg: regs.rows.map(({ data }) => {
-      const out = { ...data, hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false };
+    bonds: bonds.rows.map((r) => ({ ...r.data, issuerId: r.issuer_id, review: r.review, reviewNote: r.review_note, rev: Number(r.rev) })),
+    reg: regs.rows.map(({ data, rev }) => {
+      const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false };
       if (APP === "holder") for (const k of HOLDER_HIDDEN) delete out[k];
       return out;
     }),
@@ -218,17 +232,46 @@ async function readState(bondFilter, params) {
 }
 
 /* Saves one commit after the caller's own checks; enforces the units rule for the bonds given. */
+/* Saves one commit after the caller's own checks; enforces the units rule for the bonds given.
+   A changed bond or record must carry the revision it was loaded at; a new one carries none.
+   Returns the new revisions so the app can keep editing without reloading. */
 async function applyCommit(c, { bonds, reg, events, issuerId }) {
-  for (const b of bonds)
-    await c.query(
-      "insert into bonds (id, data, issuer_id) values ($1, $2, $3) on conflict (id) do update set data = $2",
-      [b.id, stripBond(b), issuerId ?? b.issuerId]);
-  for (const a of reg)
-    // Merge, so fields one app doesn't see are never wiped by the other.
-    await c.query(
-      `insert into assignments (id, bond, data) values ($1, $2, $3)
-       on conflict (id) do update set data = assignments.data || excluded.data`,
-      [a.id, a.bond, a]);
+  const touched = [...new Set([...bonds.map((b) => b.id), ...reg.map((a) => a.bond)])];
+  // Lock the bonds involved, so two saves can't each pass the units rule on their own.
+  if (touched.length) await c.query("select id from bonds where id = any($1) order by id for update", [touched]);
+  const revs = { bonds: {}, reg: {} };
+  const stale = (id) => new Reject(409, id + " changed since you loaded it.");
+
+  for (const b of bonds) {
+    if (b.rev == null) {
+      // A new bond always starts out waiting for platform review.
+      const r = await c.query(
+        "insert into bonds (id, data, issuer_id, review) values ($1, $2, $3, 'pending') on conflict (id) do nothing returning rev",
+        [b.id, stripBond(b), issuerId ?? b.issuerId]);
+      if (!r.rowCount) throw stale(b.id);
+      revs.bonds[b.id] = Number(r.rows[0].rev);
+    } else {
+      const r = await c.query("update bonds set data = $2, rev = rev + 1 where id = $1 and rev = $3 returning rev",
+        [b.id, stripBond(b), b.rev]);
+      if (!r.rowCount) throw stale(b.id);
+      revs.bonds[b.id] = Number(r.rows[0].rev);
+    }
+  }
+  for (const a of reg) {
+    const { rev, ...data } = a;
+    if (rev == null) {
+      const r = await c.query(
+        "insert into assignments (id, bond, data) values ($1, $2, $3) on conflict (id) do nothing returning rev", [a.id, a.bond, data]);
+      if (!r.rowCount) throw stale(a.id);
+      revs.reg[a.id] = Number(r.rows[0].rev);
+    } else {
+      // Merge, so fields one app doesn't see are never wiped by the other.
+      const r = await c.query(
+        "update assignments set data = data || $2, rev = rev + 1 where id = $1 and rev = $3 returning rev", [a.id, data, rev]);
+      if (!r.rowCount) throw stale(a.id);
+      revs.reg[a.id] = Number(r.rows[0].rev);
+    }
+  }
   for (const e of events) {
     const { eid, ...data } = e;
     await c.query(
@@ -237,8 +280,7 @@ async function applyCommit(c, { bonds, reg, events, issuerId }) {
   }
 
   // Units rule, per bond: prior + live + unassigned + redeemed = total.
-  const touched = [...new Set([...bonds.map((b) => b.id), ...reg.map((a) => a.bond)])];
-  if (!touched.length) return;
+  if (!touched.length) return revs;
   const check = await c.query(`
     select b.id,
       (b.data->>'total')::numeric as total,
@@ -250,9 +292,11 @@ async function applyCommit(c, { bonds, reg, events, issuerId }) {
     from bonds b where b.id = any($1)`, [touched]);
   const bad = check.rows.find((r) => Number(r.total) !== Number(r.counted));
   if (bad) throw new Reject(422, bad.id + " would no longer add up to its total. Nothing was saved.");
+  return revs;
 }
 
-const stripBond = (b) => { const { issuerId, ...rest } = b; return rest; };
+// Ownership and review live in their own columns, set by the server only.
+const stripBond = (b) => { const { issuerId, review, reviewNote, rev, ...rest } = b; return rest; };
 
 function cleanRecord(raw) {
   const a = { ...raw };
@@ -260,10 +304,6 @@ function cleanRecord(raw) {
   return a;
 }
 
-async function lockVersion(c, base) {
-  const v = Number((await c.query("select version from meta where k = 'v' for update")).rows[0].version);
-  if (v !== Number(base)) throw new Reject(409, "The register changed since you loaded it.");
-}
 
 /* ======================= holder portal ======================= */
 
@@ -271,7 +311,7 @@ if (APP === "holder") {
   app.get("/api/state", wrap(async (req, res) => {
     const v = await version(pool);
     if (req.query.since && Number(req.query.since) === v) return res.json({ version: v, unchanged: true });
-    const filter = "b.issuer_id in (select id from issuers where status = any($1))";
+    const filter = "b.review = 'approved' and b.issuer_id in (select id from issuers where status = any($1))";
     const [state, issuers] = await Promise.all([
       readState(filter, [PUBLIC_STATUSES]),
       pool.query("select id, code, legal_name, status from issuers where status = any($1) order by code", [PUBLIC_STATUSES]),
@@ -284,14 +324,13 @@ if (APP === "holder") {
     const { base, bonds = [], reg = [], events = [] } = req.body || {};
     if (bonds.length) throw new Reject(403, "The holder portal cannot change bonds.");
     const nv = await tx(async (c) => {
-      await lockVersion(c, base);
       const clean = [];
       for (const raw of reg) {
         const a = cleanRecord(raw);
         for (const k of HOLDER_HIDDEN) if (!(k in raw) || raw[k] === undefined) delete a[k];
         const owner = (await c.query(
-          "select i.status from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [a.bond])).rows[0];
-        if (!owner || owner.status !== "approved")
+          "select i.status, b.review from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [a.bond])).rows[0];
+        if (!owner || owner.status !== "approved" || owner.review !== "approved")
           throw new Reject(403, "This bond's issuer is not accepting changes right now.");
         const before = (await c.query("select data from assignments where id = $1", [a.id])).rows[0]?.data;
         if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
@@ -303,10 +342,10 @@ if (APP === "holder") {
       }
       const bondsOk = new Set(clean.map((a) => a.bond));
       for (const e of events) if (!bondsOk.has(e.bond)) throw new Reject(403, "An event must belong to a record being saved.");
-      await applyCommit(c, { bonds: [], reg: clean, events });
-      return bump(c);
+      const revs = await applyCommit(c, { bonds: [], reg: clean, events });
+      return { version: await bump(c), revs };
     });
-    res.json({ version: nv });
+    res.json(nv);
   }));
 
   app.post("/api/holder/signin", wrap(async (req, res) => {
@@ -329,10 +368,36 @@ if (APP === "holder") {
   }));
 }
 
-/* ======================= issuer console ======================= */
+/* ======================= accounts (issuer and platform consoles) ======================= */
 
-if (APP === "issuer") {
-  const COOKIE = "registrar_session";
+const validEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e || "");
+const cleanEmail = (e) => String(e || "").trim().toLowerCase();
+function checkPassword(pw) {
+  if (String(pw || "").length < 10) throw new Reject(400, "Use a password of at least 10 characters.");
+}
+const newCode = () => crypto.randomBytes(12).toString("base64url").toUpperCase().replace(/[^A-Z0-9]/g, "")
+  .slice(0, 12).padEnd(12, "7").match(/.{4}/g).join("-");
+const stampNow = () => {
+  const d = new Date();
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) + " " +
+    String(d.getUTCHours()).padStart(2, "0") + ":" + String(d.getUTCMinutes()).padStart(2, "0");
+};
+
+async function createUser(c, { email, name, password, isAdmin = false, platformRole = null }) {
+  if (!validEmail(email)) throw new Reject(400, "Enter a valid email address.");
+  if (!String(name || "").trim()) throw new Reject(400, "Enter your name.");
+  checkPassword(password);
+  const taken = await c.query("select 1 from users where email = $1", [email]);
+  if (taken.rows.length) throw new Reject(409, "An account with that email already exists. Sign in instead.");
+  const id = newId("usr"), salt = crypto.randomBytes(16).toString("hex");
+  await c.query(
+    "insert into users (id, email, name, pw_salt, pw_hash, is_admin, platform_role) values ($1, $2, $3, $4, $5, $6, $7)",
+    [id, email, String(name).trim(), salt, await hashPassword(password, salt), isAdmin, platformRole]);
+  return id;
+}
+
+if (APP !== "holder") {
+  const COOKIE = APP === "platform" ? "platform_session" : "registrar_session";
 
   // Cross-site POSTs are refused outright, on top of the SameSite cookie.
   app.use("/api", (req, res, next) => {
@@ -354,28 +419,52 @@ if (APP === "issuer") {
     res.set("Set-Cookie", `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`);
   };
 
-  async function startSession(req, res, c, userId) {
+  var startSession = async (req, res, c, userId) => {
     const token = crypto.randomBytes(32).toString("base64url");
     await c.query("insert into sessions (token_hash, user_id, expires_at) values ($1, $2, now() + $3::interval)",
       [sha256(token), userId, SESSION_DAYS + " days"]);
     setCookie(req, res, token, SESSION_DAYS * 86400);
-  }
+  };
 
-  async function currentUser(req) {
+  var currentUser = async (req) => {
     const token = readCookie(req);
     if (!token) return null;
     const r = await pool.query(
-      `select u.id, u.email, u.name, u.is_admin from sessions s join users u on u.id = s.user_id
+      `select u.id, u.email, u.name, u.is_admin, u.platform_role from sessions s join users u on u.id = s.user_id
        where s.token_hash = $1 and s.expires_at > now()`, [sha256(token)]);
     return r.rows[0] || null;
-  }
+  };
 
-  const needUser = async (req) => {
+  var needUser = async (req) => {
     const u = await currentUser(req);
     if (!u) throw new Reject(401, "Please sign in.");
     return u;
   };
 
+  app.post("/api/auth/login", wrap(async (req, res) => {
+    if (limited("login:" + req.ip)) throw new Reject(429, "Too many attempts. Wait a minute and try again.");
+    const email = cleanEmail(req.body?.email);
+    const u = (await pool.query("select * from users where email = $1", [email])).rows[0];
+    // Same work and same answer whether or not the account exists.
+    const salt = u?.pw_salt || "0".repeat(32);
+    const h = await hashPassword(req.body?.password || "", salt);
+    if (!u || !sameHex(h, u.pw_hash)) throw new Reject(401, "That email and password don't match.");
+    if (APP === "platform" && !u.is_admin) throw new Reject(403, "This account isn't platform staff. Issuers sign in on the issuer console.");
+    await tx((c) => startSession(req, res, c, u.id));
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/auth/logout", wrap(async (req, res) => {
+    const token = readCookie(req);
+    if (token) await pool.query("delete from sessions where token_hash = $1", [sha256(token)]);
+    setCookie(req, res, "", 0);
+    res.json({ ok: true });
+  }));
+}
+
+/* ======================= issuer console ======================= */
+
+if (APP === "issuer") {
   // The caller's membership in the issuer named by the request; refuses if there is none.
   async function membership(req, issuerId) {
     const u = await needUser(req);
@@ -386,63 +475,19 @@ if (APP === "issuer") {
     return { user: u, ...r.rows[0] };
   }
 
-  const validEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e || "");
-  const cleanEmail = (e) => String(e || "").trim().toLowerCase();
-  function checkPassword(pw) {
-    if (String(pw || "").length < 10) throw new Reject(400, "Use a password of at least 10 characters.");
-  }
-
-  async function createUser(c, { email, name, password, isAdmin = false }) {
-    if (!validEmail(email)) throw new Reject(400, "Enter a valid email address.");
-    if (!String(name || "").trim()) throw new Reject(400, "Enter your name.");
-    checkPassword(password);
-    const taken = await c.query("select 1 from users where email = $1", [email]);
-    if (taken.rows.length) throw new Reject(409, "An account with that email already exists. Sign in instead.");
-    const id = newId("usr"), salt = crypto.randomBytes(16).toString("hex");
-    await c.query("insert into users (id, email, name, pw_salt, pw_hash, is_admin) values ($1, $2, $3, $4, $5, $6)",
-      [id, email, String(name).trim(), salt, await hashPassword(password, salt), isAdmin]);
-    return id;
-  }
-
-  /* ---- accounts ---- */
-
   app.get("/api/auth/me", wrap(async (req, res) => {
-    const needsSetup = (await pool.query("select 1 from users where is_admin limit 1")).rows.length === 0;
     const u = await currentUser(req);
-    if (!u) return res.json({ user: null, issuers: [], needsSetup });
+    if (!u) return res.json({ user: null, issuers: [] });
     const iss = await pool.query(
       `select i.id, i.code, i.legal_name, i.status, m.role from memberships m join issuers i on i.id = m.issuer_id
        where m.user_id = $1 order by i.code`, [u.id]);
     res.json({
-      user: { id: u.id, email: u.email, name: u.name, isAdmin: u.is_admin },
+      user: { id: u.id, email: u.email, name: u.name },
       issuers: iss.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status, role: i.role })),
-      needsSetup,
     });
   }));
 
-  // One-time creation of the platform owner, with the setup code set on the service.
-  app.post("/api/auth/setup", wrap(async (req, res) => {
-    if (limited("setup:" + req.ip, 10)) throw new Reject(429, "Too many attempts. Wait a minute and try again.");
-    const want = process.env.ADMIN_SETUP_CODE || "";
-    const { setupCode, name, password } = req.body || {};
-    const email = cleanEmail(req.body?.email);
-    if (!want) throw new Reject(503, "ADMIN_SETUP_CODE is not set on this service.");
-    if (!sameHex(sha256(String(setupCode || "")), sha256(want))) throw new Reject(403, "That setup code is not right.");
-    await tx(async (c) => {
-      await c.query("select pg_advisory_xact_lock(424243)");
-      if ((await c.query("select 1 from users where is_admin limit 1")).rows.length)
-        throw new Reject(409, "The platform owner account already exists. Sign in instead.");
-      const id = await createUser(c, { email, name, password, isAdmin: true });
-      // The owner takes over any issuer nobody belongs to yet, such as the sample register.
-      await c.query(
-        `insert into memberships (user_id, issuer_id, role)
-         select $1, i.id, 'owner' from issuers i where not exists (select 1 from memberships m where m.issuer_id = i.id)`, [id]);
-      await startSession(req, res, c, id);
-    });
-    res.json({ ok: true });
-  }));
-
-  // New issuer account (pending until the platform owner approves it), or joining one with an invite code.
+  // A new issuer applies (pending until the platform approves it), or a teammate joins with an invite code.
   app.post("/api/auth/signup", wrap(async (req, res) => {
     if (limited("signup:" + req.ip, 10)) throw new Reject(429, "Too many attempts. Wait a minute and try again.");
     const { name, password, inviteCode } = req.body || {};
@@ -450,7 +495,7 @@ if (APP === "issuer") {
     await tx(async (c) => {
       if (inviteCode) {
         const inv = (await c.query(
-          "select * from invites where code_hash = $1 for update", [sha256(normKey(inviteCode))])).rows[0];
+          "select * from invites where code_hash = $1 and kind = 'issuer' for update", [sha256(normKey(inviteCode))])).rows[0];
         if (!inv || inv.used_by || new Date(inv.expires_at) < new Date())
           throw new Reject(400, "That invite code isn't valid. Ask your issuer's owner for a new one.");
         const id = await createUser(c, { email, name, password });
@@ -470,27 +515,9 @@ if (APP === "issuer") {
       const issuerId = newId("iss");
       await c.query("insert into issuers (id, code, legal_name) values ($1, $2, $3)", [issuerId, code, legalName]);
       await c.query("insert into memberships (user_id, issuer_id, role) values ($1, $2, 'owner')", [id, issuerId]);
+      await bump(c); // the platform's review queue should see the new application
       await startSession(req, res, c, id);
     });
-    res.json({ ok: true });
-  }));
-
-  app.post("/api/auth/login", wrap(async (req, res) => {
-    if (limited("login:" + req.ip)) throw new Reject(429, "Too many attempts. Wait a minute and try again.");
-    const email = cleanEmail(req.body?.email);
-    const u = (await pool.query("select * from users where email = $1", [email])).rows[0];
-    // Same work and same answer whether or not the account exists.
-    const salt = u?.pw_salt || "0".repeat(32);
-    const h = await hashPassword(req.body?.password || "", salt);
-    if (!u || !sameHex(h, u.pw_hash)) throw new Reject(401, "That email and password don't match.");
-    await tx((c) => startSession(req, res, c, u.id));
-    res.json({ ok: true });
-  }));
-
-  app.post("/api/auth/logout", wrap(async (req, res) => {
-    const token = readCookie(req);
-    if (token) await pool.query("delete from sessions where token_hash = $1", [sha256(token)]);
-    setCookie(req, res, "", 0);
     res.json({ ok: true });
   }));
 
@@ -508,47 +535,11 @@ if (APP === "issuer") {
   app.post("/api/team/invite", wrap(async (req, res) => {
     const m = await membership(req, req.body?.issuer);
     if (m.role !== "owner") throw new Reject(403, "Only the issuer's owner can invite teammates.");
-    const raw = crypto.randomBytes(12).toString("base64url").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12).padEnd(12, "7");
-    const code = raw.match(/.{4}/g).join("-");
+    const code = newCode();
     await pool.query(
-      "insert into invites (code_hash, issuer_id, created_by, expires_at) values ($1, $2, $3, now() + $4::interval)",
+      "insert into invites (code_hash, issuer_id, created_by, expires_at, kind) values ($1, $2, $3, now() + $4::interval, 'issuer')",
       [sha256(normKey(code)), m.id, m.user.id, INVITE_DAYS + " days"]);
     res.json({ code, expiresInDays: INVITE_DAYS });
-  }));
-
-  /* ---- platform owner ---- */
-
-  const needAdmin = async (req) => {
-    const u = await needUser(req);
-    if (!u.is_admin) throw new Reject(403, "Only the platform owner can do this.");
-    return u;
-  };
-
-  app.get("/api/admin/issuers", wrap(async (req, res) => {
-    await needAdmin(req);
-    const r = await pool.query(`
-      select i.id, i.code, i.legal_name, i.status, i.created_at,
-        (select count(*)::int from bonds b where b.issuer_id = i.id) as bonds,
-        (select count(*)::int from memberships m where m.issuer_id = i.id) as members,
-        (select u.email from memberships m join users u on u.id = m.user_id
-          where m.issuer_id = i.id and m.role = 'owner' order by m.created_at limit 1) as owner_email,
-        (select u.name from memberships m join users u on u.id = m.user_id
-          where m.issuer_id = i.id and m.role = 'owner' order by m.created_at limit 1) as owner_name
-      from issuers i order by (i.status = 'pending') desc, i.created_at desc`);
-    res.json({ issuers: r.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status,
-      createdAt: i.created_at, bonds: i.bonds, members: i.members, ownerEmail: i.owner_email, ownerName: i.owner_name })) });
-  }));
-
-  app.post("/api/admin/issuers/:id/status", wrap(async (req, res) => {
-    await needAdmin(req);
-    const status = req.body?.status;
-    if (!["approved", "suspended", "pending"].includes(status)) throw new Reject(400, "Unknown status.");
-    const v = await tx(async (c) => {
-      const r = await c.query("update issuers set status = $2, reviewed_at = now() where id = $1", [req.params.id, status]);
-      if (!r.rowCount) throw new Reject(404, "No such issuer.");
-      return bump(c);
-    });
-    res.json({ version: v });
   }));
 
   /* ---- the register, scoped to one issuer ---- */
@@ -564,46 +555,49 @@ if (APP === "issuer") {
   app.post("/api/commit", wrap(async (req, res) => {
     const { issuer, base, bonds = [], reg = [], events = [] } = req.body || {};
     const m = await membership(req, issuer);
-    if (m.status === "suspended") throw new Reject(403, "This issuer is suspended. Contact the platform owner.");
-    if (m.status !== "approved" && reg.length)
-      throw new Reject(403, "Assignments open once the platform owner approves this issuer.");
+    if (m.status === "suspended") throw new Reject(403, "This issuer is suspended. Contact the platform.");
+    if (m.status !== "approved") throw new Reject(403, "You can register bonds once the platform approves your issuer account.");
     const nv = await tx(async (c) => {
-      await lockVersion(c, base);
-      const mine = new Set((await c.query("select id from bonds where issuer_id = $1", [m.id])).rows.map((r) => r.id));
+      const review = new Map((await c.query("select id, review from bonds where issuer_id = $1", [m.id])).rows
+        .map((r) => [r.id, r.review]));
       for (const b of bonds) {
         if (!String(b.id).startsWith(m.code + "-")) throw new Reject(403, "Bond IDs must start with " + m.code + "-.");
-        const owner = (await c.query("select issuer_id, data from bonds where id = $1", [b.id])).rows[0];
+        const owner = (await c.query("select issuer_id, data, review from bonds where id = $1", [b.id])).rows[0];
         if (owner && owner.issuer_id !== m.id) throw new Reject(403, "That bond belongs to another issuer.");
+        if (owner?.review === "rejected") throw new Reject(422, b.id + " was not approved by the platform and can't be changed.");
         if (!Number.isInteger(b.total) || b.total <= 0) throw new Reject(400, "A bond needs a whole number of units.");
         // What was anchored stays fixed: the total and the documents' hashes.
         if (owner && ["total", "instrumentHash", "declarationHash"].some((k) => owner.data[k] !== b[k]))
           throw new Reject(422, b.id + " was registered with a fixed total and document hashes; they can't change.");
-        mine.add(b.id);
+        if (!owner) review.set(b.id, "pending");
       }
       const clean = [];
       for (const raw of reg) {
         const a = cleanRecord(raw);
-        if (!mine.has(a.bond)) throw new Reject(403, "That record belongs to another issuer.");
+        if (!review.has(a.bond)) throw new Reject(403, "That record belongs to another issuer.");
+        if (review.get(a.bond) !== "approved") throw new Reject(403, "Assignments open once the platform approves " + a.bond + ".");
         const before = (await c.query("select bond from assignments where id = $1", [a.id])).rows[0];
         if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
         clean.push(a);
       }
-      for (const e of events) if (!mine.has(e.bond)) throw new Reject(403, "That event belongs to another issuer.");
-      await applyCommit(c, { bonds, reg: clean, events, issuerId: m.id });
-      return bump(c);
+      for (const e of events) if (!review.has(e.bond)) throw new Reject(403, "That event belongs to another issuer.");
+      const revs = await applyCommit(c, { bonds, reg: clean, events, issuerId: m.id });
+      return { version: await bump(c), revs };
     });
-    res.json({ version: nv });
+    res.json(nv);
   }));
 
-  // The caller must belong to the issuer whose bond holds this record.
+  // The caller must belong to the issuer whose approved bond holds this record.
   async function recordAccess(req) {
     const { issuer, id } = req.body || {};
     const m = await membership(req, issuer);
-    if (m.status !== "approved") throw new Reject(403, "Credentials open once the platform owner approves this issuer.");
-    const r = await pool.query(
-      "select 1 from assignments a join bonds b on b.id = a.bond where a.id = $1 and b.issuer_id = $2", [id, m.id]);
-    // A brand-new record is saved just after its passkey; its bond prefix proves it is this issuer's.
-    if (!r.rows.length && !String(id || "").startsWith(m.code + "-")) throw new Reject(403, "That record belongs to another issuer.");
+    if (m.status !== "approved") throw new Reject(403, "Credentials open once the platform approves this issuer.");
+    const known = (await pool.query("select bond from assignments where id = $1", [id])).rows[0];
+    // A brand-new record is saved just after its passkey, so its bond comes from its ID.
+    const bondId = known?.bond || String(id || "").slice(0, String(id || "").lastIndexOf("-A"));
+    const b = (await pool.query("select issuer_id, review from bonds where id = $1", [bondId])).rows[0];
+    if (!b || b.issuer_id !== m.id) throw new Reject(403, "That record belongs to another issuer.");
+    if (b.review !== "approved") throw new Reject(403, "Credentials open once the platform approves " + bondId + ".");
     return m;
   }
 
@@ -623,6 +617,171 @@ if (APP === "issuer") {
       return bump(c);
     });
     res.json({ version: v });
+  }));
+}
+
+/* ======================= platform console ======================= */
+
+if (APP === "platform") {
+  const needStaff = async (req) => {
+    const u = await needUser(req);
+    if (!u.is_admin) throw new Reject(403, "Only platform staff can do this.");
+    return u;
+  };
+  const isOwner = (u) => u.platform_role === "owner";
+
+  app.get("/api/auth/me", wrap(async (req, res) => {
+    const needsSetup = (await pool.query("select 1 from users where is_admin limit 1")).rows.length === 0;
+    const u = await currentUser(req);
+    if (!u || !u.is_admin) return res.json({ user: null, needsSetup });
+    res.json({ user: { id: u.id, email: u.email, name: u.name, role: u.platform_role }, needsSetup });
+  }));
+
+  // One-time creation of the platform owner, with the setup code set on this service.
+  app.post("/api/auth/setup", wrap(async (req, res) => {
+    if (limited("setup:" + req.ip, 10)) throw new Reject(429, "Too many attempts. Wait a minute and try again.");
+    const want = process.env.ADMIN_SETUP_CODE || "";
+    const { setupCode, name, password } = req.body || {};
+    const email = cleanEmail(req.body?.email);
+    if (!want) throw new Reject(503, "ADMIN_SETUP_CODE is not set on this service.");
+    if (!sameHex(sha256(String(setupCode || "")), sha256(want))) throw new Reject(403, "That setup code is not right.");
+    await tx(async (c) => {
+      await c.query("select pg_advisory_xact_lock(424243)");
+      if ((await c.query("select 1 from users where is_admin limit 1")).rows.length)
+        throw new Reject(409, "The platform owner account already exists. Sign in instead.");
+      const id = await createUser(c, { email, name, password, isAdmin: true, platformRole: "owner" });
+      // The owner takes over any issuer nobody belongs to yet, such as the sample register.
+      await c.query(
+        `insert into memberships (user_id, issuer_id, role)
+         select $1, i.id, 'owner' from issuers i where not exists (select 1 from memberships m where m.issuer_id = i.id)`, [id]);
+      await startSession(req, res, c, id);
+    });
+    res.json({ ok: true });
+  }));
+
+  // Platform staff join with a one-time code from the owner.
+  app.post("/api/auth/signup", wrap(async (req, res) => {
+    if (limited("signup:" + req.ip, 10)) throw new Reject(429, "Too many attempts. Wait a minute and try again.");
+    const { name, password, inviteCode } = req.body || {};
+    const email = cleanEmail(req.body?.email);
+    await tx(async (c) => {
+      const inv = (await c.query(
+        "select * from invites where code_hash = $1 and kind = 'platform' for update", [sha256(normKey(inviteCode))])).rows[0];
+      if (!inv || inv.used_by || new Date(inv.expires_at) < new Date())
+        throw new Reject(400, "That invite code isn't valid. Ask the platform owner for a new one.");
+      const id = await createUser(c, { email, name, password, isAdmin: true, platformRole: "staff" });
+      await c.query("update invites set used_by = $1 where code_hash = $2", [id, inv.code_hash]);
+      await startSession(req, res, c, id);
+    });
+    res.json({ ok: true });
+  }));
+
+  app.get("/api/platform/summary", wrap(async (req, res) => {
+    await needStaff(req);
+    const r = await pool.query(`select
+      (select count(*)::int from issuers where status = 'pending') as pending_issuers,
+      (select count(*)::int from bonds b join issuers i on i.id = b.issuer_id where b.review = 'pending' and i.status = 'approved') as pending_bonds,
+      (select version from meta where k = 'v') as version`);
+    res.json({ pendingIssuers: r.rows[0].pending_issuers, pendingBonds: r.rows[0].pending_bonds, version: Number(r.rows[0].version) });
+  }));
+
+  app.get("/api/platform/issuers", wrap(async (req, res) => {
+    await needStaff(req);
+    const r = await pool.query(`
+      select i.id, i.code, i.legal_name, i.status, i.created_at, i.reviewed_at,
+        (select name from users where id = i.reviewed_by) as reviewer,
+        (select count(*)::int from bonds b where b.issuer_id = i.id) as bonds,
+        (select count(*)::int from bonds b where b.issuer_id = i.id and b.review = 'approved') as live_bonds,
+        (select count(*)::int from memberships m where m.issuer_id = i.id) as members,
+        (select u.email from memberships m join users u on u.id = m.user_id
+          where m.issuer_id = i.id and m.role = 'owner' order by m.created_at limit 1) as owner_email,
+        (select u.name from memberships m join users u on u.id = m.user_id
+          where m.issuer_id = i.id and m.role = 'owner' order by m.created_at limit 1) as owner_name
+      from issuers i order by (i.status = 'pending') desc, i.created_at desc`);
+    res.json({ issuers: r.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status,
+      createdAt: i.created_at, reviewedAt: i.reviewed_at, reviewer: i.reviewer, bonds: i.bonds, liveBonds: i.live_bonds,
+      members: i.members, ownerEmail: i.owner_email, ownerName: i.owner_name })) });
+  }));
+
+  app.post("/api/platform/issuers/:id/status", wrap(async (req, res) => {
+    const u = await needStaff(req);
+    const status = req.body?.status;
+    if (!["approved", "suspended"].includes(status)) throw new Reject(400, "Unknown status.");
+    const v = await tx(async (c) => {
+      const r = await c.query("update issuers set status = $2, reviewed_at = now(), reviewed_by = $3 where id = $1",
+        [req.params.id, status, u.id]);
+      if (!r.rowCount) throw new Reject(404, "No such issuer.");
+      return bump(c);
+    });
+    res.json({ version: v });
+  }));
+
+  // The directory: every bond's totals and documents, with no holder names or contact details.
+  app.get("/api/platform/bonds", wrap(async (req, res) => {
+    await needStaff(req);
+    const r = await pool.query(`
+      select b.id, b.data, b.review, b.review_note, b.reviewed_at,
+        (select name from users where id = b.reviewed_by) as reviewer,
+        i.id as issuer_id, i.code, i.legal_name, i.status as issuer_status,
+        coalesce((select sum((a.data->>'units')::numeric) from assignments a
+          where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled')), 0) as assigned,
+        (select count(*)::int from assignments a
+          where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled')) as live_records,
+        (select count(*)::int from assignments a where a.bond = b.id) as all_records
+      from bonds b join issuers i on i.id = b.issuer_id
+      order by (b.review = 'pending' and i.status = 'approved') desc, b.id`);
+    res.json({ bonds: r.rows.map((x) => {
+      const prior = (x.data.prior || []).filter((p) => !p.reversed);
+      return {
+        id: x.id, title: x.data.title || null, registered: x.data.registered || null,
+        issuer: { id: x.issuer_id, code: x.code, legalName: x.legal_name, status: x.issuer_status },
+        review: x.review, reviewNote: x.review_note, reviewedAt: x.reviewed_at, reviewer: x.reviewer,
+        total: x.data.total, unassigned: x.data.unassigned, redeemed: x.data.redeemed || 0,
+        assigned: Number(x.assigned), priorUnits: prior.reduce((t, p) => t + p.units, 0), priorCount: prior.length,
+        liveRecords: x.live_records, allRecords: x.all_records,
+        instrumentHash: x.data.instrumentHash, declarationHash: x.data.declarationHash,
+        instrumentFile: x.data.instrumentFile || null, declarationFile: x.data.declarationFile || null,
+      };
+    }) });
+  }));
+
+  app.post("/api/platform/bonds/:id/review", wrap(async (req, res) => {
+    const u = await needStaff(req);
+    const decision = req.body?.decision;
+    const note = String(req.body?.note || "").trim();
+    if (!["approved", "rejected"].includes(decision)) throw new Reject(400, "Approve or reject the bond.");
+    if (decision === "rejected" && !note) throw new Reject(400, "Give the issuer a reason for rejecting the bond.");
+    const v = await tx(async (c) => {
+      const b = (await c.query(
+        "select b.review, i.status from bonds b join issuers i on i.id = b.issuer_id where b.id = $1 for update of b", [req.params.id])).rows[0];
+      if (!b) throw new Reject(404, "No such bond.");
+      if (b.review !== "pending") throw new Reject(409, "This bond has already been reviewed.");
+      if (b.status !== "approved") throw new Reject(409, "Approve the issuer before its bonds.");
+      await c.query("update bonds set review = $2, review_note = $3, reviewed_by = $4, reviewed_at = now() where id = $1",
+        [req.params.id, decision, note || null, u.id]);
+      const ev = decision === "approved" ? "BondApproved" : "BondRejected";
+      await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, '—', $3)",
+        [crypto.randomUUID(), req.params.id,
+          { bond: req.params.id, id: "—", t: stampNow(), ev, actor: "PLATFORM", ref: note ? "0x" + sha256(note).slice(0, 6) + "…" + sha256(note).slice(-4) : "—" }]);
+      return bump(c);
+    });
+    res.json({ version: v });
+  }));
+
+  app.get("/api/platform/staff", wrap(async (req, res) => {
+    await needStaff(req);
+    const r = await pool.query("select name, email, platform_role, created_at from users where is_admin order by created_at");
+    res.json({ staff: r.rows.map((x) => ({ name: x.name, email: x.email, role: x.platform_role })) });
+  }));
+
+  app.post("/api/platform/invite", wrap(async (req, res) => {
+    const u = await needStaff(req);
+    if (!isOwner(u)) throw new Reject(403, "Only the platform owner can invite staff.");
+    const code = newCode();
+    await pool.query(
+      "insert into invites (code_hash, issuer_id, created_by, expires_at, kind) values ($1, null, $2, now() + $3::interval, 'platform')",
+      [sha256(normKey(code)), u.id, INVITE_DAYS + " days"]);
+    res.json({ code, expiresInDays: INVITE_DAYS });
   }));
 }
 

@@ -34,8 +34,14 @@ export const api = {
   logout: () => call("POST", "/api/auth/logout"),
   team: (issuer) => call("GET", "/api/team?issuer=" + encodeURIComponent(issuer)),
   invite: (issuer) => call("POST", "/api/team/invite", { issuer }),
-  adminIssuers: () => call("GET", "/api/admin/issuers"),
-  setIssuerStatus: (id, status) => call("POST", "/api/admin/issuers/" + encodeURIComponent(id) + "/status", { status }),
+  // platform console
+  summary: () => call("GET", "/api/platform/summary"),
+  platformIssuers: () => call("GET", "/api/platform/issuers"),
+  setIssuerStatus: (id, status) => call("POST", "/api/platform/issuers/" + encodeURIComponent(id) + "/status", { status }),
+  platformBonds: () => call("GET", "/api/platform/bonds"),
+  reviewBond: (id, decision, note) => call("POST", "/api/platform/bonds/" + encodeURIComponent(id) + "/review", { decision, note }),
+  staff: () => call("GET", "/api/platform/staff"),
+  staffInvite: () => call("POST", "/api/platform/invite"),
 };
 
 const byId = (list, key = "id") => new Map(list.map((x) => [x[key], x]));
@@ -91,16 +97,30 @@ export function useRegistry({ onNotice, issuer } = {}) {
 
     busy.current = true;
     try {
-      const { version } = await call("POST", "/api/commit",
+      const { version, revs } = await call("POST", "/api/commit",
         { issuer, base: s.version, reg: changedReg, bonds: changedBonds, events: newEvents });
-      changedReg.forEach((a) => s.reg.set(a.id, a));
-      changedBonds.forEach((x) => s.bonds.set(x.id, x));
+      // Carry the server's new revisions forward. A record that was edited again while
+      // this save was in flight keeps the newer edit, which then saves with the new revision.
+      const settle = (sent, rev, map, current) => {
+        const saved = { ...sent, rev };
+        map.set(sent.id, saved);
+        return current === sent ? saved : { ...current, rev };
+      };
+      const sentReg = new Map(changedReg.map((a) => [a.id, a]));
+      const sentBonds = new Map(changedBonds.map((x) => [x.id, x]));
+      const settleAll = (list, sent, got, map) =>
+        list.map((x) => sent.has(x.id) ? settle(sent.get(x.id), got[x.id], map, x) : x);
+      latest.current = { ...latest.current,
+        reg: settleAll(latest.current.reg, sentReg, revs.reg, s.reg),
+        bonds: settleAll(latest.current.bonds, sentBonds, revs.bonds, s.bonds) };
+      setReg((cur) => settleAll(cur, sentReg, revs.reg, s.reg));
+      setBonds((cur) => settleAll(cur, sentBonds, revs.bonds, s.bonds));
       newEvents.forEach((e) => s.events.add(e.eid));
       s.version = version;
     } catch (e) {
       await reload().catch(() => {});
       notice.current?.(e.status === 409
-        ? "The register changed in the other app before this was saved. It has been reloaded — please redo your last step."
+        ? "Someone else changed this record before your change was saved. The latest version has been loaded — please redo your last step."
         : e.message + " The register has been reloaded.");
     } finally {
       busy.current = false;

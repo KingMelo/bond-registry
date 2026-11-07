@@ -7,10 +7,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "vite build apps/holder --config vite.config.js --outDir ../../dist/holder --emptyOutDir && vite build apps/issuer --config vite.config.js --outDir ../../dist/issuer --emptyOutDir",
+    "build": "vite build apps/holder --config vite.config.js --outDir ../../dist/holder --emptyOutDir && vite build apps/issuer --config vite.config.js --outDir ../../dist/issuer --emptyOutDir && vite build apps/platform --config vite.config.js --outDir ../../dist/platform --emptyOutDir",
     "start": "node server/index.js",
     "dev:holder": "APP=holder node server/index.js",
-    "dev:issuer": "APP=issuer node server/index.js"
+    "dev:issuer": "APP=issuer node server/index.js",
+    "dev:platform": "APP=platform node server/index.js"
   },
   "dependencies": {
     "express": "4.21.2",
