@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — issuer console
@@ -22,6 +22,12 @@ export const T = {
 export const serif = "'Spectral', Georgia, serif";
 export const sans = "'IBM Plex Sans', system-ui, sans-serif";
 
+// What an amount box will record, or why it can't, as the issuer types.
+const unitsHint = (text, total) => {
+  if (!text) return null;
+  const { units, error } = parseUnits(text);
+  return error || usd(units) + " · " + pct(units, total) + " of the bond";
+};
 const pct = (u, total) => ((u / total) * 100).toFixed(6) + "%";
 const num = (u) => u.toLocaleString("en-US");
 const usd = (u) => "$" + u.toLocaleString("en-US");
@@ -443,11 +449,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   function recordPrior() {
     const ref = pRef.trim();
-    const u = parseInt(pUnits.replace(/[^0-9]/g, ""), 10);
+    const pu = parseUnits(pUnits), u = pu.units;
     if (!ref) return setPErr("Enter the instrument's identifier.");
     if (bond.prior.some((p) => !p.reversed && p.ref.toUpperCase() === ref.toUpperCase()))
       return setPErr(ref + " is already recorded against " + activeBond + ".");
-    if (!u || u <= 0) return setPErr("Enter a whole number of units.");
+    if (pu.error) return setPErr(pu.error);
     if (u > bond.unassigned) return setPErr("Unassigned balance is " + num(bond.unassigned) + " units.");
     setPErr("");
     const entry = { id: "P" + String(bond.prior.length + 1).padStart(3, "0"), ref, units: u,
@@ -471,8 +477,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   }
 
   async function issueAssignment() {
-    const u = parseInt(nUnits.replace(/[^0-9]/g, ""), 10);
-    if (!u || u <= 0) return setNErr("Enter a whole number of units.");
+    const nu = parseUnits(nUnits), u = nu.units;
+    if (nu.error) return setNErr(nu.error);
     if (u > bond.unassigned) return setNErr("Unassigned balance is " + num(bond.unassigned) + " units.");
     if (!nParty.trim()) return setNErr("Enter the holder's legal name.");
     if (!nContact.trim()) return setNErr("Name the person the instrument is addressed to.");
@@ -499,9 +505,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   // A new bond: its documents are hashed in this browser and only the hashes are kept.
   function registerBond() {
-    const u = parseInt(rbUnits.replace(/[^0-9]/g, ""), 10);
+    const ru = parseUnits(rbUnits), u = ru.units;
     if (!rbTitle.trim()) return setRbErr("Give the bond a name, such as Series A Note.");
-    if (!u || u <= 0) return setRbErr("Enter the bond's total units as a whole number.");
+    if (ru.error) return setRbErr(ru.error);
     if (!rbInstr) return setRbErr("Choose the signed bond instrument so its hash can be recorded.");
     const ucc1 = ucc1Started(rbUcc) ? ucc1From(rbUcc) : null;
     if (ucc1 && !ucc1Done(ucc1)) return setRbErr("Complete the UCC-1: filing number, office, date and the filed copy. Or leave it all blank and add it later.");
@@ -724,7 +730,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     placeholder="Series A Secured Note" />
                   <Field label="Total units" value={rbUnits} onChange={(v) => { setRbUnits(v); setRbErr(""); }}
                     placeholder="10,000,000" mono
-                    hint={(rbUnits ? usd(parseInt(rbUnits.replace(/[^0-9]/g, ""), 10) || 0) + " · " : "") +
+                    hint={(rbUnits ? (parseUnits(rbUnits).error || usd(parseUnits(rbUnits).units)) + " · " : "") +
                       "One unit is $1 of face value. Fixed once registered."} />
                   <FileHash label="Signed bond instrument" value={rbInstr} onChange={(v) => { setRbInstr(v); setRbErr(""); }} />
                   <div style={{ fontFamily: serif, fontSize: 16, color: T.ink, margin: "6px 0 4px" }}>UCC-1 financing statement</div>
@@ -770,8 +776,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             </p>
 
             <Field label="Units" value={nUnits} onChange={setNUnits} placeholder="30,000" mono
-              hint={nUnits ? usd(parseInt(nUnits.replace(/[^0-9]/g, ""), 10) || 0) + " · " +
-                pct(parseInt(nUnits.replace(/[^0-9]/g, ""), 10) || 0, bond.total) + " of the bond" : null} />
+              hint={unitsHint(nUnits, bond.total)} />
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Holder</div>
             <Field label="Legal name" value={nParty} onChange={setNParty} placeholder="Company F, LLC" />
@@ -914,8 +919,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 placeholder="PN-2024-007" />
               <Field label="Amount taken off the bond (units)" value={pUnits} onChange={(v) => { setPUnits(v); setPErr(""); }}
                 placeholder="250,000" mono
-                hint={pUnits ? usd(parseInt(pUnits.replace(/[^0-9]/g, ""), 10) || 0) + " · " +
-                  pct(parseInt(pUnits.replace(/[^0-9]/g, ""), 10) || 0, bond.total) + " of the bond" : null} />
+                hint={unitsHint(pUnits, bond.total)} />
               {pErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{pErr}</p>}
               <div className="mb-3">
                 <Button variant="quiet" onClick={recordPrior}>Record prior instrument</Button>

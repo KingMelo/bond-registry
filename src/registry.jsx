@@ -153,6 +153,21 @@ export function useRegistry({ onNotice, issuer } = {}) {
     issuerInfo: info.issuer, issuers: info.issuers };
 }
 
+// Reads a dollar amount typed into a units box. One unit is $1, so "$250,000" and
+// "250,000.00" are 250000 units; an amount with cents is refused rather than misread.
+export function parseUnits(text) {
+  const t = String(text || "").replace(/[$,\s]/g, "");
+  if (!t) return { units: 0, error: "Enter a whole number of units." };
+  const m = t.match(/^(\d+)(?:\.(\d*))?$/);
+  if (!m) return { units: 0, error: "Enter an amount in whole dollars, like 250,000." };
+  const whole = parseInt(m[1], 10);
+  if (m[2] && /[1-9]/.test(m[2]))
+    return { units: 0, error: "One unit is $1, so cents can't be recorded. Enter " + whole.toLocaleString("en-US") +
+      " or " + (whole + 1).toLocaleString("en-US") + "." };
+  if (whole <= 0) return { units: 0, error: "Enter a whole number of units." };
+  return { units: whole };
+}
+
 export const today = () =>
   new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 

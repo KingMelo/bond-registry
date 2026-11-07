@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useRegistry, api, today, stamp, newEid, Loading } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, Loading, parseUnits } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — holder portal
@@ -283,8 +283,8 @@ export default function HolderPortal() {
 
   function assignOut() {
     if (open.status !== "Accepted") return setAErr("Only an accepted, unlocked record can assign out.");
-    const u = parseInt(aUnits.replace(/[^0-9]/g, ""), 10);
-    if (!u || u <= 0) return setAErr("Enter a whole number of units.");
+    const au = parseUnits(aUnits), u = au.units;
+    if (au.error) return setAErr(au.error);
     if (u > open.units) return setAErr("You hold " + num(open.units) + " units.");
     if (!aParty.trim()) return setAErr("Enter the assignee's legal name.");
     if (!aContact.trim()) return setAErr("Name the person the assignment is addressed to.");
@@ -734,10 +734,8 @@ export default function HolderPortal() {
 
             <div className="mt-5">
               <Field label="Units to assign" value={aUnits} onChange={setAUnits} placeholder="10,000" mono
-                hint={aUnits && !isNaN(parseInt(aUnits.replace(/[^0-9]/g, ""), 10))
-                  ? usd(parseInt(aUnits.replace(/[^0-9]/g, ""), 10) || 0) + " · " +
-                    usd(Math.max(0, open.units - (parseInt(aUnits.replace(/[^0-9]/g, ""), 10) || 0))) + " remaining"
-                  : null} />
+                hint={aUnits ? (parseUnits(aUnits).error ||
+                  usd(parseUnits(aUnits).units) + " · " + usd(Math.max(0, open.units - parseUnits(aUnits).units)) + " remaining") : null} />
             </div>
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Assignee</div>
