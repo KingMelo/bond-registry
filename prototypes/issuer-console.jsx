@@ -481,12 +481,16 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     const id = issuerInfo.code + "-" + String(bonds.length + 1).padStart(4, "0") + "-BD";
     const b = { id, title: rbTitle.trim(), face: u, total: u, unassigned: u, redeemed: 0, prior: [],
       registered: today(), instrumentHash: rbInstr.hash, declarationHash: rbDecl.hash,
-      instrumentFile: rbInstr.name, declarationFile: rbDecl.name, review: "pending" };
+      instrumentFile: rbInstr.name, declarationFile: rbDecl.name,
+      // The server decides; this mirrors it until the next load: the owner's own bonds go live at once.
+      review: issuerInfo?.trusted ? "approved" : "pending" };
     setBonds((bs) => [...bs, b]);
     emit(id, "—", "BondAnchored", "ISSUER", rbInstr.hash);
     setActiveBond(id);
     setRbTitle(""); setRbUnits(""); setRbInstr(null); setRbDecl(null); setRbOpen(false);
-    flash(id + " registered. The platform reviews it before you can issue against it.");
+    flash(issuerInfo?.trusted
+      ? id + " registered and live. Your own issuers skip platform review."
+      : id + " registered. The platform reviews it before you can issue against it.");
   }
 
   if (!ready) return <Loading error={error} />;

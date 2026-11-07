@@ -128,7 +128,8 @@ function IssuerCard({ i, onStatus, busy }) {
   const [tone, label] = ISSUER[i.status];
   return (
     <Card tone={i.status === "pending" ? "attention" : undefined}>
-      <CardHead title={i.legalName} sub={"Issuer code " + i.code} chip={<Chip s={tone} text={label} />} />
+      <CardHead title={i.legalName} sub={"Issuer code " + i.code + (i.trusted ? " · platform owner's issuer, no reviews needed" : "")}
+        chip={<Chip s={tone} text={label} />} />
       <Rows data={[
         ["Owner", i.ownerName ? i.ownerName + " · " + i.ownerEmail : "—"],
         ["Team", i.members + (i.members === 1 ? " person" : " people")],

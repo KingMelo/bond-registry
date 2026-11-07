@@ -91,6 +91,8 @@ async function migrate() {
       alter table bonds add column if not exists reviewed_by text;
       alter table bonds add column if not exists reviewed_at timestamptz;
       alter table issuers add column if not exists reviewed_by text;
+      -- The platform owner's own issuers skip both reviews.
+      alter table issuers add column if not exists trusted boolean not null default false;
       alter table users add column if not exists platform_role text;
       alter table invites add column if not exists kind text not null default 'issuer';
       alter table invites alter column issuer_id drop not null;
@@ -108,6 +110,9 @@ async function migrate() {
       await c.query("update bonds set issuer_id = $1 where issuer_id is null", [ISSUERS[0].id]);
       console.log(`Assigned ${orphans.rows[0].n} existing bonds to issuer ${ISSUERS[0].code}`);
     }
+    const n = (await c.query(`select (select count(*) from issuers)::int as issuers, (select count(*) from bonds)::int as bonds,
+      (select count(*) from assignments)::int as records, (select count(*) from users)::int as users`)).rows[0];
+    console.log(`Register: ${n.issuers} issuers, ${n.bonds} bonds, ${n.records} records, ${n.users} users`);
   } finally {
     await c.query("select pg_advisory_unlock(424242)").catch(() => {});
     c.release();
@@ -240,7 +245,7 @@ async function readState(bondFilter, params) {
 /* Saves one commit after the caller's own checks; enforces the units rule for the bonds given.
    A changed bond or record must carry the revision it was loaded at; a new one carries none.
    Returns the new revisions so the app can keep editing without reloading. */
-async function applyCommit(c, { bonds, reg, events, issuerId }) {
+async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = false }) {
   const touched = [...new Set([...bonds.map((b) => b.id), ...reg.map((a) => a.bond)])];
   // Lock the bonds involved, so two saves can't each pass the units rule on their own.
   if (touched.length) await c.query("select id from bonds where id = any($1) order by id for update", [touched]);
@@ -249,10 +254,10 @@ async function applyCommit(c, { bonds, reg, events, issuerId }) {
 
   for (const b of bonds) {
     if (b.rev == null) {
-      // A new bond always starts out waiting for platform review.
+      // A new bond waits for platform review, unless it is the platform owner's own.
       const r = await c.query(
-        "insert into bonds (id, data, issuer_id, review) values ($1, $2, $3, 'pending') on conflict (id) do nothing returning rev",
-        [b.id, stripBond(b), issuerId ?? b.issuerId]);
+        "insert into bonds (id, data, issuer_id, review) values ($1, $2, $3, $4) on conflict (id) do nothing returning rev",
+        [b.id, stripBond(b), issuerId ?? b.issuerId, autoApprove ? "approved" : "pending"]);
       if (!r.rowCount) throw stale(b.id);
       revs.bonds[b.id] = Number(r.rows[0].rev);
     } else {
@@ -474,11 +479,47 @@ if (APP === "issuer") {
   async function membership(req, issuerId) {
     const u = await needUser(req);
     const r = await pool.query(
-      `select m.role, i.id, i.code, i.legal_name, i.status from memberships m join issuers i on i.id = m.issuer_id
+      `select m.role, i.id, i.code, i.legal_name, i.status, i.trusted from memberships m join issuers i on i.id = m.issuer_id
        where m.user_id = $1 and m.issuer_id = $2`, [u.id, issuerId]);
     if (!r.rows[0]) throw new Reject(403, "You don't have access to this issuer.");
     return { user: u, ...r.rows[0] };
   }
+
+  function checkIssuer(body) {
+    const code = String(body?.issuerCode || "").trim().toUpperCase();
+    const legalName = String(body?.legalName || "").trim();
+    if (!/^[A-Z0-9]{3,6}$/.test(code)) throw new Reject(400, "Use 3 to 6 letters or digits for the issuer code.");
+    if (RESERVED_CODES.includes(code)) throw new Reject(400, code + " is reserved. Choose another issuer code.");
+    if (legalName.length < 2) throw new Reject(400, "Enter the issuer's legal name.");
+    return { code, legalName };
+  }
+  async function codeFree(c, code) {
+    if ((await c.query("select 1 from issuers where code = $1", [code])).rows.length)
+      throw new Reject(409, "The issuer code " + code + " is taken. Choose another.");
+  }
+  // The platform owner's issuers are approved on creation and register live bonds; anyone else's wait for review.
+  async function createIssuer(c, { code, legalName }, user) {
+    const trusted = user.platform_role === "owner";
+    const issuerId = newId("iss");
+    await c.query(
+      `insert into issuers (id, code, legal_name, status, trusted, reviewed_at, reviewed_by)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [issuerId, code, legalName, trusted ? "approved" : "pending", trusted, trusted ? new Date() : null, trusted ? user.id : null]);
+    await c.query("insert into memberships (user_id, issuer_id, role) values ($1, $2, 'owner')", [user.id, issuerId]);
+    await bump(c); // the platform's review queue should see a new application
+    return { id: issuerId, trusted };
+  }
+
+  // A signed-in person starts another issuer without a new account.
+  app.post("/api/issuers", wrap(async (req, res) => {
+    const u = await needUser(req);
+    const issuer = checkIssuer(req.body);
+    const out = await tx(async (c) => {
+      await codeFree(c, issuer.code);
+      return createIssuer(c, issuer, u);
+    });
+    res.json(out);
+  }));
 
   app.get("/api/auth/me", wrap(async (req, res) => {
     const u = await currentUser(req);
@@ -487,7 +528,7 @@ if (APP === "issuer") {
       `select i.id, i.code, i.legal_name, i.status, m.role from memberships m join issuers i on i.id = m.issuer_id
        where m.user_id = $1 order by i.code`, [u.id]);
     res.json({
-      user: { id: u.id, email: u.email, name: u.name },
+      user: { id: u.id, email: u.email, name: u.name, platformOwner: u.platform_role === "owner" },
       issuers: iss.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status, role: i.role })),
     });
   }));
@@ -509,18 +550,10 @@ if (APP === "issuer") {
         await startSession(req, res, c, id);
         return;
       }
-      const code = String(req.body?.issuerCode || "").trim().toUpperCase();
-      const legalName = String(req.body?.legalName || "").trim();
-      if (!/^[A-Z0-9]{3,6}$/.test(code)) throw new Reject(400, "Use 3 to 6 letters or digits for the issuer code.");
-      if (RESERVED_CODES.includes(code)) throw new Reject(400, code + " is reserved. Choose another issuer code.");
-      if (legalName.length < 2) throw new Reject(400, "Enter the issuer's legal name.");
-      if ((await c.query("select 1 from issuers where code = $1", [code])).rows.length)
-        throw new Reject(409, "The issuer code " + code + " is taken. Choose another.");
+      const issuer = checkIssuer(req.body);
+      await codeFree(c, issuer.code);
       const id = await createUser(c, { email, name, password });
-      const issuerId = newId("iss");
-      await c.query("insert into issuers (id, code, legal_name) values ($1, $2, $3)", [issuerId, code, legalName]);
-      await c.query("insert into memberships (user_id, issuer_id, role) values ($1, $2, 'owner')", [id, issuerId]);
-      await bump(c); // the platform's review queue should see the new application
+      await createIssuer(c, issuer, { id, platform_role: null });
       await startSession(req, res, c, id);
     });
     res.json({ ok: true });
@@ -554,7 +587,7 @@ if (APP === "issuer") {
     const v = await version(pool);
     if (req.query.since && Number(req.query.since) === v) return res.json({ version: v, unchanged: true });
     const state = await readState("b.issuer_id = $1", [m.id]);
-    res.json({ version: v, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role } });
+    res.json({ version: v, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role, trusted: m.trusted } });
   }));
 
   app.post("/api/commit", wrap(async (req, res) => {
@@ -574,7 +607,7 @@ if (APP === "issuer") {
         // What was anchored stays fixed: the total and the documents' hashes.
         if (owner && ["total", "instrumentHash", "declarationHash"].some((k) => owner.data[k] !== b[k]))
           throw new Reject(422, b.id + " was registered with a fixed total and document hashes; they can't change.");
-        if (!owner) review.set(b.id, "pending");
+        if (!owner) review.set(b.id, m.trusted ? "approved" : "pending");
       }
       const clean = [];
       for (const raw of reg) {
@@ -586,7 +619,7 @@ if (APP === "issuer") {
         clean.push(a);
       }
       for (const e of events) if (!review.has(e.bond)) throw new Reject(403, "That event belongs to another issuer.");
-      const revs = await applyCommit(c, { bonds, reg: clean, events, issuerId: m.id });
+      const revs = await applyCommit(c, { bonds, reg: clean, events, issuerId: m.id, autoApprove: m.trusted });
       return { version: await bump(c), revs };
     });
     res.json(nv);
@@ -659,6 +692,8 @@ if (APP === "platform") {
       await c.query(
         `insert into memberships (user_id, issuer_id, role)
          select $1, i.id, 'owner' from issuers i where not exists (select 1 from memberships m where m.issuer_id = i.id)`, [id]);
+      await c.query(
+        "update issuers set trusted = true, status = 'approved' where id in (select issuer_id from memberships where user_id = $1)", [id]);
       await startSession(req, res, c, id);
     });
     res.json({ ok: true });
@@ -693,7 +728,7 @@ if (APP === "platform") {
   app.get("/api/platform/issuers", wrap(async (req, res) => {
     await needStaff(req);
     const r = await pool.query(`
-      select i.id, i.code, i.legal_name, i.status, i.created_at, i.reviewed_at,
+      select i.id, i.code, i.legal_name, i.status, i.trusted, i.created_at, i.reviewed_at,
         (select name from users where id = i.reviewed_by) as reviewer,
         (select count(*)::int from bonds b where b.issuer_id = i.id) as bonds,
         (select count(*)::int from bonds b where b.issuer_id = i.id and b.review = 'approved') as live_bonds,
@@ -703,7 +738,7 @@ if (APP === "platform") {
         (select u.name from memberships m join users u on u.id = m.user_id
           where m.issuer_id = i.id and m.role = 'owner' order by m.created_at limit 1) as owner_name
       from issuers i order by (i.status = 'pending') desc, i.created_at desc`);
-    res.json({ issuers: r.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status,
+    res.json({ issuers: r.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status, trusted: i.trusted,
       createdAt: i.created_at, reviewedAt: i.reviewed_at, reviewer: i.reviewer, bonds: i.bonds, liveBonds: i.live_bonds,
       members: i.members, ownerEmail: i.owner_email, ownerName: i.owner_name })) });
   }));

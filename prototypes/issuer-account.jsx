@@ -130,6 +130,37 @@ function AuthScreens({ onDone }) {
   );
 }
 
+/* ---------------- another issuer ---------------- */
+
+// For someone already signed in: start an issuer without a new account.
+function NewIssuer({ me, onDone, onCancel }) {
+  const [legalName, setLegalName] = useState("");
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+  async function submit() {
+    setBusy(true); setErr("");
+    try { const r = await api.createIssuer(legalName, clean); await onDone(r.id); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  return (
+    <div>
+      <Heading>Create an issuer</Heading>
+      <Lede>
+        {me.user.platformOwner
+          ? "You're the platform owner, so this issuer is approved straight away and its bonds go live as soon as you register them."
+          : "You'll be its owner. The platform reviews each new issuer before it can register bonds, and then each bond."}
+      </Lede>
+      <Field label="Legal name" value={legalName} onChange={(v) => { setLegalName(v); setErr(""); }} placeholder="Acme Capital Trust" />
+      <Field label="Issuer code" value={clean} onChange={(v) => { setCode(v); setErr(""); }} placeholder="ACME" mono
+        hint={"3 to 6 letters or digits, permanent. Bonds will be numbered " + (clean || "ACME") + "-0001-BD and so on."} />
+      <ErrorText>{err}</ErrorText>
+      <Button disabled={busy} onClick={submit}>{busy ? "Creating…" : "Create issuer"}</Button>
+      {onCancel && <div className="mt-3"><Button variant="quiet" onClick={onCancel}>Cancel</Button></div>}
+    </div>
+  );
+}
+
 /* ---------------- team ---------------- */
 
 function TeamPanel({ issuer }) {
@@ -202,6 +233,7 @@ export default function IssuerApp() {
   const [me, setMe] = useState(null);
   const [err, setErr] = useState("");
   const [picked, setPicked] = useState(remembered);
+  const [creating, setCreating] = useState(false);
 
   const loadMe = useCallback(() => api.me().then(setMe).catch((e) => setErr(e.message)), []);
   useEffect(() => { loadMe(); }, [loadMe]);
@@ -228,21 +260,25 @@ export default function IssuerApp() {
             </select>
           </>
         )}
+        {issuer && <>{" · "}<TextLink onClick={() => setCreating(true)}><span style={{ fontSize: 12 }}>New issuer</span></TextLink></>}
         {" · "}<TextLink onClick={signOut}><span style={{ fontSize: 12 }}>Sign out</span></TextLink>
       </span>
     </div>
   );
 
-  if (!issuer) {
+  const created = async (id) => { choose(id); setCreating(false); await loadMe(); };
+  if (!issuer || creating) {
     return (
       <Shell>
         <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontWeight: 500 }}>Registrar</div>
         {header}
         <div className="mt-5">
-          <Note>
-            This account isn't part of an issuer. Ask your issuer's owner for an invite code, or create an
-            issuer account with a different email. Platform staff work in the platform console.
-          </Note>
+          {!issuer && !me.user.platformOwner && (
+            <div className="mb-4">
+              <Note>This account isn't part of an issuer yet. Create one below, or ask an issuer's owner for an invite code.</Note>
+            </div>
+          )}
+          <NewIssuer me={me} onDone={created} onCancel={issuer ? () => setCreating(false) : null} />
         </div>
       </Shell>
     );
