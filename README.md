@@ -27,3 +27,7 @@ DATABASE_URL=postgres://… APP=issuer PORT=4102 ISSUER_PASSWORD=… npm start
 An empty database is created and loaded with the sample register on first start. "Reset demo" in the issuer console reloads it for both apps.
 
 Environment variables: `DATABASE_URL` (required), `APP` (`holder` or `issuer`), `ISSUER_PASSWORD` (issuer only), `PASSKEY_PEPPER` (optional, mixed into passkey hashes; set it once and keep it, or existing passkeys stop working), `PGSSL=1` (for databases that need TLS).
+
+## Moving to another deployment
+
+To move the register to a new database, set `ALLOW_EXPORT=1` on the old issuer service, then start the new services with `MIGRATE_FROM_URL` (the old issuer console's URL) and `MIGRATE_PASSWORD` (its `ISSUER_PASSWORD`). An empty database is then loaded from the old one instead of the sample register: bonds, assignments, passkey hashes and the full event log. Use the same `PASSKEY_PEPPER` on both, or the copied passkeys won't work. Remove `ALLOW_EXPORT` afterwards; the export includes passkey hashes.

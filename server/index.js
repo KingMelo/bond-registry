@@ -56,7 +56,10 @@ async function migrate() {
         for each row execute function events_append_only();
     `);
     const { rows } = await c.query("select version from meta where k = 'v'");
-    if (rows.length === 0) await seed(c, 1);
+    if (rows.length === 0) {
+      if (process.env.MIGRATE_FROM_URL) await importFrom(c, process.env.MIGRATE_FROM_URL, process.env.MIGRATE_PASSWORD);
+      else await seed(c, 1);
+    }
   } finally {
     await c.query("select pg_advisory_unlock(424242)").catch(() => {});
     c.release();
@@ -73,6 +76,51 @@ async function seed(c, version) {
     await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
       [crypto.randomUUID(), e.bond, e.id, e]);
   await c.query("insert into meta (k, version) values ('v', $1)", [version]);
+}
+
+/* ---------------- moving between deployments ----------------
+   An empty database can be loaded from another deployment's issuer console
+   (MIGRATE_FROM_URL + MIGRATE_PASSWORD) instead of the sample register. The
+   source must have ALLOW_EXPORT=1. Passkey hashes come across as they are, so
+   both deployments need the same PASSKEY_PEPPER. */
+
+async function exportAll(c) {
+  const q = (sql) => c.query(sql).then((r) => r.rows);
+  return {
+    version: await version(c),
+    bonds: await q("select id, data from bonds order by id"),
+    assignments: await q("select id, bond, data, created_at from assignments order by created_at, id"),
+    credentials: await q("select id, salt, hash, attempts, locked, updated_at from credentials order by id"),
+    events: await q("select eid, bond, assignment, data, created_at from events order by seq"),
+  };
+}
+
+async function importFrom(c, url, password) {
+  const res = await fetch(new URL("/api/issuer/export", url), {
+    headers: { Authorization: "Basic " + Buffer.from("migrate:" + (password || "")).toString("base64") },
+  });
+  if (!res.ok) throw new Error("Import from " + url + " failed: HTTP " + res.status);
+  const d = await res.json();
+  await c.query("begin");
+  try {
+    for (const b of d.bonds) await c.query("insert into bonds (id, data) values ($1, $2)", [b.id, b.data]);
+    for (const a of d.assignments)
+      await c.query("insert into assignments (id, bond, data, created_at) values ($1, $2, $3, $4)",
+        [a.id, a.bond, a.data, a.created_at]);
+    for (const k of d.credentials)
+      await c.query("insert into credentials (id, salt, hash, attempts, locked, updated_at) values ($1, $2, $3, $4, $5, $6)",
+        [k.id, k.salt, k.hash, k.attempts, k.locked, k.updated_at]);
+    for (const e of d.events)
+      await c.query("insert into events (eid, bond, assignment, data, created_at) values ($1, $2, $3, $4, $5)",
+        [e.eid, e.bond, e.assignment, e.data, e.created_at]);
+    await c.query("insert into meta (k, version) values ('v', $1)", [d.version]);
+    await c.query("commit");
+  } catch (e) {
+    await c.query("rollback");
+    throw e;
+  }
+  console.log(`Imported from ${url}: ${d.bonds.length} bonds, ${d.assignments.length} assignments, ` +
+    `${d.credentials.length} credentials, ${d.events.length} events (version ${d.version})`);
 }
 
 /* ---------------- passkeys ---------------- */
@@ -270,6 +318,12 @@ if (APP === "issuer") {
       await c.query("commit");
       res.json({ version: v });
     } catch (e) { await c.query("rollback").catch(() => {}); next(e); } finally { c.release(); }
+  });
+
+  // Off unless ALLOW_EXPORT=1: the dump includes passkey hashes.
+  app.get("/api/issuer/export", async (req, res, next) => {
+    if (process.env.ALLOW_EXPORT !== "1") return res.status(404).json({ error: "Export is not enabled." });
+    try { res.json(await exportAll(pool)); } catch (e) { next(e); }
   });
 
   app.post("/api/issuer/reset", async (req, res, next) => {
