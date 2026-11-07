@@ -41,4 +41,4 @@ DATABASE_URL=postgres://… APP=platform PORT=4103 ADMIN_SETUP_CODE=… npm star
 
 An empty database is created and loaded with the sample register (issuer `KPII`) on first start. A register from before issuer accounts is assigned to `KPII` automatically.
 
-Environment variables: `DATABASE_URL` (required), `APP` (`holder` or `issuer`), `ADMIN_SETUP_CODE` (platform console only; needed until the platform owner account exists), `PASSKEY_PEPPER` (mixed into passkey hashes; set it once and keep it, or existing passkeys stop working), `PGSSL=1` (for databases that need TLS).
+Environment variables: `DATABASE_URL` (required), `APP` (`holder` or `issuer`), `ADMIN_SETUP_CODE` (platform console only; needed until the platform owner account exists), `PASSKEY_PEPPER` (mixed into passkey hashes; set it once and keep it, or existing passkeys stop working), `PGSSL=1` (for databases that need TLS), `SEED_SAMPLE=0` (start an empty database with no sample issuer).

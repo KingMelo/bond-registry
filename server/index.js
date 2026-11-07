@@ -121,7 +121,12 @@ async function insertIssuers(c) {
        on conflict (id) do nothing`, [i.id, i.code, i.legalName, i.status]);
 }
 
+// SEED_SAMPLE=0 starts an empty register: no sample issuer, bonds or holders.
 async function seed(c, version) {
+  if (process.env.SEED_SAMPLE === "0") {
+    await c.query("insert into meta (k, version) values ('v', $1)", [version]);
+    return;
+  }
   await insertIssuers(c);
   for (const b of BONDS)
     await c.query("insert into bonds (id, data, issuer_id) values ($1, $2, $3)", [b.id, b, b.issuerId]);
