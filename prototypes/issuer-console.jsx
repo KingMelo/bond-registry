@@ -135,27 +135,51 @@ async function sha256File(file) {
   return "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Picks a file and keeps only its name and SHA-256 hash.
-function FileHash({ label, value, onChange }) {
+// Picks or takes a dropped file and keeps only its name and SHA-256 hash. Nothing is uploaded.
+export function FileHash({ label, value, onChange, hint }) {
   const [busy, setBusy] = useState(false);
+  const [over, setOver] = useState(false);
+  const take = async (f) => {
+    if (!f) return;
+    setBusy(true);
+    try { onChange({ name: f.name, hash: await sha256File(f) }); } finally { setBusy(false); }
+  };
   return (
     <div className="mb-4">
       <Label>{label}</Label>
-      <label className="block px-3 py-3" style={{ border: "1px dashed " + T.rule, borderRadius: 2, cursor: "pointer",
-        background: T.white, fontSize: 14, color: T.ink, wordBreak: "break-all" }}>
-        {busy ? "Hashing…" : value ? value.name : "Choose the PDF"}
+      <label className="block px-3 py-4"
+        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => { e.preventDefault(); setOver(false); take(e.dataTransfer.files?.[0]); }}
+        style={{ border: (over ? "2px solid " + T.ink : "1px dashed " + T.rule), borderRadius: 2, cursor: "pointer",
+          background: over ? T.band : T.white, fontSize: 14, color: T.ink, wordBreak: "break-all", textAlign: "center" }}>
+        {busy ? "Hashing…" : value ? value.name : over ? "Drop to hash it" : "Drop the PDF here, or choose it"}
         {value && <span style={{ display: "block", fontSize: 12, color: T.inkSoft, marginTop: 2 }}>
-          {value.hash.slice(0, 10) + "…" + value.hash.slice(-6)}</span>}
-        <input type="file" style={{ display: "none" }} onChange={async (e) => {
-          const f = e.target.files?.[0];
-          if (!f) return;
-          setBusy(true);
-          try { onChange({ name: f.name, hash: await sha256File(f) }); } finally { setBusy(false); }
-        }} />
+          {value.hash.slice(0, 10) + "…" + value.hash.slice(-6)} · drop another file to replace it</span>}
+        <input type="file" style={{ display: "none" }} onChange={(e) => take(e.target.files?.[0])} />
       </label>
+      {hint && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
     </div>
   );
 }
+
+// The UCC-1 that perfects the collateral interest in a bond: filing details plus the filed copy's hash.
+const ucc1Done = (u) => !!(u && u.number && u.office && u.date && u.hash);
+
+function Ucc1Fields({ v, set }) {
+  return (
+    <>
+      <Field label="UCC-1 filing number" value={v.number} onChange={(x) => set({ ...v, number: x })} placeholder="2026-1031847" mono />
+      <Field label="Filing office" value={v.office} onChange={(x) => set({ ...v, office: x })} placeholder="Delaware Department of State" />
+      <Field label="Filing date" value={v.date} onChange={(x) => set({ ...v, date: x })} placeholder="Nov 7, 2026" />
+      <FileHash label="Filed UCC-1 or acknowledgment" value={v.file} onChange={(x) => set({ ...v, file: x })} />
+    </>
+  );
+}
+const blankUcc1 = { number: "", office: "", date: "", file: null };
+const ucc1From = (v) => ({ number: v.number.trim(), office: v.office.trim(), date: v.date.trim(),
+  hash: v.file?.hash || "", file: v.file?.name || "" });
+const ucc1Started = (v) => !!(v.number.trim() || v.office.trim() || v.date.trim() || v.file);
 
 export function Sheet({ title, children, onClose }) {
   return (
@@ -213,7 +237,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const [rbTitle, setRbTitle] = useState("");
   const [rbUnits, setRbUnits] = useState("");
   const [rbInstr, setRbInstr] = useState(null);
-  const [rbDecl, setRbDecl] = useState(null);
+  const [rbUcc, setRbUcc] = useState(blankUcc1);
+  const [rbMaster, setRbMaster] = useState(null);
+  const [ucEdit, setUcEdit] = useState(blankUcc1);
+  const [ucOpen, setUcOpen] = useState(false);
+  const [ucErr, setUcErr] = useState("");
   const [rbErr, setRbErr] = useState("");
   const [rbOpen, setRbOpen] = useState(false);
 
@@ -475,22 +503,38 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!rbTitle.trim()) return setRbErr("Give the bond a name, such as Series A Note.");
     if (!u || u <= 0) return setRbErr("Enter the bond's total units as a whole number.");
     if (!rbInstr) return setRbErr("Choose the signed bond instrument so its hash can be recorded.");
-    if (!rbDecl) return setRbErr("Choose the interest declaration so its hash can be recorded.");
-    if (rbInstr.hash === rbDecl.hash) return setRbErr("The instrument and the declaration are the same file. Choose each document.");
+    const ucc1 = ucc1Started(rbUcc) ? ucc1From(rbUcc) : null;
+    if (ucc1 && !ucc1Done(ucc1)) return setRbErr("Complete the UCC-1: filing number, office, date and the filed copy. Or leave it all blank and add it later.");
+    if (ucc1 && ucc1.hash === rbInstr.hash) return setRbErr("The instrument and the UCC-1 are the same file. Choose each document.");
     setRbErr("");
+    const live = issuerInfo?.trusted && !!ucc1;
     const id = issuerInfo.code + "-" + String(bonds.length + 1).padStart(4, "0") + "-BD";
     const b = { id, title: rbTitle.trim(), face: u, total: u, unassigned: u, redeemed: 0, prior: [],
-      registered: today(), instrumentHash: rbInstr.hash, declarationHash: rbDecl.hash,
-      instrumentFile: rbInstr.name, declarationFile: rbDecl.name,
-      // The server decides; this mirrors it until the next load: the owner's own bonds go live at once.
-      review: issuerInfo?.trusted ? "approved" : "pending" };
+      registered: today(), instrumentHash: rbInstr.hash, instrumentFile: rbInstr.name,
+      ...(ucc1 ? { ucc1 } : {}),
+      ...(rbMaster ? { masterHash: rbMaster.hash, masterFile: rbMaster.name } : {}),
+      // The server decides; this mirrors it until the next load: the owner's own bonds go live with their UCC-1.
+      review: live ? "approved" : "pending" };
     setBonds((bs) => [...bs, b]);
     emit(id, "—", "BondAnchored", "ISSUER", rbInstr.hash);
     setActiveBond(id);
-    setRbTitle(""); setRbUnits(""); setRbInstr(null); setRbDecl(null); setRbOpen(false);
-    flash(issuerInfo?.trusted
-      ? id + " registered and live. Your own issuers skip platform review."
+    setRbTitle(""); setRbUnits(""); setRbInstr(null); setRbUcc(blankUcc1); setRbMaster(null); setRbOpen(false);
+    flash(live ? id + " registered and live. Your own issuers skip platform review."
+      : !ucc1 ? id + " registered. Add its UCC-1 on the Records tab" + (issuerInfo?.trusted ? " and it goes live." : " so the platform can review it.")
       : id + " registered. The platform reviews it before you can issue against it.");
+  }
+
+  // Adds or corrects a bond's UCC-1 before approval. The owner's own bond goes live with it.
+  function saveUcc1() {
+    const ucc1 = ucc1From(ucEdit);
+    if (!ucc1Done(ucc1)) return setUcErr("Enter the filing number, office, date and the filed copy.");
+    if (ucc1.hash === bond.instrumentHash) return setUcErr("That's the bond instrument. Choose the filed UCC-1 or its acknowledgment.");
+    setUcErr("");
+    const live = issuerInfo?.trusted && bond.review === "pending";
+    setBonds((bs) => bs.map((b) => (b.id === bond.id ? { ...b, ucc1, ...(live ? { review: "approved" } : {}) } : b)));
+    emit(bond.id, "—", "UCC1Recorded", "ISSUER", ucc1.hash);
+    setUcEdit(blankUcc1); setUcOpen(false);
+    flash(live ? bond.id + " is live. UCC-1 " + ucc1.number + " recorded." : "UCC-1 " + ucc1.number + " recorded on " + bond.id + ".");
   }
 
   if (!ready) return <Loading error={error} />;
@@ -683,7 +727,15 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     hint={(rbUnits ? usd(parseInt(rbUnits.replace(/[^0-9]/g, ""), 10) || 0) + " · " : "") +
                       "One unit is $1 of face value. Fixed once registered."} />
                   <FileHash label="Signed bond instrument" value={rbInstr} onChange={(v) => { setRbInstr(v); setRbErr(""); }} />
-                  <FileHash label="Interest declaration" value={rbDecl} onChange={(v) => { setRbDecl(v); setRbErr(""); }} />
+                  <div style={{ fontFamily: serif, fontSize: 16, color: T.ink, margin: "6px 0 4px" }}>UCC-1 financing statement</div>
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10, lineHeight: 1.5 }}>
+                    The filing that perfects the collateral interest in this bond. You can add it now or later;
+                    {issuerInfo?.trusted ? " the bond goes live once it's in." : " the platform can't approve the bond without it."}
+                  </div>
+                  <Ucc1Fields v={rbUcc} set={(v) => { setRbUcc(v); setRbErr(""); }} />
+                  <FileHash label="Master collateral assignment agreement (optional)" value={rbMaster}
+                    onChange={(v) => { setRbMaster(v); setRbErr(""); }}
+                    hint="If assignments incorporate a master agreement. Each assignment instrument is hashed on its own record." />
                   <div style={{ fontSize: 12, color: T.inkSoft, margin: "-4px 0 14px", lineHeight: 1.5 }}>
                     Files are hashed in this browser. Only the SHA-256 hashes are kept; the documents are never uploaded.
                   </div>
@@ -759,11 +811,50 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               <div className="mt-3">
                 <Note kind={bond.review === "rejected" ? "warn" : "caution"}>
                   {bond.review === "pending"
-                    ? "Waiting for platform review. You can record prior instruments now; issuing opens once the bond is approved, and it isn't on the public registry yet."
+                    ? (!ucc1Done(bond.ucc1)
+                      ? (issuerInfo?.trusted ? "Add this bond's UCC-1 below and it goes live." : "Add this bond's UCC-1 below so the platform can review it.") + " You can record prior instruments meanwhile."
+                      : "Waiting for platform review. You can record prior instruments now; issuing opens once the bond is approved, and it isn't on the public registry yet.")
                     : "Not approved by the platform" + (bond.reviewNote ? ": " + bond.reviewNote : ".") + " Nothing can be changed or issued on this bond."}
                 </Note>
               </div>
             )}
+
+            <div className="mt-4">
+              <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 6 }}>UCC-1</div>
+              {ucc1Done(bond.ucc1) && !ucOpen && (
+                <Rows data={[
+                  ["Filing number", bond.ucc1.number],
+                  ["Filing office", bond.ucc1.office],
+                  ["Filed", bond.ucc1.date],
+                  ["Filed copy", (bond.ucc1.file ? bond.ucc1.file + " · " : "") + bond.ucc1.hash.slice(0, 10) + "…" + bond.ucc1.hash.slice(-6)],
+                ]} />
+              )}
+              {bond.review === "pending" && !ucOpen && (
+                <div className="mt-2">
+                  <Button variant="quiet" onClick={() => { setUcEdit(bond.ucc1 ? { number: bond.ucc1.number, office: bond.ucc1.office,
+                    date: bond.ucc1.date, file: bond.ucc1.hash ? { name: bond.ucc1.file || "Recorded copy", hash: bond.ucc1.hash } : null } : blankUcc1);
+                    setUcErr(""); setUcOpen(true); }}>
+                    {ucc1Done(bond.ucc1) ? "Correct the UCC-1" : "Add the UCC-1"}
+                  </Button>
+                </div>
+              )}
+              {ucOpen && (
+                <div className="px-3 pt-3 pb-1" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
+                  <Ucc1Fields v={ucEdit} set={(v) => { setUcEdit(v); setUcErr(""); }} />
+                  {ucErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{ucErr}</p>}
+                  <div className="mb-3 space-y-3">
+                    <Button onClick={saveUcc1}>Record UCC-1</Button>
+                    <Button variant="quiet" onClick={() => { setUcOpen(false); setUcErr(""); }}>Cancel</Button>
+                  </div>
+                </div>
+              )}
+              {!ucc1Done(bond.ucc1) && bond.review !== "pending" && <Note>No UCC-1 recorded.</Note>}
+              {bond.masterHash && (
+                <div className="mt-2" style={{ fontSize: 12, color: T.inkSoft }}>
+                  Master collateral assignment agreement: {bond.masterFile ? bond.masterFile + " · " : ""}{bond.masterHash.slice(0, 10)}…{bond.masterHash.slice(-6)}
+                </div>
+              )}
+            </div>
 
             <div className="mt-3 mb-5">
               <Rows data={[
@@ -1139,7 +1230,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>UCC-3 filing</div>
                 <Field label="Filing number and date" value={filing} onChange={setFiling}
                   placeholder="2026-1234567890 · Oct 17, 2026"
-                  hint="Stored on-chain as a hash. The filing describes the collateral by bond, assignment ID, units, contract address, chain ID and document hash." />
+                  hint={(() => {
+                    const u = bonds.find((x) => x.id === a.bond)?.ucc1;
+                    return (ucc1Done(u) ? "Amends UCC-1 " + u.number + " (" + u.office + "). " : "") +
+                      "Stored on-chain as a hash. The filing describes the collateral by bond, assignment ID, units, contract address, chain ID and document hash.";
+                  })()} />
                 {isChild && (
                   <div className="mb-4">
                     <Label>Filed by</Label>

@@ -32,6 +32,12 @@ const Hash = ({ value, file }) => (
   </span>
 );
 
+// The bond's UCC-1: the public filing details, and the filed copy's hash.
+const ucc1Rows = (b) => b.ucc1Complete
+  ? [["UCC-1", b.ucc1.number + " · " + b.ucc1.office + " · filed " + b.ucc1.date],
+     ["UCC-1 filed copy", <Hash value={b.ucc1.hash} file={b.ucc1.file} />]]
+  : [["UCC-1", "Not recorded yet"]];
+
 const Card = ({ children, tone }) => (
   <div className="px-3 py-3 mb-3" style={{ background: T.white, borderRadius: 2,
     border: "1px solid " + (tone === "attention" ? T.amber : T.rule) }}>{children}</div>
@@ -185,21 +191,24 @@ function BondReviewCard({ b, onDone }) {
         chip={<Chip s="Issued" text="Waiting for review" />} />
       <BondFigures b={b} />
       <div className="mt-3">
-        <Label>Document hashes</Label>
+        <Label>Documents</Label>
         <Rows data={[
           ["Bond instrument", <Hash value={b.instrumentHash} file={b.instrumentFile} />],
-          ["Interest declaration", <Hash value={b.declarationHash} file={b.declarationFile} />],
+          ...ucc1Rows(b),
+          b.masterHash && ["Master collateral assignment", <Hash value={b.masterHash} file={b.masterFile} />],
         ]} />
         <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 6, lineHeight: 1.5 }}>
-          Ask the issuer for the signed documents and check that each file's SHA-256 matches before approving.
+          {b.ucc1Complete
+            ? "Ask the issuer for the signed documents and check that each file's SHA-256 matches, and look up the UCC-1 at the filing office, before approving."
+            : "Waiting for the issuer's UCC-1. The bond can't be approved until it's recorded."}
         </div>
       </div>
       <div className="mt-4">
         <Area label="Reason, if not approving" value={note} onChange={(v) => { setNote(v); setErr(""); }} rows={2}
-          placeholder="Declaration doesn't match the instrument's face amount" />
+          placeholder="UCC-1 collateral description doesn't match the bond" />
         <ErrorText>{err}</ErrorText>
         <div className="flex flex-wrap gap-3">
-          <div style={{ flex: "1 1 160px" }}><Button disabled={busy} onClick={() => decide("approved")}>Approve bond</Button></div>
+          <div style={{ flex: "1 1 160px" }}><Button disabled={busy || !b.ucc1Complete} onClick={() => decide("approved")}>Approve bond</Button></div>
           <div style={{ flex: "1 1 160px" }}>
             <Button variant="quiet" danger disabled={busy || !note.trim()} onClick={() => decide("rejected")}>Don't approve</Button>
           </div>
@@ -422,7 +431,7 @@ export default function PlatformApp() {
                 <div className="mt-2">
                   <Rows data={[
                     ["Instrument hash", <Hash value={b.instrumentHash} />],
-                    ["Declaration hash", <Hash value={b.declarationHash} />],
+                    ...ucc1Rows(b),
                   ]} />
                 </div>
               </Card>

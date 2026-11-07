@@ -170,6 +170,10 @@ export default function HolderPortal() {
     const b = bonds.find((x) => x.id === rec?.bond);
     return issuers.find((i) => i.id === b?.issuerId)?.legalName || "—";
   };
+  const ucc1Of = (rec) => {
+    const u = bonds.find((x) => x.id === rec?.bond)?.ucc1;
+    return u?.number ? u.number + " · " + u.office + " · " + u.date : "—";
+  };
   const pct = (u, bondId) => {
     const b = bonds.find((x) => x.id === bondId);
     return b ? ((u / b.total) * 100).toFixed(6) + "%" : "—";
@@ -213,6 +217,7 @@ export default function HolderPortal() {
   const [vRec, setVRec] = useState(null);
   const [vErr, setVErr] = useState("");
   const [vHash, setVHash] = useState(null);
+  const [dropOver, setDropOver] = useState(false);
 
   const open = reg.find((a) => a.id === openId);
   const children = open ? reg.filter((a) => a.parent === open.id) : [];
@@ -627,6 +632,7 @@ export default function HolderPortal() {
             <div className="mt-5">
               <Rows data={[
                 ["Issuer", issuerOf(open)],
+                ["Bond UCC-1", ucc1Of(open)],
                 ["Held by", open.party],
                 ["Attention of", open.contact],
                 ["Assignor", open.assignor],
@@ -949,6 +955,7 @@ export default function HolderPortal() {
 
                 <Rows data={[
                   ["Issuer", issuerOf(vRec)],
+                  ["Bond UCC-1", ucc1Of(vRec)],
                   ["Assignment", vRec.id],
                   ["Bond", vRec.bond],
                   ["Units", num(vRec.units)],
@@ -983,9 +990,13 @@ export default function HolderPortal() {
                   Your browser hashes the file locally. Nothing is uploaded and nothing leaves
                   this device.
                 </p>
-                <label className="block px-3 py-3" style={{ border: "1px dashed " + T.rule, borderRadius: 2,
-                  cursor: "pointer", background: T.white, fontSize: 14, color: T.ink, textAlign: "center" }}>
-                  Choose the PDF
+                <label className="block px-3 py-4"
+                  onDragOver={(e) => { e.preventDefault(); setDropOver(true); }}
+                  onDragLeave={() => setDropOver(false)}
+                  onDrop={(e) => { e.preventDefault(); setDropOver(false); e.dataTransfer.files?.[0] && hashFile(e.dataTransfer.files[0], vRec); }}
+                  style={{ border: dropOver ? "2px solid " + T.ink : "1px dashed " + T.rule, borderRadius: 2,
+                    cursor: "pointer", background: dropOver ? T.band : T.white, fontSize: 14, color: T.ink, textAlign: "center" }}>
+                  {dropOver ? "Drop to check it" : "Drop the PDF here, or choose it"}
                   <input type="file" style={{ display: "none" }}
                     onChange={(e) => e.target.files?.[0] && hashFile(e.target.files[0], vRec)} />
                 </label>

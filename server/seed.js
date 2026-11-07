@@ -8,11 +8,11 @@ export const ISSUERS = [
 
 export const BONDS = [
   { id: "KPII-0001-BD", issuerId: "iss_kpii", title: "Sample Bond 1", face: 100000000, total: 100000000, unassigned: 99765000, redeemed: 0, prior: [],
-    registered: "Mar 4, 2026", instrumentHash: "0xa41b7c…88e2", declarationHash: "0xd90f23…1c55" },
+    registered: "Mar 4, 2026", instrumentHash: "0xa41b7c…88e2", ucc1: { number: "DE-2026-1031847", office: "Delaware Department of State", date: "Mar 4, 2026", hash: "0xd90f23…1c55" } },
   { id: "KPII-0002-BD", issuerId: "iss_kpii", title: "Sample Bond 2", face: 100000000, total: 100000000, unassigned: 99950000, redeemed: 0, prior: [],
-    registered: "May 19, 2026", instrumentHash: "0xb72e04…3af1", declarationHash: "0x6c1a89…7d20" },
+    registered: "May 19, 2026", instrumentHash: "0xb72e04…3af1", ucc1: { number: "DE-2026-2290315", office: "Delaware Department of State", date: "May 19, 2026", hash: "0x6c1a89…7d20" } },
   { id: "KPII-0003-BD", issuerId: "iss_kpii", title: "Sample Bond 3", face: 100000000, total: 100000000, unassigned: 100000000, redeemed: 0, prior: [],
-    registered: "Sep 1, 2026", instrumentHash: "0x0e55ab…9140", declarationHash: "0x33d71f…b602" },
+    registered: "Sep 1, 2026", instrumentHash: "0x0e55ab…9140", ucc1: { number: "DE-2026-4408126", office: "Delaware Department of State", date: "Sep 1, 2026", hash: "0x33d71f…b602" } },
 ];
 
 const base = {

@@ -254,15 +254,18 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
 
   for (const b of bonds) {
     if (b.rev == null) {
-      // A new bond waits for platform review, unless it is the platform owner's own.
+      // A new bond waits for platform review. The platform owner's own goes live once its UCC-1 is recorded.
       const r = await c.query(
         "insert into bonds (id, data, issuer_id, review) values ($1, $2, $3, $4) on conflict (id) do nothing returning rev",
-        [b.id, stripBond(b), issuerId ?? b.issuerId, autoApprove ? "approved" : "pending"]);
+        [b.id, stripBond(b), issuerId ?? b.issuerId, autoApprove && ucc1Complete(b) ? "approved" : "pending"]);
       if (!r.rowCount) throw stale(b.id);
       revs.bonds[b.id] = Number(r.rows[0].rev);
     } else {
-      const r = await c.query("update bonds set data = $2, rev = rev + 1 where id = $1 and rev = $3 returning rev",
-        [b.id, stripBond(b), b.rev]);
+      const r = await c.query(
+        `update bonds set data = $2, rev = rev + 1,
+           review = case when $4 and review = 'pending' then 'approved' else review end
+         where id = $1 and rev = $3 returning rev`,
+        [b.id, stripBond(b), b.rev, autoApprove && ucc1Complete(b)]);
       if (!r.rowCount) throw stale(b.id);
       revs.bonds[b.id] = Number(r.rows[0].rev);
     }
@@ -304,6 +307,12 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
   if (bad) throw new Reject(422, bad.id + " would no longer add up to its total. Nothing was saved.");
   return revs;
 }
+
+// A bond's UCC-1 is complete once its filing number, office, date and filed copy's hash are all recorded.
+const ucc1Complete = (b) => !!(b?.ucc1 && ["number", "office", "date", "hash"].every((k) => String(b.ucc1[k] || "").trim()));
+
+// Field by field: Postgres stores JSON keys in its own order.
+const sameUcc1 = (x, y) => ["number", "office", "date", "hash", "file"].every((k) => (x?.[k] || "") === (y?.[k] || ""));
 
 // Ownership and review live in their own columns, set by the server only.
 const stripBond = (b) => { const { issuerId, review, reviewNote, rev, ...rest } = b; return rest; };
@@ -604,10 +613,15 @@ if (APP === "issuer") {
         if (owner && owner.issuer_id !== m.id) throw new Reject(403, "That bond belongs to another issuer.");
         if (owner?.review === "rejected") throw new Reject(422, b.id + " was not approved by the platform and can't be changed.");
         if (!Number.isInteger(b.total) || b.total <= 0) throw new Reject(400, "A bond needs a whole number of units.");
-        // What was anchored stays fixed: the total and the documents' hashes.
-        if (owner && ["total", "instrumentHash", "declarationHash"].some((k) => owner.data[k] !== b[k]))
-          throw new Reject(422, b.id + " was registered with a fixed total and document hashes; they can't change.");
-        if (!owner) review.set(b.id, m.trusted ? "approved" : "pending");
+        // What was anchored stays fixed: the total and the instrument's hash. The UCC-1 and master
+        // agreement can be added or corrected until the bond is approved, then they are fixed too.
+        if (owner && ["total", "instrumentHash"].some((k) => owner.data[k] !== b[k]))
+          throw new Reject(422, b.id + " was registered with a fixed total and instrument hash; they can't change.");
+        if (owner?.review === "approved" && (!sameUcc1(owner.data.ucc1, b.ucc1) || (owner.data.masterHash || null) !== (b.masterHash || null)))
+          throw new Reject(422, b.id + " is approved, so its UCC-1 and agreement are fixed.");
+        if (b.ucc1 && !ucc1Complete(b)) throw new Reject(400, "Enter the UCC-1's filing number, office, date and filed copy.");
+        if (m.trusted && ucc1Complete(b) && (!owner || owner.review === "pending")) review.set(b.id, "approved");
+        else if (!owner) review.set(b.id, "pending");
       }
       const clean = [];
       for (const raw of reg) {
@@ -779,8 +793,9 @@ if (APP === "platform") {
         total: x.data.total, unassigned: x.data.unassigned, redeemed: x.data.redeemed || 0,
         assigned: Number(x.assigned), priorUnits: prior.reduce((t, p) => t + p.units, 0), priorCount: prior.length,
         liveRecords: x.live_records, allRecords: x.all_records,
-        instrumentHash: x.data.instrumentHash, declarationHash: x.data.declarationHash,
-        instrumentFile: x.data.instrumentFile || null, declarationFile: x.data.declarationFile || null,
+        instrumentHash: x.data.instrumentHash, instrumentFile: x.data.instrumentFile || null,
+        ucc1: x.data.ucc1 || null, ucc1Complete: ucc1Complete(x.data),
+        masterHash: x.data.masterHash || null, masterFile: x.data.masterFile || null,
       };
     }) });
   }));
@@ -793,9 +808,10 @@ if (APP === "platform") {
     if (decision === "rejected" && !note) throw new Reject(400, "Give the issuer a reason for rejecting the bond.");
     const v = await tx(async (c) => {
       const b = (await c.query(
-        "select b.review, i.status from bonds b join issuers i on i.id = b.issuer_id where b.id = $1 for update of b", [req.params.id])).rows[0];
+        "select b.review, b.data, i.status from bonds b join issuers i on i.id = b.issuer_id where b.id = $1 for update of b", [req.params.id])).rows[0];
       if (!b) throw new Reject(404, "No such bond.");
       if (b.review !== "pending") throw new Reject(409, "This bond has already been reviewed.");
+      if (decision === "approved" && !ucc1Complete(b.data)) throw new Reject(409, "The issuer hasn't recorded this bond's UCC-1 yet.");
       if (b.status !== "approved") throw new Reject(409, "Approve the issuer before its bonds.");
       await c.query("update bonds set review = $2, review_note = $3, reviewed_by = $4, reviewed_at = now() where id = $1",
         [req.params.id, decision, note || null, u.id]);
