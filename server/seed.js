@@ -1,12 +1,17 @@
 // Sample register shared by the holder portal and the issuer console.
-// Loaded into an empty database, and again by the issuer's "Reset demo".
+// Loaded into an empty database.
+
+// The sample register's issuer. A new platform owner account takes it over.
+export const ISSUERS = [
+  { id: "iss_kpii", code: "KPII", legalName: "KPII Sample Issuer", status: "approved" },
+];
 
 export const BONDS = [
-  { id: "KPII-0001-BD", face: 100000000, total: 100000000, unassigned: 99765000, redeemed: 0, prior: [],
+  { id: "KPII-0001-BD", issuerId: "iss_kpii", title: "Sample Bond 1", face: 100000000, total: 100000000, unassigned: 99765000, redeemed: 0, prior: [],
     registered: "Mar 4, 2026", instrumentHash: "0xa41b7c…88e2", declarationHash: "0xd90f23…1c55" },
-  { id: "KPII-0002-BD", face: 100000000, total: 100000000, unassigned: 99950000, redeemed: 0, prior: [],
+  { id: "KPII-0002-BD", issuerId: "iss_kpii", title: "Sample Bond 2", face: 100000000, total: 100000000, unassigned: 99950000, redeemed: 0, prior: [],
     registered: "May 19, 2026", instrumentHash: "0xb72e04…3af1", declarationHash: "0x6c1a89…7d20" },
-  { id: "KPII-0003-BD", face: 100000000, total: 100000000, unassigned: 100000000, redeemed: 0, prior: [],
+  { id: "KPII-0003-BD", issuerId: "iss_kpii", title: "Sample Bond 3", face: 100000000, total: 100000000, unassigned: 100000000, redeemed: 0, prior: [],
     registered: "Sep 1, 2026", instrumentHash: "0x0e55ab…9140", declarationHash: "0x33d71f…b602" },
 ];
 

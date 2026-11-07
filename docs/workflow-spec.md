@@ -39,6 +39,23 @@ Principles:
 | 13 | Unlocking a record locked for a pledge requires the pledgee's signed release. |
 | 14 | The assignor files the UCC-3 for a child. The issuer will not issue the child's credential until the filing is recorded, and may file it instead after the 30-day window. |
 | 15 | Instruments issued before the registry (for example promissory notes) are recorded as prior instruments: an identifier and an amount taken off the bond. No holder, passkey or workflow. |
+| 16 | Many issuers share the platform. Each has an account, a permanent issuer code and its own bonds; the platform owner approves new issuers before anything they issue goes public. |
+
+## Issuers and accounts
+
+The platform hosts many issuers. One public registry shows every approved issuer's assignments; each issuer works in its own console and sees only its own bonds.
+
+| Role | Who | Can do |
+|---|---|---|
+| Platform owner | Created once with the platform's setup code | Approve, suspend or reinstate issuers |
+| Issuer owner | The person who created the issuer account | Everything an issuer can do, plus invite teammates |
+| Issuer member | Joined with a one-time invite code | Everything an issuer can do |
+
+- **Sign-up.** Open to anyone: legal name, a permanent 3–6 character issuer code, and the owner's name, email and password. Bond IDs take the form `CODE-NNNN-BD`, so IDs never collide on the shared registry.
+- **Pending.** A new issuer can register bonds and record prior instruments. It cannot issue assignments, and none of its bonds appear on the public registry, until the platform owner approves it.
+- **Suspended.** No changes of any kind. The issuer's records stay publicly verifiable.
+- **Registering a bond.** Name, total units (one unit is $1 of face value) and the signed bond instrument and interest declaration, which are hashed in the browser; only the SHA-256 hashes are kept. The total and both hashes are fixed once registered.
+- **Multisig.** Each issuer's ISSUER role is its own 2-of-3 Safe. Today any one team member can act; when the Safe is connected, each signer is a team member and consequential actions need two of them.
 
 ## System architecture
 
@@ -106,7 +123,7 @@ One registry contract holds every bond and assignment record. Three roles separa
 
 | Role | Held by | Can do |
 |---|---|---|
-| ISSUER | Safe multisig, 2 of 3 | Anchor bonds, issue assignments, issue or reject credentials, cancel disputed children, unlock, approve or reject redemption, record rotations, replace assignments, record filings and deliveries |
+| ISSUER | Each issuer's own Safe multisig, 2 of 3, acting only on that issuer's bonds | Anchor bonds, issue assignments, issue or reject credentials, cancel disputed children, unlock, approve or reject redemption, record rotations, replace assignments, record filings and deliveries |
 | RELAYER | Platform signing key in a cloud KMS/HSM | Holder-initiated transitions only: accept, assign out, cancel assign-out (AwaitingCredential only), request credential, lock, request redemption |
 | GUARDIAN | Separate key or the same multisig | Pause and unpause the contract in an emergency |
 

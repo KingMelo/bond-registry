@@ -25,19 +25,31 @@ async function call(method, url, body) {
 
 export const api = {
   signIn: (id, passkey) => call("POST", "/api/holder/signin", { id, passkey }),
-  setPasskey: (id, passkey) => call("POST", "/api/issuer/passkey", { id, passkey }),
-  clearLockout: (id) => call("POST", "/api/issuer/clear-lockout", { id }),
-  reset: () => call("POST", "/api/issuer/reset"),
+  setPasskey: (issuer, id, passkey) => call("POST", "/api/issuer/passkey", { issuer, id, passkey }),
+  clearLockout: (issuer, id) => call("POST", "/api/issuer/clear-lockout", { issuer, id }),
+  me: () => call("GET", "/api/auth/me"),
+  setup: (body) => call("POST", "/api/auth/setup", body),
+  signup: (body) => call("POST", "/api/auth/signup", body),
+  login: (email, password) => call("POST", "/api/auth/login", { email, password }),
+  logout: () => call("POST", "/api/auth/logout"),
+  team: (issuer) => call("GET", "/api/team?issuer=" + encodeURIComponent(issuer)),
+  invite: (issuer) => call("POST", "/api/team/invite", { issuer }),
+  adminIssuers: () => call("GET", "/api/admin/issuers"),
+  setIssuerStatus: (id, status) => call("POST", "/api/admin/issuers/" + encodeURIComponent(id) + "/status", { status }),
 };
 
 const byId = (list, key = "id") => new Map(list.map((x) => [x[key], x]));
 
-export function useRegistry({ onNotice } = {}) {
+// `issuer` scopes the issuer console to one issuer; the holder portal leaves it out.
+export function useRegistry({ onNotice, issuer } = {}) {
   const [reg, setReg] = useState([]);
   const [bonds, setBonds] = useState([]);
   const [events, setEvents] = useState([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
+  const [info, setInfo] = useState({ issuer: null, issuers: [] });
+  const scope = issuer ? "issuer=" + encodeURIComponent(issuer) : "";
+  const stateUrl = (since) => "/api/state?" + [scope, since != null ? "since=" + since : ""].filter(Boolean).join("&");
 
   const synced = useRef({ version: 0, reg: new Map(), bonds: new Map(), events: new Set() });
   const latest = useRef({ reg, bonds, events });
@@ -55,15 +67,16 @@ export function useRegistry({ onNotice } = {}) {
     };
     latest.current = { reg: s.reg, bonds: s.bonds, events: s.events };
     setReg(s.reg); setBonds(s.bonds); setEvents(s.events);
+    setInfo({ issuer: s.issuer || null, issuers: s.issuers || [] });
   }, []);
 
   const reload = useCallback(async () => {
-    const s = await call("GET", "/api/state");
+    const s = await call("GET", stateUrl());
     adopt(s);
     setReady(true);
     setError("");
     return s;
-  }, [adopt]);
+  }, [adopt, scope]);
 
   // Anything whose object identity changed since the last confirmed state is
   // sent; the apps always replace a record rather than mutating it.
@@ -79,7 +92,7 @@ export function useRegistry({ onNotice } = {}) {
     busy.current = true;
     try {
       const { version } = await call("POST", "/api/commit",
-        { base: s.version, reg: changedReg, bonds: changedBonds, events: newEvents });
+        { issuer, base: s.version, reg: changedReg, bonds: changedBonds, events: newEvents });
       changedReg.forEach((a) => s.reg.set(a.id, a));
       changedBonds.forEach((x) => s.bonds.set(x.id, x));
       newEvents.forEach((e) => s.events.add(e.eid));
@@ -94,7 +107,7 @@ export function useRegistry({ onNotice } = {}) {
     }
     // Pick up anything changed while the commit was in flight.
     flush();
-  }, [reload]);
+  }, [reload, issuer]);
 
   useEffect(() => { if (ready) flush(); }, [reg, bonds, events, ready, flush]);
 
@@ -103,7 +116,7 @@ export function useRegistry({ onNotice } = {}) {
     const t = setInterval(async () => {
       if (busy.current) return;
       try {
-        const s = await call("GET", "/api/state?since=" + synced.current.version);
+        const s = await call("GET", stateUrl(synced.current.version));
         if (s.unchanged || busy.current) return;
         const { reg: r, bonds: b, events: ev } = latest.current;
         const pending = r.some((a) => synced.current.reg.get(a.id) !== a) ||
@@ -113,9 +126,10 @@ export function useRegistry({ onNotice } = {}) {
       } catch { /* try again next tick */ }
     }, POLL_MS);
     return () => clearInterval(t);
-  }, [reload, adopt]);
+  }, [reload, adopt, scope]);
 
-  return { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload };
+  return { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload,
+    issuerInfo: info.issuer, issuers: info.issuers };
 }
 
 export const today = () =>

@@ -163,8 +163,13 @@ function Note({ children, kind = "quiet" }) {
 /* ---------------- app ---------------- */
 
 export default function HolderPortal() {
-  const { reg, setReg, bonds, events, setEvents, ready, error, reload } =
+  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers } =
     useRegistry({ onNotice: (m) => flash(m) });
+  // Every approved issuer shares this registry; each record names its issuer.
+  const issuerOf = (rec) => {
+    const b = bonds.find((x) => x.id === rec?.bond);
+    return issuers.find((i) => i.id === b?.issuerId)?.legalName || "—";
+  };
   const pct = (u, bondId) => {
     const b = bonds.find((x) => x.id === bondId);
     return b ? ((u / b.total) * 100).toFixed(6) + "%" : "—";
@@ -493,6 +498,7 @@ export default function HolderPortal() {
             </div>
 
             <Rows data={[
+              ["Issuer", issuerOf(open)],
               ["Assignment", open.id],
               ["Assignor", open.assignor],
               ["Assignee", open.party],
@@ -620,6 +626,7 @@ export default function HolderPortal() {
 
             <div className="mt-5">
               <Rows data={[
+                ["Issuer", issuerOf(open)],
                 ["Held by", open.party],
                 ["Attention of", open.contact],
                 ["Assignor", open.assignor],
@@ -941,6 +948,7 @@ export default function HolderPortal() {
                 </div>
 
                 <Rows data={[
+                  ["Issuer", issuerOf(vRec)],
                   ["Assignment", vRec.id],
                   ["Bond", vRec.bond],
                   ["Units", num(vRec.units)],

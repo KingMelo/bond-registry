@@ -7,7 +7,7 @@ import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading } from
    happens. RELAYER handles holder-initiated transitions elsewhere.
    ================================================================ */
 
-const T = {
+export const T = {
   paper: "#FBFAF7",
   band: "#E6EDE4",
   ink: "#1A2233",
@@ -19,8 +19,8 @@ const T = {
   white: "#FFFFFF",
 };
 
-const serif = "'Spectral', Georgia, serif";
-const sans = "'IBM Plex Sans', system-ui, sans-serif";
+export const serif = "'Spectral', Georgia, serif";
+export const sans = "'IBM Plex Sans', system-ui, sans-serif";
 
 const pct = (u, total) => ((u / total) * 100).toFixed(6) + "%";
 const num = (u) => u.toLocaleString("en-US");
@@ -57,11 +57,11 @@ const tone = (s) => {
 
 /* ---------------- pieces ---------------- */
 
-function Label({ children }) {
+export function Label({ children }) {
   return <div className="mb-1" style={{ fontSize: 12, color: T.inkSoft, fontFamily: sans }}>{children}</div>;
 }
 
-function Chip({ s, text }) {
+export function Chip({ s, text }) {
   const [fg, bg] = tone(s);
   return (
     <span className="inline-block px-2 py-0.5"
@@ -71,7 +71,7 @@ function Chip({ s, text }) {
   );
 }
 
-function Button({ children, onClick, variant = "solid", disabled, danger }) {
+export function Button({ children, onClick, variant = "solid", disabled, danger }) {
   const skin = variant === "solid"
     ? { background: danger ? T.red : T.ink, color: T.paper, border: "1px solid " + (danger ? T.red : T.ink) }
     : { background: "transparent", color: danger ? T.red : T.ink, border: "1px solid " + (danger ? T.red : T.rule) };
@@ -84,11 +84,11 @@ function Button({ children, onClick, variant = "solid", disabled, danger }) {
   );
 }
 
-function Field({ label, value, onChange, placeholder, mono, hint }) {
+export function Field({ label, value, onChange, placeholder, mono, hint, type, autoComplete }) {
   return (
     <div className="mb-4">
       <Label>{label}</Label>
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+      <input value={value} type={type || "text"} autoComplete={autoComplete} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
         style={{ width: "100%", fontFamily: sans, fontSize: 16,
           fontVariantNumeric: mono ? "tabular-nums" : "normal", color: T.ink, background: T.white,
           border: "1px solid " + T.rule, borderRadius: 2, padding: "10px 12px", outline: "none" }} />
@@ -97,7 +97,7 @@ function Field({ label, value, onChange, placeholder, mono, hint }) {
   );
 }
 
-function Area({ label, value, onChange, placeholder, rows = 4 }) {
+export function Area({ label, value, onChange, placeholder, rows = 4 }) {
   return (
     <div className="mb-4">
       <Label>{label}</Label>
@@ -109,7 +109,7 @@ function Area({ label, value, onChange, placeholder, rows = 4 }) {
   );
 }
 
-function Rows({ data }) {
+export function Rows({ data }) {
   return (
     <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
       {data.filter(Boolean).map(([k, v], i) => (
@@ -123,14 +123,41 @@ function Rows({ data }) {
   );
 }
 
-function Note({ children, kind = "quiet" }) {
+export function Note({ children, kind = "quiet" }) {
   const skin = kind === "warn" ? { background: "#F7E9E8", borderLeft: "3px solid " + T.red }
     : kind === "caution" ? { background: "#F2EAD3", borderLeft: "3px solid " + T.amber }
     : { background: T.wash };
   return <div className="px-3 py-3" style={{ ...skin, borderRadius: 2, fontSize: 13, color: T.ink, lineHeight: 1.6 }}>{children}</div>;
 }
 
-function Sheet({ title, children, onClose }) {
+async function sha256File(file) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Picks a file and keeps only its name and SHA-256 hash.
+function FileHash({ label, value, onChange }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="mb-4">
+      <Label>{label}</Label>
+      <label className="block px-3 py-3" style={{ border: "1px dashed " + T.rule, borderRadius: 2, cursor: "pointer",
+        background: T.white, fontSize: 14, color: T.ink, wordBreak: "break-all" }}>
+        {busy ? "Hashing…" : value ? value.name : "Choose the PDF"}
+        {value && <span style={{ display: "block", fontSize: 12, color: T.inkSoft, marginTop: 2 }}>
+          {value.hash.slice(0, 10) + "…" + value.hash.slice(-6)}</span>}
+        <input type="file" style={{ display: "none" }} onChange={async (e) => {
+          const f = e.target.files?.[0];
+          if (!f) return;
+          setBusy(true);
+          try { onChange({ name: f.name, hash: await sha256File(f) }); } finally { setBusy(false); }
+        }} />
+      </label>
+    </div>
+  );
+}
+
+export function Sheet({ title, children, onClose }) {
   return (
     <div className="fixed inset-0 flex items-end justify-center"
       style={{ background: "rgba(26,34,51,0.35)", zIndex: 50 }} onClick={onClose}>
@@ -150,10 +177,11 @@ function Sheet({ title, children, onClose }) {
 
 /* ---------------- console ---------------- */
 
-export default function IssuerConsole() {
-  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload } =
-    useRegistry({ onNotice: (m) => flash(m) });
-  const [activeBond, setActiveBond] = useState("KPII-0001-BD");
+export default function IssuerConsole({ issuerId, header, extraTabs = [] }) {
+  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo } =
+    useRegistry({ issuer: issuerId, onNotice: (m) => flash(m) });
+  const [pickedBond, setActiveBond] = useState(null);
+  const activeBond = bonds.some((b) => b.id === pickedBond) ? pickedBond : bonds[0]?.id || null;
   const [tab, setTab] = useState("queue");
   const [sheet, setSheet] = useState(null);
   const [toast, setToast] = useState("");
@@ -181,6 +209,17 @@ export default function IssuerConsole() {
   const [pRef, setPRef] = useState("");
   const [pUnits, setPUnits] = useState("");
   const [pErr, setPErr] = useState("");
+
+  const [rbTitle, setRbTitle] = useState("");
+  const [rbUnits, setRbUnits] = useState("");
+  const [rbInstr, setRbInstr] = useState(null);
+  const [rbDecl, setRbDecl] = useState(null);
+  const [rbErr, setRbErr] = useState("");
+  const [rbOpen, setRbOpen] = useState(false);
+
+  const status = issuerInfo?.status;
+  const approved = status === "approved";
+  const issuerName = issuerInfo?.legalName || "Issuer of record";
 
   const bond = bonds.find((b) => b.id === activeBond);
   const scoped = reg.filter((a) => a.bond === activeBond);
@@ -245,7 +284,7 @@ export default function IssuerConsole() {
   // Only its hash is stored, on the server.
   async function newPasskey(id) {
     const passkey = generatePasskey();
-    await api.setPasskey(id, passkey);
+    await api.setPasskey(issuerId, id, passkey);
     return passkey;
   }
   const showPasskey = (id, passkey, why) => setSheet({ k: "passkey", id, passkey, why });
@@ -303,7 +342,7 @@ export default function IssuerConsole() {
 
   // The credential is off-chain; clearing a lockout touches the credential store only.
   async function unlockCredential(a) {
-    try { await api.clearLockout(a.id); await reload(); } catch (e) { return flash(e.message); }
+    try { await api.clearLockout(issuerId, a.id); await reload(); } catch (e) { return flash(e.message); }
     done("Credential lockout cleared.");
   }
 
@@ -351,7 +390,7 @@ export default function IssuerConsole() {
     const seq = String(reg.filter((x) => x.bond === a.bond).length + 1).padStart(5, "0");
     const rec = {
       bond: a.bond, id: a.bond + "-A" + seq, parent: a.id, origin: "Replacement",
-      assignor: "Issuer of record (replacement)",
+      assignor: issuerName + " (replacement)",
       party: rpParty.trim(), contact: rpContact.trim(), position: "", address: rpAddress.trim(),
       units: a.units, issuedUnits: a.units, status: "Issued", created: today(), accepted: null,
       docHash: fakeHash(), filingRef: null, deliveryRef: null, tx: fakeHash(),
@@ -409,7 +448,7 @@ export default function IssuerConsole() {
     setNErr("");
     const seq = String(scoped.length + 1).padStart(5, "0");
     const rec = {
-      bond: activeBond, id: activeBond + "-A" + seq, parent: null, origin: "Issuer", assignor: "Issuer of record",
+      bond: activeBond, id: activeBond + "-A" + seq, parent: null, origin: "Issuer", assignor: issuerName,
       party: nParty.trim(), contact: nContact.trim(), position: nPosition.trim(), address: nAddress.trim(),
       units: u, issuedUnits: u, status: "Issued", created: today(), accepted: null,
       docHash: fakeHash(),
@@ -426,18 +465,32 @@ export default function IssuerConsole() {
     showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".");
   }
 
-  // Resets the shared database, for both apps.
-  async function reset() {
-    if (!window.confirm("Reset the shared demo register? Every change made in both apps will be lost.")) return;
-    try { await api.reset(); await reload(); } catch (e) { return flash(e.message); }
-    setActiveBond("KPII-0001-BD");
-    setTab("queue"); setSheet(null); clearForms(); setPRef(""); setPUnits(""); setPErr("");
-    flash("Demo register reset for both apps.");
+  // A new bond: its documents are hashed in this browser and only the hashes are kept.
+  function registerBond() {
+    const u = parseInt(rbUnits.replace(/[^0-9]/g, ""), 10);
+    if (!rbTitle.trim()) return setRbErr("Give the bond a name, such as Series A Note.");
+    if (!u || u <= 0) return setRbErr("Enter the bond's total units as a whole number.");
+    if (!rbInstr) return setRbErr("Choose the signed bond instrument so its hash can be recorded.");
+    if (!rbDecl) return setRbErr("Choose the interest declaration so its hash can be recorded.");
+    if (rbInstr.hash === rbDecl.hash) return setRbErr("The instrument and the declaration are the same file. Choose each document.");
+    setRbErr("");
+    const id = issuerInfo.code + "-" + String(bonds.length + 1).padStart(4, "0") + "-BD";
+    const b = { id, title: rbTitle.trim(), face: u, total: u, unassigned: u, redeemed: 0, prior: [],
+      registered: today(), instrumentHash: rbInstr.hash, declarationHash: rbDecl.hash,
+      instrumentFile: rbInstr.name, declarationFile: rbDecl.name };
+    setBonds((bs) => [...bs, b]);
+    emit(id, "—", "BondAnchored", "ISSUER", rbInstr.hash);
+    setActiveBond(id);
+    setRbTitle(""); setRbUnits(""); setRbInstr(null); setRbDecl(null); setRbOpen(false);
+    flash(id + " registered" + (approved ? "." : ". It goes public once your issuer account is approved."));
   }
 
-  if (!ready || !bond) return <Loading error={error} />;
+  if (!ready) return <Loading error={error} />;
 
-  const tabs = [["queue", "Approvals"], ["bonds", "Bonds"], ["records", "Records"], ["log", "Log"]];
+  const tabs = [["queue", "Approvals"], ["bonds", "Bonds"], ["records", "Records"], ["log", "Log"],
+    ...extraTabs.map(([k, l]) => [k, l])];
+  const extra = extraTabs.find(([k]) => k === tab);
+  const needsBond = ["issue", "records", "log"].includes(tab) && !bond;
 
   return (
     <div style={{ background: T.paper, minHeight: "100%", fontFamily: sans }}>
@@ -448,21 +501,38 @@ export default function IssuerConsole() {
 
       <div className="mx-auto" style={{ maxWidth: 560, padding: "20px 18px 56px" }}>
         <div className="flex items-baseline justify-between">
-          <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontWeight: 500 }}>Registrar</div>
-          <div className="text-right">
-            <button onClick={() => setSheet({ k: "switch" })}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontWeight: 500 }}>Registrar</div>
+            {header}
+          </div>
+          <div className="text-right" style={{ flexShrink: 0 }}>
+            <button onClick={() => bonds.length ? setSheet({ k: "switch" }) : setTab("bonds")}
               style={{ fontFamily: sans, fontSize: 12, background: "none", border: "none", padding: 0,
                 cursor: "pointer", textAlign: "right", color: T.inkSoft, fontVariantNumeric: "tabular-nums" }}>
-              <span style={{ color: T.ink }}>{activeBond}</span>
-              <span style={{ display: "block", marginTop: 2 }}>ISSUER · multisig {THRESHOLD}</span>
-            </button>
-            <button onClick={reset} style={{ fontFamily: sans, fontSize: 11, color: T.inkSoft, background: "none",
-              border: "none", padding: "2px 0 0", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2,
-              display: "block", marginLeft: "auto" }}>
-              Reset demo
+              <span style={{ color: T.ink }}>{activeBond || "No bonds yet"}</span>
+              <span style={{ display: "block", marginTop: 2 }}>{issuerInfo?.code} · multisig {THRESHOLD}</span>
             </button>
           </div>
         </div>
+
+        {status === "pending" && (
+          <div className="mt-4">
+            <Note kind="caution">
+              <strong style={{ fontWeight: 600 }}>Waiting for approval.</strong> The platform owner reviews
+              every new issuer. Until {issuerName} is approved you can register bonds and record prior
+              instruments; issuing assignments opens after approval, and nothing appears on the public
+              registry until then.
+            </Note>
+          </div>
+        )}
+        {status === "suspended" && (
+          <div className="mt-4">
+            <Note kind="warn">
+              <strong style={{ fontWeight: 600 }}>Suspended.</strong> The platform owner has suspended
+              {" "}{issuerName}. Its records stay publicly verifiable, but nothing can be changed.
+            </Note>
+          </div>
+        )}
 
         <div className="flex gap-4 mt-4 mb-5" style={{ borderBottom: "1px solid " + T.rule }}>
           {tabs.map(([k, l]) => (
@@ -512,6 +582,18 @@ export default function IssuerConsole() {
           </div>
         )}
 
+        {needsBond && (
+          <div className="px-3 py-5 text-center" style={{ border: "1px solid " + T.rule, borderRadius: 2,
+            fontSize: 14, color: T.inkSoft, lineHeight: 1.6 }}>
+            Register your first bond to see its records here.
+            <div className="mt-3" style={{ maxWidth: 260, margin: "12px auto 0" }}>
+              <Button onClick={() => { setTab("bonds"); setRbOpen(true); }}>Register a bond</Button>
+            </div>
+          </div>
+        )}
+
+        {extra && extra[2]()}
+
         {/* ============ bonds ============ */}
         {tab === "bonds" && (
           <div>
@@ -534,7 +616,10 @@ export default function IssuerConsole() {
                       border: "1px solid " + (!ok ? T.red : b.id === activeBond ? T.ink : T.rule),
                       borderRadius: 2, cursor: "pointer" }}>
                     <div className="flex justify-between items-baseline gap-3">
-                      <span style={{ fontSize: 15, color: T.ink, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{b.id}</span>
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ fontSize: 15, color: T.ink, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{b.id}</span>
+                        {b.title && <span style={{ display: "block", fontSize: 13, color: T.inkSoft }}>{b.title}</span>}
+                      </span>
                       <span style={{ fontSize: 14, color: T.ink, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
                         {usd(b.unassigned)}
                       </span>
@@ -550,14 +635,56 @@ export default function IssuerConsole() {
               })}
             </div>
 
+            {bonds.length === 0 && (
+              <div className="px-3 py-5 mt-5 text-center" style={{ border: "1px solid " + T.rule, borderRadius: 2,
+                fontSize: 14, color: T.inkSoft, lineHeight: 1.6 }}>
+                No bonds yet. Register one with its total units and the hashes of its signed documents.
+              </div>
+            )}
+
+            {bond && (
+              <div className="mt-4">
+                <Button disabled={!approved} onClick={() => setTab("issue")}>Issue an assignment from {activeBond}</Button>
+                {!approved && (
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 6, lineHeight: 1.5 }}>
+                    Issuing opens once the platform owner approves your issuer account.
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="mt-4">
-              <Button onClick={() => setTab("issue")}>Issue an assignment from {activeBond}</Button>
+              {!rbOpen ? (
+                <Button variant="quiet" disabled={status === "suspended"} onClick={() => setRbOpen(true)}>Register a bond</Button>
+              ) : (
+                <div className="px-3 pt-3 pb-1" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
+                  <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 10 }}>Register a bond</div>
+                  <Field label="Bond name" value={rbTitle} onChange={(v) => { setRbTitle(v); setRbErr(""); }}
+                    placeholder="Series A Secured Note" />
+                  <Field label="Total units" value={rbUnits} onChange={(v) => { setRbUnits(v); setRbErr(""); }}
+                    placeholder="10,000,000" mono
+                    hint={(rbUnits ? usd(parseInt(rbUnits.replace(/[^0-9]/g, ""), 10) || 0) + " · " : "") +
+                      "One unit is $1 of face value. Fixed once registered."} />
+                  <FileHash label="Signed bond instrument" value={rbInstr} onChange={(v) => { setRbInstr(v); setRbErr(""); }} />
+                  <FileHash label="Interest declaration" value={rbDecl} onChange={(v) => { setRbDecl(v); setRbErr(""); }} />
+                  <div style={{ fontSize: 12, color: T.inkSoft, margin: "-4px 0 14px", lineHeight: 1.5 }}>
+                    Files are hashed in this browser. Only the SHA-256 hashes are kept; the documents are never uploaded.
+                  </div>
+                  {rbErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{rbErr}</p>}
+                  <div className="mb-3 space-y-3">
+                    <Button onClick={registerBond}>
+                      Register {issuerInfo?.code}-{String(bonds.length + 1).padStart(4, "0")}-BD — multisig {THRESHOLD}
+                    </Button>
+                    <Button variant="quiet" onClick={() => { setRbOpen(false); setRbErr(""); }}>Cancel</Button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="mt-4">
               <Note>
                 The daily job rebuilds state from contract events and compares units and status
-                per record, plus the rule live + unassigned + redeemed = total per bond, and
+                per record, plus the rule prior + live + unassigned + redeemed = total per bond, and
                 checks every on-chain document hash against a document in the register. A mismatch alerts and freezes
                 the affected records rather than correcting them silently.
               </Note>
@@ -566,7 +693,7 @@ export default function IssuerConsole() {
         )}
 
         {/* ============ issue ============ */}
-        {tab === "issue" && (
+        {tab === "issue" && bond && (
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 25, color: T.ink }}>Issue an assignment</h1>
             <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, margin: "8px 0 18px", maxWidth: "62ch" }}>
@@ -586,7 +713,7 @@ export default function IssuerConsole() {
 
             {nErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 14 }}>{nErr}</p>}
 
-            <Button onClick={issueAssignment}>Issue — multisig {THRESHOLD}</Button>
+            <Button disabled={!approved} onClick={issueAssignment}>Issue — multisig {THRESHOLD}</Button>
             <div className="mt-3">
               <Button variant="quiet" onClick={() => setTab("bonds")}>Cancel</Button>
             </div>
@@ -602,7 +729,7 @@ export default function IssuerConsole() {
         )}
 
         {/* ============ records ============ */}
-        {tab === "records" && (
+        {tab === "records" && bond && (
           <div>
             <div className="flex justify-between items-baseline mb-1">
               <div style={{ fontFamily: serif, fontSize: 21, color: T.ink }}>{activeBond}</div>
@@ -699,7 +826,7 @@ export default function IssuerConsole() {
         )}
 
         {/* ============ log ============ */}
-        {tab === "log" && (
+        {tab === "log" && bond && (
           <div>
             <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, marginBottom: 4 }}>On-chain event log</div>
             <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, marginBottom: 16, maxWidth: "62ch" }}>
