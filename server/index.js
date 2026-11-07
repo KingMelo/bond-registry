@@ -110,6 +110,25 @@ async function migrate() {
       await c.query("update bonds set issuer_id = $1 where issuer_id is null", [ISSUERS[0].id]);
       console.log(`Assigned ${orphans.rows[0].n} existing bonds to issuer ${ISSUERS[0].code}`);
     }
+    // Amounts are whole cents. A register from when one unit was $1 is converted once, and every
+    // bond and record gets a new revision so a browser tab still holding dollar figures can't save them.
+    if (!(await c.query("select 1 from meta where k = 'units'")).rows.length) {
+      await c.query(`
+        update bonds set rev = rev + 1, data = data || jsonb_build_object(
+          'total', (data->>'total')::numeric * 100,
+          'face', coalesce((data->>'face')::numeric, (data->>'total')::numeric) * 100,
+          'unassigned', (data->>'unassigned')::numeric * 100,
+          'redeemed', coalesce((data->>'redeemed')::numeric, 0) * 100,
+          'prior', (select coalesce(jsonb_agg(p || jsonb_build_object('units', (p->>'units')::numeric * 100)), '[]'::jsonb)
+                    from jsonb_array_elements(coalesce(data->'prior', '[]'::jsonb)) p))`);
+      await c.query(`
+        update assignments set rev = rev + 1, data = data || jsonb_build_object(
+          'units', (data->>'units')::numeric * 100,
+          'issuedUnits', coalesce((data->>'issuedUnits')::numeric, (data->>'units')::numeric) * 100)`);
+      await c.query("insert into meta (k, version) values ('units', 100)");
+      await c.query("update meta set version = version + 1 where k = 'v'");
+      console.log("Converted amounts to cents");
+    }
     const n = (await c.query(`select (select count(*) from issuers)::int as issuers, (select count(*) from bonds)::int as bonds,
       (select count(*) from assignments)::int as records, (select count(*) from users)::int as users`)).rows[0];
     console.log(`Register: ${n.issuers} issuers, ${n.bonds} bonds, ${n.records} records, ${n.users} users`);

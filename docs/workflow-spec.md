@@ -55,7 +55,7 @@ The platform hosts many issuers. One public registry shows every approved bond's
 Two reviews stand between a new issuer and the public registry:
 
 1. **Issuer application.** Anyone can apply on the issuer console: legal name, a permanent 3–6 character issuer code, and the owner's name, email and password. Until the platform approves the application the issuer can't register bonds.
-2. **Bond review.** An approved issuer registers a bond: name, total units (one unit is $1 of face value), the signed bond instrument, and the bond's UCC-1 financing statement (filing number, office, date and the filed copy), plus an optional master collateral assignment agreement. Documents are hashed in the browser so only their SHA-256 hashes are kept. The total and the instrument's hash are fixed once registered. The UCC-1 can be added after registration; the bond can't be approved without it, and once approved it is fixed. The bond waits for platform review. Meanwhile the issuer can record prior instruments, but can't issue against it and it isn't public. Staff check the documents against the hashes and the UCC-1 at its filing office, then approve, or decline with a reason the issuer sees. A declined bond can't be changed; the issuer registers a corrected one instead. Each decision is recorded in the event log (BondApproved, BondRejected) with who made it.
+2. **Bond review.** An approved issuer registers a bond: name, face amount (recorded in cents: one unit is $0.01, so amounts like $9,428.87 are exact), the signed bond instrument, and the bond's UCC-1 financing statement (filing number, office, date and the filed copy), plus an optional master collateral assignment agreement. Documents are hashed in the browser so only their SHA-256 hashes are kept. The total and the instrument's hash are fixed once registered. The UCC-1 can be added after registration; the bond can't be approved without it, and once approved it is fixed. The bond waits for platform review. Meanwhile the issuer can record prior instruments, but can't issue against it and it isn't public. Staff check the documents against the hashes and the UCC-1 at its filing office, then approve, or decline with a reason the issuer sees. A declined bond can't be changed; the issuer registers a corrected one instead. Each decision is recorded in the event log (BondApproved, BondRejected) with who made it.
 
 - **Bond directory.** Platform staff see every bond: issuer, status, total, prior instruments, units assigned to holders, redeemed and unassigned, holder record counts and document hashes. No holder names or contact details.
 - **Suspended issuers** can't change anything. Their live records stay publicly verifiable.
@@ -94,7 +94,7 @@ Each assignment exists in three linked places: an on-chain record (public, minim
 | bondId | bytes32 | Links to the anchored bond record |
 | parentId | bytes32 | Zero for issuer-originated assignments |
 | origin | enum | Issuer, AssignOut or Replacement |
-| units | uint256 | Current units held under this record |
+| units | uint256 | Current amount held under this record, in cents |
 | pendingChildren | uint32 | Children created by `assignOut` that are not yet Accepted or Cancelled |
 | status | enum | See the state machine below |
 | docHash | bytes32 | SHA-256 of the signed assignment instrument |

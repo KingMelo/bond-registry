@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useRegistry, api, today, stamp, newEid, Loading, parseUnits } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — holder portal
@@ -23,8 +23,8 @@ const T = {
 const serif = "'Spectral', Georgia, serif";
 const sans = "'IBM Plex Sans', system-ui, sans-serif";
 
-const num = (u) => u.toLocaleString("en-US");
-const usd = (u) => "$" + u.toLocaleString("en-US");
+// Every amount is stored in cents and shown in dollars.
+const usd = dollars;
 
 const CONTRACT = "0x7A3f9C21D4e8B07a55F3cb1290Ae44D6b8E1B214";
 const CHAIN = "Polygon PoS · chain 137";
@@ -285,7 +285,7 @@ export default function HolderPortal() {
     if (open.status !== "Accepted") return setAErr("Only an accepted, unlocked record can assign out.");
     const au = parseUnits(aUnits), u = au.units;
     if (au.error) return setAErr(au.error);
-    if (u > open.units) return setAErr("You hold " + num(open.units) + " units.");
+    if (u > open.units) return setAErr("You hold " + usd(open.units) + ".");
     if (!aParty.trim()) return setAErr("Enter the assignee's legal name.");
     if (!aContact.trim()) return setAErr("Name the person the assignment is addressed to.");
     if (!aAddress.trim()) return setAErr("Add a mailing address.");
@@ -371,7 +371,7 @@ export default function HolderPortal() {
   }
 
   function requestRedemption() {
-    if (open.status !== "Accepted" || open.units <= 0) return setRdErr("Only an accepted record with units can be redeemed.");
+    if (open.status !== "Accepted" || open.units <= 0) return setRdErr("Only an accepted record with an amount left can be redeemed.");
     if (pendingChildren.length > 0) return setRdErr("Settle your pending transfers first. Each must be accepted or cancelled.");
     if (stepUp.trim() !== STEP_UP_DEMO) return setRdErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
     setRdErr("");
@@ -495,7 +495,7 @@ export default function HolderPortal() {
                 {usd(open.units)}
               </div>
               <div style={{ fontSize: 14, color: T.inkSoft, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
-                {num(open.units)} units · {pct(open.units, open.bond)} of {open.bond}
+                {pct(open.units, open.bond)} of {open.bond}
               </div>
               <div className="mt-4 pt-3" style={{ borderTop: "1px solid " + T.rule, fontSize: 14, color: T.ink, lineHeight: 1.6 }}>
                 Check this against the instrument in front of you before accepting.
@@ -535,8 +535,7 @@ export default function HolderPortal() {
             </p>
             <Rows data={[
               ["Assignment", open.id],
-              ["Registered units", num(open.units)],
-              ["Registered value", usd(open.units)],
+                            ["Registered amount", usd(open.units)],
               ["Assignor", open.assignor],
               ["Document hash", open.docHash],
             ]} />
@@ -564,7 +563,7 @@ export default function HolderPortal() {
               <Chip s={open.status} />
             </div>
             <div style={{ fontSize: 14, color: T.inkSoft, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
-              {num(open.units)} units · {pct(open.units, open.bond)} of {open.bond}
+              {pct(open.units, open.bond)} of {open.bond}
               {open.issuedUnits !== open.units ? " · issued at " + usd(open.issuedUnits) : ""}
             </div>
 
@@ -605,7 +604,7 @@ export default function HolderPortal() {
               <div className="mt-4">
                 <Note>
                   Every unit has been assigned out. This record stays open until each pending
-                  transfer is accepted or cancelled, so cancelled units always have somewhere to return.
+                  transfer is accepted or cancelled, so a cancelled amount always has somewhere to return.
                 </Note>
               </div>
             )}
@@ -733,7 +732,7 @@ export default function HolderPortal() {
             </Note>
 
             <div className="mt-5">
-              <Field label="Units to assign" value={aUnits} onChange={setAUnits} placeholder="10,000" mono
+              <Field label="Amount to assign" value={aUnits} onChange={setAUnits} placeholder="10,000.00" mono
                 hint={aUnits ? (parseUnits(aUnits).error ||
                   usd(parseUnits(aUnits).units) + " · " + usd(Math.max(0, open.units - parseUnits(aUnits).units)) + " remaining") : null} />
             </div>
@@ -775,8 +774,7 @@ export default function HolderPortal() {
               ["Assignee", childIssued.party],
               ["Attention of", childIssued.contact],
               ["Position", childIssued.position || "—"],
-              ["Units", num(childIssued.units)],
-              ["Value", usd(childIssued.units)],
+              ["Amount", usd(childIssued.units)],
               ["Proportion", pct(childIssued.units, childIssued.bond)],
               ["Status", LABEL[childIssued.status]],
               ["Document hash", childIssued.docHash],
@@ -956,7 +954,7 @@ export default function HolderPortal() {
                   ["Bond UCC-1", ucc1Of(vRec)],
                   ["Assignment", vRec.id],
                   ["Bond", vRec.bond],
-                  ["Units", num(vRec.units)],
+                  ["Amount", usd(vRec.units)],
                   ["Proportion", pct(vRec.units, vRec.bond)],
                   ["Parent", vRec.parent || "Issuer-originated"],
                   ["Document hash", vRec.docHash],
@@ -975,7 +973,7 @@ export default function HolderPortal() {
                       style={{ background: i % 2 ? T.band : T.white, fontSize: 13 }}>
                       <span style={{ color: T.inkSoft, fontVariantNumeric: "tabular-nums" }}>{a.id}</span>
                       <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                        {num(a.units)} units
+                        {usd(a.units)}
                       </span>
                     </div>
                   ))}

@@ -153,20 +153,23 @@ export function useRegistry({ onNotice, issuer } = {}) {
     issuerInfo: info.issuer, issuers: info.issuers };
 }
 
-// Reads a dollar amount typed into a units box. One unit is $1, so "$250,000" and
-// "250,000.00" are 250000 units; an amount with cents is refused rather than misread.
+// Reads a dollar amount typed into an amount box and returns it in cents, the unit every
+// amount is stored in. "$9,428.87" is 942887; three or more decimal places are refused.
+// String arithmetic, so nothing is rounded by floating point.
 export function parseUnits(text) {
   const t = String(text || "").replace(/[$,\s]/g, "");
-  if (!t) return { units: 0, error: "Enter a whole number of units." };
-  const m = t.match(/^(\d+)(?:\.(\d*))?$/);
-  if (!m) return { units: 0, error: "Enter an amount in whole dollars, like 250,000." };
-  const whole = parseInt(m[1], 10);
-  if (m[2] && /[1-9]/.test(m[2]))
-    return { units: 0, error: "One unit is $1, so cents can't be recorded. Enter " + whole.toLocaleString("en-US") +
-      " or " + (whole + 1).toLocaleString("en-US") + "." };
-  if (whole <= 0) return { units: 0, error: "Enter a whole number of units." };
-  return { units: whole };
+  if (!t) return { units: 0, error: "Enter an amount." };
+  const m = t.match(/^(\d*)(?:\.(\d*))?$/);
+  if (!m || (!m[1] && !m[2])) return { units: 0, error: "Enter an amount in dollars and cents, like 9,428.87." };
+  if ((m[2] || "").length > 2) return { units: 0, error: "Use at most two decimal places, for cents." };
+  const units = parseInt(m[1] || "0", 10) * 100 + parseInt(((m[2] || "") + "00").slice(0, 2), 10);
+  if (units <= 0) return { units: 0, error: "Enter an amount above zero." };
+  return { units };
 }
+
+// Cents as dollars, always with both decimal places.
+export const dollars = (cents) =>
+  "$" + (Number(cents || 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export const today = () =>
   new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });

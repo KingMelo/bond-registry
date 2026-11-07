@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { T, serif, sans, Label, Chip, Button, Field, Area, Rows, Note } from "./issuer-console.jsx";
 import { Shell, Heading, Lede, ErrorText, TextLink } from "./issuer-account.jsx";
-import { api, Loading } from "../src/registry.jsx";
+import { api, Loading, dollars } from "../src/registry.jsx";
 
 /* ================================================================
    Platform console — the platform's own back office.
@@ -11,8 +11,8 @@ import { api, Loading } from "../src/registry.jsx";
    ================================================================ */
 
 const POLL_MS = 5000;
-const num = (u) => Number(u || 0).toLocaleString("en-US");
-const usd = (u) => "$" + num(u);
+// Every amount is stored in cents and shown in dollars.
+const usd = dollars;
 const day = (d) => (d ? new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—");
 
 const ISSUER = {

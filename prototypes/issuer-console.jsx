@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — issuer console
@@ -29,8 +29,8 @@ const unitsHint = (text, total) => {
   return error || usd(units) + " · " + pct(units, total) + " of the bond";
 };
 const pct = (u, total) => ((u / total) * 100).toFixed(6) + "%";
-const num = (u) => u.toLocaleString("en-US");
-const usd = (u) => "$" + u.toLocaleString("en-US");
+// Every amount is stored in cents and shown in dollars.
+const usd = dollars;
 
 const CONTRACT = "0x7A3f9C21D4e8B07a55F3cb1290Ae44D6b8E1B214";
 const THRESHOLD = "2 of 3";
@@ -390,7 +390,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     // Retired for good: redeemed units never return to the issuable pool.
     setBonds((bs) => bs.map((b) => (b.id === a.bond ? { ...b, redeemed: b.redeemed + a.units } : b)));
     emit(a.bond, a.id, "Redeemed", "ISSUER", recHash.trim());
-    done("Redeemed. These units are retired and this record can never be acted on again.");
+    done("Redeemed. This amount is retired and this record can never be acted on again.");
   }
 
   function rejectRedemption(a) {
@@ -454,7 +454,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (bond.prior.some((p) => !p.reversed && p.ref.toUpperCase() === ref.toUpperCase()))
       return setPErr(ref + " is already recorded against " + activeBond + ".");
     if (pu.error) return setPErr(pu.error);
-    if (u > bond.unassigned) return setPErr("Unassigned balance is " + num(bond.unassigned) + " units.");
+    if (u > bond.unassigned) return setPErr("Unassigned balance is " + usd(bond.unassigned) + ".");
     setPErr("");
     const entry = { id: "P" + String(bond.prior.length + 1).padStart(3, "0"), ref, units: u,
       recordedOn: today(), reversed: false };
@@ -479,7 +479,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   async function issueAssignment() {
     const nu = parseUnits(nUnits), u = nu.units;
     if (nu.error) return setNErr(nu.error);
-    if (u > bond.unassigned) return setNErr("Unassigned balance is " + num(bond.unassigned) + " units.");
+    if (u > bond.unassigned) return setNErr("Unassigned balance is " + usd(bond.unassigned) + ".");
     if (!nParty.trim()) return setNErr("Enter the holder's legal name.");
     if (!nContact.trim()) return setNErr("Name the person the instrument is addressed to.");
     if (!nAddress.trim()) return setNErr("Add a mailing address — both documents go by certified post.");
@@ -702,7 +702,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               <div className="px-3 py-5 mt-5 text-center" style={{ border: "1px solid " + T.rule, borderRadius: 2,
                 fontSize: 14, color: T.inkSoft, lineHeight: 1.6 }}>
                 {approved
-                  ? "No bonds yet. Register one with its total units and the hashes of its signed documents."
+                  ? "No bonds yet. Register one with its face amount and the hashes of its signed documents."
                   : "Bonds can be registered once the platform approves your issuer account."}
               </div>
             )}
@@ -728,10 +728,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 10 }}>Register a bond</div>
                   <Field label="Bond name" value={rbTitle} onChange={(v) => { setRbTitle(v); setRbErr(""); }}
                     placeholder="Series A Secured Note" />
-                  <Field label="Total units" value={rbUnits} onChange={(v) => { setRbUnits(v); setRbErr(""); }}
+                  <Field label="Face amount" value={rbUnits} onChange={(v) => { setRbUnits(v); setRbErr(""); }}
                     placeholder="10,000,000" mono
                     hint={(rbUnits ? (parseUnits(rbUnits).error || usd(parseUnits(rbUnits).units)) + " · " : "") +
-                      "One unit is $1 of face value. Fixed once registered."} />
+                      "In dollars and cents. Fixed once registered."} />
                   <FileHash label="Signed bond instrument" value={rbInstr} onChange={(v) => { setRbInstr(v); setRbErr(""); }} />
                   <div style={{ fontFamily: serif, fontSize: 16, color: T.ink, margin: "6px 0 4px" }}>UCC-1 financing statement</div>
                   <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 10, lineHeight: 1.5 }}>
@@ -775,7 +775,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               From {activeBond}. Unassigned balance {usd(bond.unassigned)}.
             </p>
 
-            <Field label="Units" value={nUnits} onChange={setNUnits} placeholder="30,000" mono
+            <Field label="Amount" value={nUnits} onChange={setNUnits} placeholder="30,000.00" mono
               hint={unitsHint(nUnits, bond.total)} />
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Holder</div>
@@ -917,7 +917,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <div className="px-3 pt-3 pb-1 mb-6" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
               <Field label="Instrument identifier" value={pRef} onChange={(v) => { setPRef(v); setPErr(""); }}
                 placeholder="PN-2024-007" />
-              <Field label="Amount taken off the bond (units)" value={pUnits} onChange={(v) => { setPUnits(v); setPErr(""); }}
+              <Field label="Amount taken off the bond" value={pUnits} onChange={(v) => { setPUnits(v); setPErr(""); }}
                 placeholder="250,000" mono
                 hint={unitsHint(pUnits, bond.total)} />
               {pErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{pErr}</p>}
@@ -1067,9 +1067,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               ["Position", a.position || "—"],
               ["Assignor", a.assignor],
               ["Parent", a.parent ? a.parent + (a.origin === "Replacement" ? " (replaced)" : "") : "Issuer-originated"],
-              ["Units", num(a.units)],
-              ["Value", usd(a.units)],
-              a.issuedUnits !== a.units && ["Issued at", num(a.issuedUnits) + " units"],
+              ["Amount", usd(a.units)],
+              a.issuedUnits !== a.units && ["Issued at", usd(a.issuedUnits)],
               pending.length > 0 && ["Pending transfers", pending.length + " · " + usd(pending.reduce((t, c) => t + c.units, 0))],
               ["Created", a.created],
               ["Accepted", a.accepted || "—"],
@@ -1281,7 +1280,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     <Note kind="caution">
                       For a court order, death, bankruptcy, lost instrument or legal successor. This
                       record becomes Superseded and a new record is issued for the same{" "}
-                      {num(a.units)} units. Units can't change.
+                      {usd(a.units)}. The amount can't change.
                     </Note>
                     <div className="mt-4">
                       <Field label="Hash of the supporting document" value={rpDoc} onChange={setRpDoc} placeholder="0x…" mono />
