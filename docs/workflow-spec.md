@@ -38,7 +38,7 @@ Principles:
 | 12 | No paper, no record: every on-chain change requires a document hash. |
 | 13 | Unlocking a record locked for a pledge requires the pledgee's signed release. |
 | 14 | The assignor files the UCC-3 for a child. The issuer will not issue the child's credential until the filing is recorded, and may file it instead after the 30-day window. |
-| 15 | Instruments issued before the registry (for example promissory notes) are recorded as prior instruments: an identifier and an amount taken off the bond. No holder, passkey or workflow. |
+| 15 | Instruments issued before the registry (for example promissory notes) are recorded as prior instruments: an identifier, a note of who holds it, its mailing receipt or tracking number, and an amount taken off the bond. No passkey or workflow. Holder names stay in the issuer console. |
 | 16 | Many issuers share the platform. The platform reviews each issuer before it can register bonds, then each bond before anything is issued against it or shown publicly. Platform staff work in a separate console that shows bond totals but no holder data. |
 
 ## Issuers, bonds and platform review
@@ -227,12 +227,12 @@ The holder locks the record and requests a new passkey in the app. The issuer ve
 
 Instruments issued against the bond before the registry existed, such as promissory notes, did not use partial assignments. They are recorded so the bond's full amount is accounted for, without bringing those instruments into the assignment workflow.
 
-1. Issuer console: on the bond, enter the instrument's identifier (for example `PN-2024-007`) and the amount it takes off the bond.
+1. Issuer console: on the bond, enter the instrument's identifier (for example `PN-2024-007`), who holds it, the mailing receipt or tracking number it was sent under (optional), and the amount it takes off the bond. The holder and mailing number are a note in the register only: they never go on-chain, to the public registry or to the platform directory.
 2. The console rejects an identifier already recorded on the bond, and any amount above the unassigned balance.
 3. On-chain: `recordPriorInstrument` with a hash of the identifier and the units. The units move from unassigned to `priorUnits`.
 4. An entry made in error is reversed, never deleted: `reversePriorInstrument` with a reason. The original line stays, marked reversed, and the units return to unassigned.
 
-Prior instruments have no holder, passkey, status or approvals, and they can be recorded at any time. They are not assignments and cannot be assigned out or redeemed through the registry; they only reduce what the bond has left to assign.
+Prior instruments have no passkey, status or approvals, and they can be recorded at any time. They are not assignments and cannot be assigned out or redeemed through the registry; they only reduce what the bond has left to assign.
 
 ### B. Issue an assignment (issuer to first holder)
 

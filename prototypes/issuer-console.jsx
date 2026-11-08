@@ -238,6 +238,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const [pRef, setPRef] = useState("");
   const [pUnits, setPUnits] = useState("");
+  const [pHolder, setPHolder] = useState("");
+  const [prMail, setPrMail] = useState("");
   const [pErr, setPErr] = useState("");
 
   const [rbTitle, setRbTitle] = useState("");
@@ -445,23 +447,26 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   /* --- prior instruments ---
      Promissory notes and other instruments issued before the registry. Each is
-     an identifier and an amount taken off the bond: no holder, no workflow. */
+     an identifier, who holds it, how it was mailed and the amount taken off the
+     bond. A note only: no passkey and no workflow. */
 
   function recordPrior() {
     const ref = pRef.trim();
     const pu = parseUnits(pUnits), u = pu.units;
+    const holder = pHolder.trim(), mail = prMail.trim();
     if (!ref) return setPErr("Enter the instrument's identifier.");
+    if (!holder) return setPErr("Enter who holds " + ref + ".");
     if (bond.prior.some((p) => !p.reversed && p.ref.toUpperCase() === ref.toUpperCase()))
       return setPErr(ref + " is already recorded against " + activeBond + ".");
     if (pu.error) return setPErr(pu.error);
     if (u > bond.unassigned) return setPErr("Unassigned balance is " + usd(bond.unassigned) + ".");
     setPErr("");
-    const entry = { id: "P" + String(bond.prior.length + 1).padStart(3, "0"), ref, units: u,
+    const entry = { id: "P" + String(bond.prior.length + 1).padStart(3, "0"), ref, holder, mail: mail || null, units: u,
       recordedOn: today(), reversed: false };
     setBonds((bs) => bs.map((b) => (b.id === activeBond
       ? { ...b, unassigned: b.unassigned - u, prior: [...b.prior, entry] } : b)));
     emit(activeBond, ref, "PriorInstrumentRecorded", "ISSUER", fakeHash());
-    setPRef(""); setPUnits("");
+    setPRef(""); setPUnits(""); setPHolder(""); setPrMail("");
     flash(ref + " recorded. " + usd(u) + " taken off " + activeBond + ".");
   }
 
@@ -884,8 +889,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 4 }}>Prior instruments</div>
             <p style={{ color: T.inkSoft, fontSize: 13, lineHeight: 1.6, marginBottom: 10, maxWidth: "62ch" }}>
-              Promissory notes and other instruments issued before this registry. Each one only takes
-              its amount off the bond — no holder, passkey or approvals.
+              Promissory notes and other instruments issued before this registry. Note who holds each one
+              and its mailing receipt or tracking number. It takes its amount off the bond; there is no
+              passkey or approval. Holder names stay in this console and never reach the public registry.
             </p>
             {bond.prior.length > 0 && (
               <div className="mb-3" style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
@@ -895,6 +901,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     <div style={{ minWidth: 0 }}>
                       <div style={{ color: p.reversed ? T.inkSoft : T.ink, textDecoration: p.reversed ? "line-through" : "none",
                         wordBreak: "break-word" }}>{p.ref}</div>
+                      {(p.holder || p.mail) && (
+                        <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 2, wordBreak: "break-word" }}>
+                          {p.holder ? "Held by " + p.holder : ""}{p.holder && p.mail ? " · " : ""}{p.mail ? "Mailed " + p.mail : ""}
+                        </div>
+                      )}
                       <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2 }}>
                         Recorded {p.recordedOn}{p.reversed ? " · reversed: " + p.reversedReason : ""}
                       </div>
@@ -917,6 +928,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <div className="px-3 pt-3 pb-1 mb-6" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
               <Field label="Instrument identifier" value={pRef} onChange={(v) => { setPRef(v); setPErr(""); }}
                 placeholder="PN-2024-007" />
+              <Field label="Holder" value={pHolder} onChange={(v) => { setPHolder(v); setPErr(""); }}
+                placeholder="Company or person who holds it" />
+              <Field label="Mailing receipt or tracking number (optional)" value={prMail} onChange={(v) => { setPrMail(v); setPErr(""); }}
+                placeholder="9407 1000 0000 0000 0000 00" mono />
               <Field label="Amount taken off the bond" value={pUnits} onChange={(v) => { setPUnits(v); setPErr(""); }}
                 placeholder="250,000" mono
                 hint={unitsHint(pUnits, bond.total)} />
@@ -1013,6 +1028,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
           <Rows data={[
             ["Bond", sheet.bond],
             ["Instrument", sheet.entry.ref],
+            ["Holder", sheet.entry.holder || "—"],
+            ["Mailing", sheet.entry.mail || "—"],
             ["Amount", usd(sheet.entry.units)],
             ["Recorded", sheet.entry.recordedOn],
           ]} />

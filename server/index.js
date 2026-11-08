@@ -130,6 +130,22 @@ async function migrate() {
       await c.query("update meta set version = version + 1 where k = 'v'");
       console.log("Converted amounts to cents");
     }
+    // Prior instruments recorded before entries carried a holder and mailing number are cleared
+    // once, at the owner's request; their amounts go back to unassigned. The events that recorded
+    // them stay in the append-only log as history.
+    if (!(await c.query("select 1 from meta where k = 'prior_v2'")).rows.length) {
+      const cleared = await c.query(`
+        update bonds set rev = rev + 1, data = data || jsonb_build_object(
+          'unassigned', (data->>'unassigned')::numeric + coalesce((select sum((p->>'units')::numeric)
+            from jsonb_array_elements(data->'prior') p where coalesce((p->>'reversed')::boolean, false) = false), 0),
+          'prior', '[]'::jsonb)
+        where jsonb_array_length(coalesce(data->'prior', '[]'::jsonb)) > 0`);
+      await c.query("insert into meta (k, version) values ('prior_v2', 1)");
+      if (cleared.rowCount) {
+        await c.query("update meta set version = version + 1 where k = 'v'");
+        console.log(`Cleared prior instruments on ${cleared.rowCount} bonds`);
+      }
+    }
     const n = (await c.query(`select (select count(*) from issuers)::int as issuers, (select count(*) from bonds)::int as bonds,
       (select count(*) from assignments)::int as records, (select count(*) from users)::int as users`)).rows[0];
     console.log(`Register: ${n.issuers} issuers, ${n.bonds} bonds, ${n.records} records, ${n.users} users`);
@@ -251,7 +267,12 @@ async function readState(bondFilter, params) {
   ]);
   const cred = new Map(creds.rows.map((r) => [r.id, r]));
   return {
-    bonds: bonds.rows.map((r) => ({ ...r.data, issuerId: r.issuer_id, review: r.review, reviewNote: r.review_note, rev: Number(r.rev) })),
+    bonds: bonds.rows.map((r) => {
+      const b = { ...r.data, issuerId: r.issuer_id, review: r.review, reviewNote: r.review_note, rev: Number(r.rev) };
+      // Prior instruments name their holder; the public site gets amounts only.
+      if (APP === "holder") b.prior = (b.prior || []).map(({ id, units, reversed }) => ({ id, units, reversed }));
+      return b;
+    }),
     reg: regs.rows.map(({ data, rev }) => {
       const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false };
       if (APP === "holder") for (const k of HOLDER_HIDDEN) delete out[k];
@@ -335,6 +356,28 @@ const ucc1Complete = (b) => !!(b?.ucc1 && ["number", "office", "date", "hash"].e
 const sameUcc1 = (x, y) => ["number", "office", "date", "hash", "file"].every((k) => (x?.[k] || "") === (y?.[k] || ""));
 
 // Ownership and review live in their own columns, set by the server only.
+// Prior instruments are append-only: an entry once recorded can only be marked reversed, with a
+// reason. A new entry names the instrument, its holder and an amount.
+function checkPrior(b, before) {
+  const prior = Array.isArray(b.prior) ? b.prior : [];
+  const was = new Map(((before && before.prior) || []).map((p) => [p.id, p]));
+  for (const p of prior) {
+    const o = was.get(p.id);
+    if (o) {
+      for (const k of ["ref", "holder", "mail", "units", "recordedOn"])
+        if ((o[k] ?? null) !== (p[k] ?? null)) throw new Reject(422, "A recorded prior instrument can't be changed; reverse it instead.");
+      if (o.reversed && !p.reversed) throw new Reject(422, "A reversed prior instrument stays reversed.");
+      if (p.reversed && !o.reversed && !String(p.reversedReason || "").trim()) throw new Reject(400, "Give a reason for the reversal.");
+      was.delete(p.id);
+    } else {
+      if (!String(p.ref || "").trim()) throw new Reject(400, "Enter the prior instrument's identifier.");
+      if (!String(p.holder || "").trim()) throw new Reject(400, "Enter who holds " + p.ref + ".");
+      if (!Number.isInteger(p.units) || p.units <= 0) throw new Reject(400, "Enter the amount for " + p.ref + ".");
+    }
+  }
+  if (was.size) throw new Reject(422, "A recorded prior instrument can't be removed; reverse it instead.");
+}
+
 const stripBond = (b) => { const { issuerId, review, reviewNote, rev, ...rest } = b; return rest; };
 
 function cleanRecord(raw) {
@@ -643,6 +686,7 @@ if (APP === "issuer") {
         if (owner?.review === "approved" && (owner.data.masterHash || null) !== (b.masterHash || null))
           throw new Reject(422, b.id + " is approved, so its master agreement is fixed.");
         if (b.ucc1 && !ucc1Complete(b)) throw new Reject(400, "Enter the UCC-1's filing number, office, date and filed copy.");
+        checkPrior(b, owner?.data);
         if (m.trusted && ucc1Complete(b) && (!owner || owner.review === "pending")) review.set(b.id, "approved");
         else if (!owner) review.set(b.id, "pending");
       }
