@@ -32,6 +32,8 @@ export const api = {
   signup: (body) => call("POST", "/api/auth/signup", body),
   login: (email, password) => call("POST", "/api/auth/login", { email, password }),
   logout: () => call("POST", "/api/auth/logout"),
+  forgot: (email) => call("POST", "/api/auth/forgot", { email }),
+  resetPassword: (token, password) => call("POST", "/api/auth/reset", { token, password }),
   createIssuer: (legalName, issuerCode) => call("POST", "/api/issuers", { legalName, issuerCode }),
   team: (issuer) => call("GET", "/api/team?issuer=" + encodeURIComponent(issuer)),
   invite: (issuer) => call("POST", "/api/team/invite", { issuer }),

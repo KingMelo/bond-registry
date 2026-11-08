@@ -42,8 +42,79 @@ export function TextLink({ children, onClick }) {
 
 /* ---------------- signed out ---------------- */
 
+/* ---------- password reset, shared by the issuer and platform consoles ---------- */
+
+// The token from an emailed reset link (/?reset=…), if the page was opened from one.
+export const resetToken = () => new URLSearchParams(window.location.search).get("reset");
+const dropResetToken = () => window.history.replaceState(null, "", window.location.pathname);
+
+export function ForgotPassword({ onBack }) {
+  const [email, setEmail] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  async function submit() {
+    setBusy(true);
+    try { await api.forgot(email.trim()); setSent(true); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  if (sent) return (
+    <div>
+      <Heading>Check your email</Heading>
+      <Lede>
+        If {email.trim()} has an account here, a link to choose a new password is on its way. It works
+        once and expires in an hour. Nothing arrived? Check spam, then ask again after a minute.
+      </Lede>
+      <TextLink onClick={onBack}>Back to sign in</TextLink>
+    </div>
+  );
+  return (
+    <div>
+      <Heading>Reset your password</Heading>
+      <Lede>Enter the email you sign in with and we'll send you a link to choose a new password.</Lede>
+      <Field label="Email" value={email} onChange={(v) => { setEmail(v); setErr(""); }} placeholder="you@example.com" autoComplete="email" />
+      <ErrorText>{err}</ErrorText>
+      <Button disabled={busy || !email.trim()} onClick={submit}>{busy ? "Sending…" : "Email me a reset link"}</Button>
+      <div className="mt-4"><TextLink onClick={onBack}>Back to sign in</TextLink></div>
+    </div>
+  );
+}
+
+export function NewPassword({ token, onDone }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  async function submit() {
+    if (pw !== pw2) return setErr("The two passwords don't match.");
+    setBusy(true);
+    try { await api.resetPassword(token, pw); setDone(true); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  const finish = () => { dropResetToken(); onDone(); };
+  if (done) return (
+    <div>
+      <Heading>Password changed</Heading>
+      <Lede>Sign in with your new password. Any other signed-in sessions have been signed out.</Lede>
+      <Button onClick={finish}>Go to sign in</Button>
+    </div>
+  );
+  return (
+    <div>
+      <Heading>Choose a new password</Heading>
+      <Lede>This link works once and expires an hour after it was sent.</Lede>
+      <Field label="New password" value={pw} onChange={(v) => { setPw(v); setErr(""); }} type="password"
+        autoComplete="new-password" hint="At least 10 characters." />
+      <Field label="New password again" value={pw2} onChange={(v) => { setPw2(v); setErr(""); }} type="password"
+        autoComplete="new-password" />
+      <ErrorText>{err}</ErrorText>
+      <Button disabled={busy || !pw || !pw2} onClick={submit}>{busy ? "Saving…" : "Save new password"}</Button>
+      <div className="mt-4"><TextLink onClick={finish}>Back to sign in</TextLink></div>
+    </div>
+  );
+}
+
 function AuthScreens({ onDone }) {
-  const [mode, setMode] = useState("signin");
+  const [mode, setMode] = useState(resetToken() ? "reset" : "signin");
   const [f, setF] = useState({ email: "", password: "", name: "", legalName: "", issuerCode: "", inviteCode: "" });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -88,11 +159,15 @@ function AuthScreens({ onDone }) {
           <ErrorText>{err}</ErrorText>
           <Button disabled={busy} onClick={submit}>{busy ? "Signing in…" : "Sign in"}</Button>
           <div className="mt-5 space-y-2" style={{ fontSize: 14, color: T.inkSoft }}>
+            <div>Forgot your password? <TextLink onClick={() => go("forgot")}>Reset it</TextLink></div>
             <div>New issuer? <TextLink onClick={() => go("signup")}>Create an issuer account</TextLink></div>
             <div>Joining a team? <TextLink onClick={() => go("join")}>Use an invite code</TextLink></div>
           </div>
         </div>
       )}
+
+      {mode === "forgot" && <ForgotPassword onBack={() => go("signin")} />}
+      {mode === "reset" && <NewPassword token={resetToken()} onDone={() => go("signin")} />}
 
       {mode === "signup" && (
         <div>
@@ -239,7 +314,7 @@ export default function IssuerApp() {
   useEffect(() => { loadMe(); }, [loadMe]);
 
   if (!me) return <Loading error={err} />;
-  if (!me.user) return <AuthScreens onDone={loadMe} />;
+  if (!me.user || resetToken()) return <AuthScreens onDone={loadMe} />;
 
   const issuer = me.issuers.find((i) => i.id === picked) || me.issuers[0];
   const signOut = async () => { await api.logout().catch(() => {}); setMe(null); loadMe(); };

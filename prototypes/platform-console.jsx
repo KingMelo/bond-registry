@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { T, serif, sans, Label, Chip, Button, Field, Area, Rows, Note } from "./issuer-console.jsx";
-import { Shell, Heading, Lede, ErrorText, TextLink } from "./issuer-account.jsx";
+import { Shell, Heading, Lede, ErrorText, TextLink, ForgotPassword, NewPassword, resetToken } from "./issuer-account.jsx";
 import { api, Loading, dollars } from "../src/registry.jsx";
 
 /* ================================================================
@@ -56,7 +56,7 @@ const CardHead = ({ title, sub, chip }) => (
 /* ---------------- signed out ---------------- */
 
 function PlatformAuth({ needsSetup, onDone }) {
-  const [mode, setMode] = useState(needsSetup ? "setup" : "signin");
+  const [mode, setMode] = useState(resetToken() ? "reset" : needsSetup ? "setup" : "signin");
   const [f, setF] = useState({ email: "", password: "", name: "", setupCode: "", inviteCode: "" });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -94,11 +94,14 @@ function PlatformAuth({ needsSetup, onDone }) {
           <ErrorText>{err}</ErrorText>
           <Button disabled={busy} onClick={submit}>{busy ? "Signing in…" : "Sign in"}</Button>
           <div className="mt-5 space-y-2" style={{ fontSize: 14, color: T.inkSoft }}>
+            <div>Forgot your password? <TextLink onClick={() => go("forgot")}>Reset it</TextLink></div>
             <div>Joining the platform team? <TextLink onClick={() => go("join")}>Use an invite code</TextLink></div>
             {needsSetup && <div>First time? <TextLink onClick={() => go("setup")}>Set up the platform owner</TextLink></div>}
           </div>
         </div>
       )}
+      {mode === "forgot" && <ForgotPassword onBack={() => go("signin")} />}
+      {mode === "reset" && <NewPassword token={resetToken()} onDone={() => go("signin")} />}
       {mode === "setup" && (
         <div>
           <Heading>Set up the platform owner</Heading>
@@ -305,7 +308,7 @@ export default function PlatformApp() {
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 2800); };
 
   if (!me) return <Loading error={err} />;
-  if (!me.user) return <PlatformAuth needsSetup={me.needsSetup} onDone={loadMe} />;
+  if (!me.user || resetToken()) return <PlatformAuth needsSetup={me.needsSetup} onDone={loadMe} />;
   if (!issuers || !bonds) return <Loading error={err} />;
 
   async function setStatus(i, status) {

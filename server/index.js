@@ -18,6 +18,15 @@ const PORT = Number(process.env.PORT) || 3000;
 const PEPPER = process.env.PASSKEY_PEPPER || "";
 const MAX_ATTEMPTS = 5;
 const SESSION_DAYS = 7;
+// Password reset: a link by email, good for one hour and one use. Mail goes out through Resend.
+const RESET_MINUTES = 60;
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const RESEND_URL = process.env.RESEND_API_URL || "https://api.resend.com/emails";
+const MAIL_FROM = process.env.MAIL_FROM || "Bond Registry <onboarding@resend.dev>";
+// Links are built from configuration, never from the request's Host header.
+const PUBLIC_URL = (process.env.PUBLIC_URL
+  || (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "http://localhost:" + PORT))
+  .replace(/\/+$/, "");
 const INVITE_DAYS = 7;
 
 if (!process.env.DATABASE_URL) {
@@ -82,6 +91,10 @@ async function migrate() {
         code_hash text primary key, issuer_id text not null references issuers(id) on delete cascade,
         created_by text not null, created_at timestamptz not null default now(),
         expires_at timestamptz not null, used_by text);
+      create table if not exists password_resets (
+        token_hash text primary key, user_id text not null references users(id) on delete cascade,
+        app text not null, created_at timestamptz not null default now(), expires_at timestamptz not null,
+        used_at timestamptz);
       create table if not exists sessions (
         token_hash text primary key, user_id text not null references users(id) on delete cascade,
         created_at timestamptz not null default now(), expires_at timestamptz not null);
@@ -452,6 +465,7 @@ if (APP === "holder") {
 
 /* ======================= accounts (issuer and platform consoles) ======================= */
 
+const escHtml = (v) => String(v).replace(/[&<>"']/g, (ch) => "&#" + ch.charCodeAt(0) + ";");
 const validEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e || "");
 const cleanEmail = (e) => String(e || "").trim().toLowerCase();
 function checkPassword(pw) {
@@ -540,6 +554,67 @@ if (APP !== "holder") {
     const token = readCookie(req);
     if (token) await pool.query("delete from sessions where token_hash = $1", [sha256(token)]);
     setCookie(req, res, "", 0);
+    res.json({ ok: true });
+  }));
+
+  // Forgot password. The answer is the same whether or not the account exists.
+  app.post("/api/auth/forgot", wrap(async (req, res) => {
+    if (limited("forgot:" + req.ip, 5)) throw new Reject(429, "Too many requests. Wait a minute and try again.");
+    if (!RESEND_API_KEY) throw new Reject(503, "Password reset by email isn't set up yet. Contact the platform owner.");
+    const email = cleanEmail(req.body?.email);
+    if (!validEmail(email)) throw new Reject(400, "Enter a valid email address.");
+    const u = (await pool.query("select id, email, name, is_admin from users where email = $1", [email])).rows[0];
+    const eligible = u && (APP !== "platform" || u.is_admin);
+    // One email a minute per account, so the form can't be used to flood an inbox.
+    const recent = eligible && (await pool.query(
+      "select 1 from password_resets where user_id = $1 and created_at > now() - interval '1 minute'", [u.id])).rows.length;
+    if (eligible && !recent) {
+      const token = crypto.randomBytes(32).toString("base64url");
+      await tx(async (c) => {
+        await c.query("delete from password_resets where user_id = $1 and used_at is null", [u.id]);
+        await c.query("insert into password_resets (token_hash, user_id, app, expires_at) values ($1, $2, $3, now() + $4::interval)",
+          [sha256(token), u.id, APP, RESET_MINUTES + " minutes"]);
+      });
+      const link = PUBLIC_URL + "/?reset=" + token;
+      const where = APP === "platform" ? "the platform console" : "the issuer console";
+      try {
+        const r = await fetch(RESEND_URL, {
+          method: "POST",
+          headers: { Authorization: "Bearer " + RESEND_API_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from: MAIL_FROM, to: [u.email], subject: "Reset your Bond Registry password",
+            text: `Hello ${u.name},\n\nSomeone asked to reset the password for ${u.email} on ${where}. ` +
+              `To choose a new one, open this link within ${RESET_MINUTES} minutes:\n\n${link}\n\n` +
+              `If it wasn't you, ignore this email; your password stays the same.`,
+            html: `<p>Hello ${escHtml(u.name)},</p><p>Someone asked to reset the password for ${escHtml(u.email)} on ${where}. ` +
+              `To choose a new one, open this link within ${RESET_MINUTES} minutes:</p>` +
+              `<p><a href="${escHtml(link)}">Reset your password</a></p>` +
+              `<p>If it wasn't you, ignore this email; your password stays the same.</p>`,
+          }),
+        });
+        if (!r.ok) console.error("Password reset email failed:", r.status, await r.text().catch(() => ""));
+      } catch (e) { console.error("Password reset email failed:", e.message); }
+    }
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/auth/reset", wrap(async (req, res) => {
+    if (limited("reset:" + req.ip, 10)) throw new Reject(429, "Too many attempts. Wait a minute and try again.");
+    const token = String(req.body?.token || "");
+    checkPassword(req.body?.password);
+    await tx(async (c) => {
+      const r = (await c.query(
+        "select user_id, app from password_resets where token_hash = $1 and used_at is null and expires_at > now() for update",
+        [sha256(token)])).rows[0];
+      if (!r || r.app !== APP) throw new Reject(400, "This reset link has expired or was already used. Ask for a new one.");
+      const salt = crypto.randomBytes(16).toString("hex");
+      await c.query("update users set pw_salt = $2, pw_hash = $3 where id = $1",
+        [r.user_id, salt, await hashPassword(req.body.password, salt)]);
+      await c.query("update password_resets set used_at = now() where token_hash = $1", [sha256(token)]);
+      await c.query("delete from password_resets where user_id = $1 and used_at is null", [r.user_id]);
+      // Every session on the old password ends, on both consoles.
+      await c.query("delete from sessions where user_id = $1", [r.user_id]);
+    });
     res.json({ ok: true });
   }));
 }
