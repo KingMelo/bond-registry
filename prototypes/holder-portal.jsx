@@ -26,8 +26,6 @@ const sans = "'IBM Plex Sans', system-ui, sans-serif";
 // Every amount is stored in cents and shown in dollars.
 const usd = dollars;
 
-const CONTRACT = "0x7A3f9C21D4e8B07a55F3cb1290Ae44D6b8E1B214";
-const CHAIN = "Polygon PoS · chain 137";
 const MAX_ATTEMPTS = 5;
 const STEP_UP_DEMO = "482913";
 
@@ -200,6 +198,181 @@ function Note({ children, kind = "quiet" }) {
   );
 }
 
+/* ---------------- verify, read straight from the chain ---------------- */
+
+const ORIGIN_SAY = { Issuer: "Issued directly by the issuer", AssignOut: "Assigned out from an earlier record",
+  Replacement: "Replaces an earlier record" };
+const linkStyle = { color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 };
+
+// The blockchain library is large, so it loads only when the Verify tab opens.
+function VerifyChain(props) {
+  const [lib, setLib] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { import("../src/chain-read.js").then(setLib).catch(() => setFailed(true)); }, []);
+  if (!lib) return <p style={{ fontSize: 14, color: T.inkSoft }}>{failed ? "The verifier couldn't load. Refresh to try again." : "Loading the verifier…"}</p>;
+  return <VerifyChainReady {...props} lib={lib} />;
+}
+
+function VerifyChainReady({ info, reg, issuerOf, lib }) {
+  const { readRecord, readBond, history, nameFor, looksLikeRecord, when } = lib;
+  const start = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") || "" : "";
+  const [q, setQ] = useState(start);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [res, setRes] = useState(null); // { kind: "record" | "bond", data }
+  const [hist, setHist] = useState(null);
+  const [histErr, setHistErr] = useState("");
+  const [doc, setDoc] = useState(null);
+
+  async function check(value = q) {
+    const id = String(value).trim().toUpperCase();
+    if (!id) return;
+    setBusy(true); setErr(""); setRes(null); setHist(null); setHistErr(""); setDoc(null);
+    try {
+      const rec = looksLikeRecord(id) ? await readRecord(info, id) : null;
+      if (rec) {
+        setRes({ kind: "record", data: rec });
+        history(info, rec.recordId).then(setHist).catch(() => setHistErr("The history couldn't be read from this endpoint just now. The figures above are current."));
+      } else {
+        const bond = looksLikeRecord(id) ? null : await readBond(info, id);
+        if (bond) setRes({ kind: "bond", data: bond });
+        else setErr("Nothing with the ID " + id + " is recorded on-chain. Check the ID on your paperwork; a record issued in the last minute may still be on its way.");
+      }
+    } catch (e) {
+      setErr("Couldn't reach the blockchain endpoint (" + (e.shortMessage || e.message) + "). Try again in a moment, or look the contract up on the block explorer below.");
+    } finally { setBusy(false); }
+  }
+  useEffect(() => { if (start && info) check(start); }, [info]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!info) return (
+    <div>
+      <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Verify an assignment</h1>
+      <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, marginTop: 10 }}>On-chain verification isn't switched on for this registry yet.</p>
+    </div>
+  );
+
+  const contractLink = info.explorer + "/address/" + info.contract;
+  const r = res?.kind === "record" ? res.data : null;
+  const b = res?.kind === "bond" ? res.data : r?.bond;
+  // The platform's own register, shown only to compare with the chain.
+  const mine = r && reg.find((a) => a.id.toUpperCase() === r.id);
+  const known = reg.map((a) => a.id);
+  const parentName = r?.parentId ? nameFor(r.parentId, known) : null;
+  const target = r ? r.docHash : b?.instrumentHash;
+  const match = doc && target ? doc.hash.toLowerCase() === target.toLowerCase() : null;
+
+  return (
+    <div>
+      <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Verify an assignment</h1>
+      <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
+        Enter an assignment ID, or a bond ID, from your paperwork. Your browser reads the answer
+        directly from the public blockchain, not from this platform, so you don't have to take our
+        word for it. No names or contact details are ever on-chain.
+      </p>
+
+      <Field label="Assignment or bond ID" value={q} onChange={(v) => { setQ(v); setErr(""); }} placeholder="KJPII-0001-BD-A00001" mono />
+      <Button disabled={busy || !q.trim()} onClick={() => check()}>{busy ? "Reading the chain…" : "Check the chain"}</Button>
+
+      {err && <div className="mt-4"><Note kind="warn">{err}</Note></div>}
+
+      {r && (
+        <div className="mt-6">
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontVariantNumeric: "tabular-nums" }}>{r.id}</div>
+            <Chip s={r.status} />
+          </div>
+          <p style={{ fontSize: 15, color: T.ink, lineHeight: 1.6, marginBottom: 14 }}>
+            {r.status === "Redeemed" ? "This record was redeemed. " + usd(r.units) + " was paid out and retired."
+              : r.status === "Superseded" ? "This record is closed. Its amount moved to another record."
+              : r.status === "Cancelled" ? "This assign-out was cancelled. Its amount went back to the assignor."
+              : "This record holds " + usd(r.units) + (r.bond ? " of bond " + r.bond.id : "") + "."}
+          </p>
+          <Rows data={[
+            ["Amount", usd(r.units)],
+            ["Status", LABEL[r.status] || r.status],
+            ["Bond", r.bond ? r.bond.id + " ✓" : "A bond not matching this ID's prefix"],
+            mine && ["Issuer", issuerOf(mine)],
+            ["How it began", ORIGIN_SAY[r.origin]],
+            r.parentId && ["From record", parentName || shortHash(r.parentId)],
+            r.pendingChildren > 0 && ["Pending transfers", String(r.pendingChildren)],
+            ["UCC-3 filing", r.filingRef ? "Recorded on-chain" : "Not recorded"],
+            ["Certified mailing", r.deliveryRef ? "Recorded on-chain" : "Not recorded"],
+            ["Last changed", when(r.updatedAt)],
+            ["Document fingerprint", shortHash(r.docHash)],
+          ]} />
+          {mine && (
+            <div className="mt-3">
+              {mine.units === r.units && mine.status === r.status
+                ? <Note>The platform's register agrees with the chain: {usd(mine.units)}, {(LABEL[mine.status] || mine.status).toLowerCase()}.</Note>
+                : <Note kind="warn">The platform's register shows {usd(mine.units)}, {(LABEL[mine.status] || mine.status).toLowerCase()}, which differs from the chain. A change may still be on its way to the chain; check again in a minute. If it persists, the chain is the record to rely on.</Note>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {b && (
+        <div className="mt-6">
+          <div style={{ fontFamily: serif, fontSize: r ? 17 : 21, color: T.ink, marginBottom: 8 }}>{r ? "The bond it belongs to" : "Bond " + b.id}</div>
+          <Rows data={[
+            ["Bond", b.id],
+            ["Total", usd(b.total)],
+            ["Held in assignments", usd(b.live)],
+            ["Prior instruments", usd(b.prior)],
+            ["Redeemed and retired", usd(b.redeemed)],
+            ["Left to assign", usd(b.unassigned)],
+            ["Adds up to the total", b.reconciled ? "Yes ✓" : "No"],
+            ["Anchored", when(b.anchoredAt)],
+            !r && ["Bond instrument fingerprint", shortHash(b.instrumentHash)],
+            !r && ["UCC-1 fingerprint", shortHash(b.ucc1Ref)],
+          ]} />
+        </div>
+      )}
+
+      {(r || b) && (
+        <div className="mt-6">
+          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 6 }}>
+            {r ? "Check your copy of the assignment" : "Check a copy of the bond instrument"}
+          </div>
+          <p style={{ fontSize: 14, color: T.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
+            Your browser fingerprints the file on this device and compares it with the one on-chain.
+            Nothing is uploaded.
+          </p>
+          <DocDrop label="Signed PDF" value={doc} onChange={setDoc} />
+          {match === true && <Note>Match. Your copy is exactly the document on record.</Note>}
+          {match === false && <Note kind="warn">No match. This file isn't the document on record: it may be a different version, a scan, or an altered copy.</Note>}
+        </div>
+      )}
+
+      {r && (
+        <div className="mt-6">
+          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>History on-chain</div>
+          {!hist && !histErr && <p style={{ fontSize: 14, color: T.inkSoft }}>Reading the history…</p>}
+          {histErr && <Note kind="warn">{histErr}</Note>}
+          {hist && (
+            <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
+              {hist.length === 0 && <div className="px-3 py-2" style={{ fontSize: 14, color: T.inkSoft }}>No events found.</div>}
+              {hist.map((e, i) => (
+                <div key={e.tx + i} className="flex justify-between gap-3 px-3 py-2"
+                  style={{ background: i % 2 ? T.band : T.white, borderTop: i ? "1px solid " + T.rule : "none", fontSize: 14 }}>
+                  <span style={{ color: T.ink }}>{e.label}</span>
+                  <a href={info.explorer + "/tx/" + e.tx} target="_blank" rel="noreferrer"
+                    style={{ ...linkStyle, color: T.inkSoft, fontSize: 13, whiteSpace: "nowrap" }}>{when(e.time)}</a>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-8" style={{ fontSize: 13, color: T.inkSoft, lineHeight: 1.6 }}>
+        Read from {info.network} through a public endpoint ({new URL(info.rpc).host}), contract{" "}
+        <a href={contractLink} target="_blank" rel="noreferrer" style={{ ...linkStyle, color: T.inkSoft }}>
+          {info.contract.slice(0, 10)}…{info.contract.slice(-6)}</a>, whose source code is published on the explorer.
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- app ---------------- */
 
 export default function HolderPortal() {
@@ -266,11 +439,6 @@ export default function HolderPortal() {
   const [rDone, setRDone] = useState(null);
 
   // verify
-  const [vId, setVId] = useState("");
-  const [vRec, setVRec] = useState(null);
-  const [vErr, setVErr] = useState("");
-  const [vHash, setVHash] = useState(null);
-  const [dropOver, setDropOver] = useState(false);
 
   const open = reg.find((a) => a.id === openId);
   const children = open ? reg.filter((a) => a.parent === open.id) : [];
@@ -456,25 +624,6 @@ export default function HolderPortal() {
     emit(rec.bond, rec.id, "CredentialRequested", "RELAYER", requestHash);
     setRDone(rec);
     setRParty(""); setRContact(""); setRPhone(""); setRId("");
-  }
-
-  function verify() {
-    const id = vId.trim().toUpperCase();
-    const rec = reg.find((a) => a.id.toUpperCase() === id);
-    setVHash(null);
-    if (!rec) { setVErr("No assignment with that ID is on the register."); setVRec(null); return; }
-    setVErr(""); setVRec(rec);
-  }
-
-  async function hashFile(file, rec) {
-    try {
-      const buf = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", buf);
-      const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-      setVHash({ computed: "0x" + hex.slice(0, 6) + "…" + hex.slice(-4), full: hex, match: false, name: file.name });
-    } catch (e) {
-      setVHash({ error: "This browser blocked local hashing. Nothing was uploaded." });
-    }
   }
 
   const tabs = [["access", "Holder access"], ["request", "Request access"], ["verify", "Verify"]];
@@ -984,123 +1133,7 @@ export default function HolderPortal() {
         )}
 
         {/* ============ verify ============ */}
-        {tab === "verify" && (
-          <div>
-            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Verify an assignment</h1>
-            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-              No account needed. Anyone holding a copy can confirm its current status. Names,
-              contact details and passkeys are never shown.
-            </p>
-
-            <Field label="Assignment ID" value={vId} onChange={setVId} placeholder="KPII-0001-BD-A00001" mono />
-            <Button onClick={verify}>Check the register</Button>
-
-            {vErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginTop: 16 }}>{vErr}</p>}
-
-            {vRec && (
-              <div className="mt-5">
-                <div className="flex items-center gap-3 mb-3">
-                  <div style={{ fontFamily: serif, fontSize: 19, color: T.ink }}>Record found</div>
-                  <Chip s={vRec.status} />
-                </div>
-
-                <Rows data={[
-                  ["Issuer", issuerOf(vRec)],
-                  ["Bond UCC-1", ucc1Of(vRec)],
-                  ["Assignment", vRec.id],
-                  ["Bond", vRec.bond],
-                  ["Amount", usd(vRec.units)],
-                  ["Proportion", pct(vRec.units, vRec.bond)],
-                  ["Parent", vRec.parent || "Issuer-originated"],
-                  ["Document hash", vRec.docHash],
-                  ["UCC-3 filing", vRec.filingRef ? "Filed · " + shortHash(vRec.filingRef) : "Not yet filed"],
-                  ["Delivery ref", vRec.deliveryRef ? shortHash(vRec.deliveryRef) : "—"],
-                  ["Last updated", vRec.accepted || vRec.created],
-                  chainInfo && ["On-chain", <OnChain rec={vRec} info={chainInfo} />],
-                ]} />
-
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "20px 0 8px" }}>
-                  Chain back to the issuer
-                </div>
-                <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
-                  {chainOf(vRec).map((a, i) => (
-                    <div key={a.id} className="flex justify-between gap-3 px-3 py-2"
-                      style={{ background: i % 2 ? T.band : T.white, fontSize: 13 }}>
-                      <span style={{ color: T.inkSoft, fontVariantNumeric: "tabular-nums" }}>{a.id}</span>
-                      <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-                        {usd(a.units)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "20px 0 8px" }}>
-                  Check your copy of the instrument
-                </div>
-                <p style={{ fontSize: 14, color: T.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
-                  Your browser hashes the file locally. Nothing is uploaded and nothing leaves
-                  this device.
-                </p>
-                <label className="block px-3 py-4"
-                  onDragOver={(e) => { e.preventDefault(); setDropOver(true); }}
-                  onDragLeave={() => setDropOver(false)}
-                  onDrop={(e) => { e.preventDefault(); setDropOver(false); e.dataTransfer.files?.[0] && hashFile(e.dataTransfer.files[0], vRec); }}
-                  style={{ border: dropOver ? "2px solid " + T.ink : "1px dashed " + T.rule, borderRadius: 2,
-                    cursor: "pointer", background: dropOver ? T.band : T.white, fontSize: 14, color: T.ink, textAlign: "center" }}>
-                  {dropOver ? "Drop to check it" : "Drop the PDF here, or choose it"}
-                  <input type="file" style={{ display: "none" }}
-                    onChange={(e) => e.target.files?.[0] && hashFile(e.target.files[0], vRec)} />
-                </label>
-
-                {vHash && !vHash.error && (
-                  <div className="mt-3">
-                    <Rows data={[
-                      ["File", vHash.name],
-                      ["Computed hash", vHash.computed],
-                      ["Recorded hash", vRec.docHash],
-                    ]} />
-                    <div className="mt-2">
-                      <Note kind="warn">
-                        No match. The recorded hashes in this demo are placeholders, so any real
-                        file will differ. In production a match proves your copy is the recorded
-                        instrument.
-                      </Note>
-                    </div>
-                  </div>
-                )}
-                {vHash?.error && (
-                  <div className="mt-3"><Note kind="warn">{vHash.error}</Note></div>
-                )}
-
-                <div className="mt-5">
-                  <Rows data={[
-                    ["Contract", CONTRACT],
-                    ["Network", CHAIN],
-                    ["Read path", "Public RPC, independent of this platform"],
-                  ]} />
-                </div>
-
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "20px 0 8px" }}>
-                  On-chain events
-                </div>
-                <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
-                  {events.filter((e) => e.id === vRec.id).map((e, i) => (
-                    <div key={i} className="px-3 py-2"
-                      style={{ background: i % 2 ? T.band : T.white, borderTop: i ? "1px solid " + T.rule : "none" }}>
-                      <div className="flex justify-between gap-3" style={{ fontSize: 13 }}>
-                        <span style={{ color: T.ink }}>{e.ev}</span>
-                        <span style={{ color: T.inkSoft, fontVariantNumeric: "tabular-nums" }}>{e.actor}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
-                        {e.t} · {e.ref}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        {tab === "verify" && <VerifyChain info={chainInfo} reg={reg} issuerOf={issuerOf} />}
       </div>
 
       {toast && (

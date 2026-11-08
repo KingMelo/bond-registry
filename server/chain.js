@@ -238,7 +238,15 @@ export async function statusFor(pool, bondIds, recordIds) {
   return out;
 }
 
-export const publicInfo = () => (enabled ? { contract: CONTRACT, explorer: EXPLORER } : null);
+// What a browser needs to read the contract itself, without this server: the public endpoint,
+// the network, and the block the contract was deployed in (where the event search starts).
+export const publicInfo = () => (enabled ? {
+  contract: CONTRACT, explorer: EXPLORER,
+  rpc: process.env.CHAIN_PUBLIC_RPC || "https://polygon-amoy-bor-rpc.publicnode.com",
+  chainId: Number(process.env.CHAIN_ID || 80002),
+  network: process.env.CHAIN_NETWORK || "Polygon Amoy (testnet)",
+  fromBlock: Number(process.env.CHAIN_FROM_BLOCK || 52339175),
+} : null);
 
 // ------------------------------------------------------------------ the sender
 
