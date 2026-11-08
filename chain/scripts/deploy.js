@@ -13,11 +13,19 @@ async function main() {
   if (network.name === "polygon" && Object.values(roles).includes(deployer.address))
     throw new Error("On mainnet, set ADMIN_ADDRESS, PLATFORM_ADDRESS, RELAYER_ADDRESS and GUARDIAN_ADDRESS to their own addresses.");
   console.log("Network:", network.name, "Deployer:", deployer.address);
+  const balance = await ethers.provider.getBalance(deployer.address);
+  console.log("Deployer balance:", ethers.formatEther(balance), "POL");
+  if (balance === 0n) throw new Error("The deployer has no POL for gas. Fund " + deployer.address + " first.");
   console.log("Roles:", roles);
   const R = await ethers.getContractFactory("BondInterestRegistry");
   const reg = await R.deploy(roles.admin, roles.platform, roles.relayer, roles.guardian);
   await reg.waitForDeployment();
-  console.log("BondInterestRegistry:", await reg.getAddress());
+  const addr = await reg.getAddress();
+  const receipt = await reg.deploymentTransaction().wait();
+  console.log("BondInterestRegistry:", addr);
+  console.log("Deployed in block", receipt.blockNumber, "tx", receipt.hash, "gas used", receipt.gasUsed.toString());
+  if (network.name === "amoy") console.log("Explorer: https://amoy.polygonscan.com/address/" + addr);
+  if (network.name === "polygon") console.log("Explorer: https://polygonscan.com/address/" + addr);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
