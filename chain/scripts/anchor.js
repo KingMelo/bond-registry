@@ -51,7 +51,12 @@ async function main() {
   if (records) throw new Error(`${bondDisplay} has ${records} assignment records; this script only anchors a bond before any are issued.`);
   if (!isHash(b.instrumentHash)) throw new Error("The bond instrument's hash isn't a full SHA-256: " + b.instrumentHash);
   const u = b.ucc1 || {};
-  if (!u.number || !u.office || !u.date || !isHash(u.hash)) throw new Error("The bond's UCC-1 is incomplete.");
+  const missing = [!u.number && "filing number", !u.office && "filing office", !u.date && "filing date",
+    !isHash(u.hash) && ("filed copy's SHA-256" + (u.hash ? " (stored value isn't a full hash)" : ""))].filter(Boolean);
+  if (missing.length) {
+    console.log("  UCC-1 fields present:", Object.keys(u).filter((x) => u[x]).join(", ") || "none", "· has ucc1 object:", !!b.ucc1);
+    throw new Error("The bond's UCC-1 is missing: " + missing.join(", ") + ". Add it on the Records tab, then run again.");
+  }
   const priors = (b.prior || []).filter((p) => !p.reversed);
   const priorSum = priors.reduce((t, p) => t + BigInt(p.units), 0n);
   if (priorSum + BigInt(b.unassigned) + BigInt(b.redeemed || 0) !== BigInt(b.total))
