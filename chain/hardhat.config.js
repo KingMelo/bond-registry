@@ -19,7 +19,7 @@ const key = process.env.DEPLOYER_KEY ? [process.env.DEPLOYER_KEY] : [];
 module.exports = {
   solidity: { version: SOLC, settings: { optimizer: { enabled: true, runs: 200 }, evmVersion: "paris" } },
   networks: {
-    amoy: { url: process.env.AMOY_RPC_URL || "https://rpc-amoy.polygon.technology", chainId: 80002, accounts: key },
+    amoy: { url: process.env.AMOY_RPC_URL || "https://polygon-amoy-bor-rpc.publicnode.com", chainId: 80002, accounts: key },
     polygon: { url: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com", chainId: 137, accounts: key },
   },
 };

@@ -1,0 +1,19 @@
+{
+  "network": "amoy",
+  "chainId": 80002,
+  "contract": "BondInterestRegistry",
+  "address": "0x91312fB0c4eEe48031EF4a0C6b53A89A943109c8",
+  "deployTx": "0x594cfe495b8422f647fa9d3a3767b5da871266b9b5ecb2cc0c81735209a822aa",
+  "block": 52339175,
+  "gasUsed": 3089571,
+  "deployedAt": "2026-11-08T18:16:33Z",
+  "commit": "98a5c6a",
+  "roles": {
+    "admin": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "platform": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "guardian": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4"
+  },
+  "explorer": "https://amoy.polygonscan.com/address/0x91312fB0c4eEe48031EF4a0C6b53A89A943109c8",
+  "note": "Testnet only. All four roles are on the testnet deployer wallet, whose key is stored as DEPLOYER_KEY on the amoy-deploy-once Railway service."
+}
