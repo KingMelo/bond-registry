@@ -12,7 +12,7 @@ const ISS = id("KPII"), OTHER = id("ACME");
 const BOND = id("KPII-0001-BD"), BOND2 = id("ACME-0001-BD");
 const A1 = id("KPII-0001-BD-A00001"), A2 = id("KPII-0001-BD-A00002"), A3 = id("KPII-0001-BD-A00003");
 const C1 = id("KPII-0001-BD-A00004"), C2 = id("KPII-0001-BD-A00005");
-const TOTAL = 200_000_000n; // $2,000,000.00 in cents
+const TOTAL = 10_000_000_000n; // the test bond: $100,000,000.00 in cents
 
 async function setup() {
   const [admin, platform, relayer, guardian, issuer, other, stranger] = await ethers.getSigners();
@@ -116,7 +116,7 @@ describe("BondInterestRegistry", () => {
   });
 
   describe("amounts in cents", () => {
-    it("takes $10.40 off a $2,000,000.00 bond exactly", async () => {
+    it("takes $10.40 off a $100,000,000.00 bond exactly", async () => {
       const { reg, I, RL } = await setup();
       const cents = (dollars) => BigInt(Math.round(Number(dollars) * 100)); // "10.40" -> 1040
       await I.recordPriorInstrument(BOND, id("PN-1040"), cents("10.40"), h("e"));
@@ -126,7 +126,7 @@ describe("BondInterestRegistry", () => {
       expect(t.prior).to.equal(1040n);                          // $10.40
       expect((await reg.assignments(A1)).units).to.equal(941847n); // $9,428.87 - $10.40 = $9,418.47
       expect((await reg.assignments(C1)).units).to.equal(1040n);   // $10.40
-      expect(t.unassigned).to.equal(TOTAL - 1040n - 942887n);     // $1,990,560.73
+      expect(t.unassigned).to.equal(TOTAL - 1040n - 942887n);     // $99,990,560.73
       expect(t.reconciled).to.equal(true);
     });
   });
@@ -477,7 +477,8 @@ describe("BondInterestRegistry", () => {
       // Mostly recent records, so multi-step paths (accept, then redeem) actually happen.
       const anyId = () => (!ids.length ? id("none") : rnd(4) ? ids[Math.max(0, ids.length - 1 - rnd(6))] : ids[rnd(ids.length)]);
       const fresh = () => { const x = id("R" + next++); ids.push(x); return x; };
-      const amount = () => BigInt(1 + rnd(400_000));
+      // Mostly up to $50,000; now and then up to $20M, so the bond does run low.
+      const amount = () => BigInt(1 + (rnd(10) ? rnd(5_000_000) : rnd(2_000_000_000)));
       const actions = [
         () => I.issueAssignment(BOND, fresh(), amount(), h("d")),
         () => RL.accept(BOND, anyId(), h("a")),
