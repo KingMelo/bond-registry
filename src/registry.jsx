@@ -45,6 +45,8 @@ export const api = {
   reviewBond: (id, decision, note) => call("POST", "/api/platform/bonds/" + encodeURIComponent(id) + "/review", { decision, note }),
   staff: () => call("GET", "/api/platform/staff"),
   staffInvite: () => call("POST", "/api/platform/invite"),
+  chainSummary: () => call("GET", "/api/platform/chain"),
+  chainRetry: (seq) => call("POST", "/api/platform/chain/retry", { seq }),
 };
 
 const byId = (list, key = "id") => new Map(list.map((x) => [x[key], x]));
@@ -56,7 +58,7 @@ export function useRegistry({ onNotice, issuer } = {}) {
   const [events, setEvents] = useState([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
-  const [info, setInfo] = useState({ issuer: null, issuers: [] });
+  const [info, setInfo] = useState({ issuer: null, issuers: [], chain: null });
   const scope = issuer ? "issuer=" + encodeURIComponent(issuer) : "";
   const stateUrl = (since) => "/api/state?" + [scope, since != null ? "since=" + since : ""].filter(Boolean).join("&");
 
@@ -76,7 +78,7 @@ export function useRegistry({ onNotice, issuer } = {}) {
     };
     latest.current = { reg: s.reg, bonds: s.bonds, events: s.events };
     setReg(s.reg); setBonds(s.bonds); setEvents(s.events);
-    setInfo({ issuer: s.issuer || null, issuers: s.issuers || [] });
+    setInfo({ issuer: s.issuer || null, issuers: s.issuers || [], chain: s.chain || null });
   }, []);
 
   const reload = useCallback(async () => {
@@ -152,8 +154,24 @@ export function useRegistry({ onNotice, issuer } = {}) {
   }, [reload, adopt, scope]);
 
   return { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload,
-    issuerInfo: info.issuer, issuers: info.issuers };
+    issuerInfo: info.issuer, issuers: info.issuers, chainInfo: info.chain };
 }
+
+// How a bond or record stands on-chain, in words, with an explorer link when there is one.
+//   rec.chain: { state: confirmed | pending | failed, tx, error } from the server, or null
+//   chainInfo: { contract, explorer } when the mirror is on, else null
+export function chainStatus(rec, chainInfo) {
+  if (!chainInfo) return null;
+  const c = rec?.chain;
+  const contract = chainInfo.explorer + "/address/" + chainInfo.contract;
+  if (!c) return { label: "Not on-chain yet", href: null, tone: "soft" };
+  if (c.state === "failed") return { label: "Not written: " + (c.error || "the contract refused it"), href: contract, tone: "bad" };
+  if (c.state === "pending") return { label: "Writing to the chain…", href: contract, tone: "soft" };
+  return { label: "Recorded on-chain", href: c.tx ? chainInfo.explorer + "/tx/" + c.tx : contract, tone: "good" };
+}
+
+// Bytes32 hashes are long; show the ends.
+export const shortHash = (h) => (typeof h === "string" && h.length > 20 ? h.slice(0, 10) + "…" + h.slice(-6) : h || "—");
 
 // Reads a dollar amount typed into an amount box and returns it in cents, the unit every
 // amount is stored in. "$9,428.87" is 942887; three or more decimal places are refused.

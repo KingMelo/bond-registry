@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { ISSUERS, BONDS, ASSIGNMENTS, PASSKEYS, EVENTS } from "./seed.js";
+import * as chain from "./chain.js";
 
 const APP = ["issuer", "platform"].includes(process.env.APP) ? process.env.APP : "holder";
 const PORT = Number(process.env.PORT) || 3000;
@@ -40,7 +41,7 @@ const pool = new pg.Pool({
 
 const TERMINAL = ["Redeemed", "Superseded", "Cancelled"];
 // Never stored in the record itself: credential state lives in its own table.
-const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts"];
+const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain"];
 // Contact details and mail numbers stay out of the public holder portal.
 const HOLDER_HIDDEN = ["address", "instrumentMail", "passkeyMail", "requestedContact"];
 // Issuer codes that would be confusing or are kept for the platform.
@@ -57,6 +58,7 @@ async function migrate() {
     await c.query("select pg_advisory_lock(424242)");
     await c.query(`
       create table if not exists meta (k text primary key, version bigint not null);
+      ${chain.SCHEMA}
       create table if not exists bonds (id text primary key, data jsonb not null);
       create table if not exists assignments (
         id text primary key, bond text not null, data jsonb not null,
@@ -279,19 +281,23 @@ async function readState(bondFilter, params) {
     pool.query(`select e.eid, e.data from events e join bonds b on b.id = e.bond where ${bondFilter} order by e.seq desc`, params),
   ]);
   const cred = new Map(creds.rows.map((r) => [r.id, r]));
+  const onChain = await chain.statusFor(pool, bonds.rows.map((r) => r.data.id), regs.rows.map((r) => r.data.id));
   return {
     bonds: bonds.rows.map((r) => {
-      const b = { ...r.data, issuerId: r.issuer_id, review: r.review, reviewNote: r.review_note, rev: Number(r.rev) };
+      const b = { ...r.data, issuerId: r.issuer_id, review: r.review, reviewNote: r.review_note, rev: Number(r.rev),
+        chain: onChain.get(r.data.id) || null };
       // Prior instruments name their holder; the public site gets amounts only.
       if (APP === "holder") b.prior = (b.prior || []).map(({ id, units, reversed }) => ({ id, units, reversed }));
       return b;
     }),
     reg: regs.rows.map(({ data, rev }) => {
-      const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false };
+      const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false,
+        chain: onChain.get(data.id) || null };
       if (APP === "holder") for (const k of HOLDER_HIDDEN) delete out[k];
       return out;
     }),
     events: events.rows.map((r) => ({ ...r.data, eid: r.eid })),
+    chain: chain.publicInfo(),
   };
 }
 
@@ -305,38 +311,48 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
   if (touched.length) await c.query("select id from bonds where id = any($1) order by id for update", [touched]);
   const revs = { bonds: {}, reg: {} };
   const stale = (id) => new Reject(409, id + " changed since you loaded it.");
+  // What was stored before this save, so the chain gets exactly the changes.
+  const oldBonds = new Map((await c.query("select id, data, review from bonds where id = any($1)", [bonds.map((b) => b.id)])).rows.map((r) => [r.id, r]));
+  const oldRecs = new Map((await c.query("select id, data from assignments where id = any($1)", [reg.map((a) => a.id)])).rows.map((r) => [r.id, r.data]));
+  const savedRecs = [];
 
   for (const b of bonds) {
     if (b.rev == null) {
       // A new bond waits for platform review. The platform owner's own goes live once its UCC-1 is recorded.
       const r = await c.query(
-        "insert into bonds (id, data, issuer_id, review) values ($1, $2, $3, $4) on conflict (id) do nothing returning rev",
+        "insert into bonds (id, data, issuer_id, review) values ($1, $2, $3, $4) on conflict (id) do nothing returning rev, review",
         [b.id, stripBond(b), issuerId ?? b.issuerId, autoApprove && ucc1Complete(b) ? "approved" : "pending"]);
       if (!r.rowCount) throw stale(b.id);
       revs.bonds[b.id] = Number(r.rows[0].rev);
+      if (r.rows[0].review === "approved") await chain.queueAnchor(c, b.id);
     } else {
       const r = await c.query(
         `update bonds set data = $2, rev = rev + 1,
            review = case when $4 and review = 'pending' then 'approved' else review end
-         where id = $1 and rev = $3 returning rev`,
+         where id = $1 and rev = $3 returning rev, review, data`,
         [b.id, stripBond(b), b.rev, autoApprove && ucc1Complete(b)]);
       if (!r.rowCount) throw stale(b.id);
       revs.bonds[b.id] = Number(r.rows[0].rev);
+      const was = oldBonds.get(b.id);
+      if (r.rows[0].review === "approved" && was?.review !== "approved") await chain.queueAnchor(c, b.id);
+      else if (r.rows[0].review === "approved") await chain.queuePriorChanges(c, b.id, was?.data, r.rows[0].data);
     }
   }
   for (const a of reg) {
     const { rev, ...data } = a;
     if (rev == null) {
       const r = await c.query(
-        "insert into assignments (id, bond, data) values ($1, $2, $3) on conflict (id) do nothing returning rev", [a.id, a.bond, data]);
+        "insert into assignments (id, bond, data) values ($1, $2, $3) on conflict (id) do nothing returning rev, data", [a.id, a.bond, data]);
       if (!r.rowCount) throw stale(a.id);
       revs.reg[a.id] = Number(r.rows[0].rev);
+      savedRecs.push(r.rows[0].data);
     } else {
       // Merge, so fields one app doesn't see are never wiped by the other.
       const r = await c.query(
-        "update assignments set data = data || $2, rev = rev + 1 where id = $1 and rev = $3 returning rev", [a.id, data, rev]);
+        "update assignments set data = data || $2, rev = rev + 1 where id = $1 and rev = $3 returning rev, data", [a.id, data, rev]);
       if (!r.rowCount) throw stale(a.id);
       revs.reg[a.id] = Number(r.rows[0].rev);
+      savedRecs.push(r.rows[0].data);
     }
   }
   for (const e of events) {
@@ -345,6 +361,7 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
       "insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4) on conflict (eid) do nothing",
       [eid, data.bond, data.id, data]);
   }
+  await chain.queueRecordChanges(c, { app: APP, before: oldRecs, after: savedRecs, events });
 
   // Units rule, per bond: prior + live + unassigned + redeemed = total.
   if (!touched.length) return revs;
@@ -386,12 +403,22 @@ function checkPrior(b, before) {
       if (!String(p.ref || "").trim()) throw new Reject(400, "Enter the prior instrument's identifier.");
       if (!String(p.holder || "").trim()) throw new Reject(400, "Enter who holds " + p.ref + ".");
       if (!Number.isInteger(p.units) || p.units <= 0) throw new Reject(400, "Enter the amount for " + p.ref + ".");
+      // An identifier is used once per bond, even after a reversal: the chain keeps the reversed entry.
+      const key = String(p.ref).trim().toUpperCase();
+      const clash = prior.find((q) => q !== p && String(q.ref || "").trim().toUpperCase() === key);
+      if (clash) throw new Reject(422, p.ref + (clash.reversed ? " was recorded before and reversed; use a distinct identifier." : " is already recorded on this bond."));
     }
   }
   if (was.size) throw new Reject(422, "A recorded prior instrument can't be removed; reverse it instead.");
 }
 
-const stripBond = (b) => { const { issuerId, review, reviewNote, rev, ...rest } = b; return rest; };
+const stripBond = (b) => { const { issuerId, review, reviewNote, rev, chain: _c, ...rest } = b; return rest; };
+
+// A new record needs the SHA-256 of its signed instrument: no paper, no record.
+function needsDocument(before, a) {
+  if (!before && !chain.isHash(a.docHash))
+    throw new Reject(400, "Attach the signed assignment instrument for " + a.id + ". Only its SHA-256 hash is kept.");
+}
 
 function cleanRecord(raw) {
   const a = { ...raw };
@@ -433,7 +460,8 @@ if (APP === "holder") {
           throw new Reject(422, a.id + " is " + before.status + " and cannot be changed.");
         if (!relayerAllows(before, a))
           throw new Reject(403, "The holder portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
-        clean.push(a);
+        needsDocument(before, a);
+        clean.push(chain.normalizeRecord(a));
       }
       const bondsOk = new Set(clean.map((a) => a.bond));
       for (const e of events) if (!bondsOk.has(e.bond)) throw new Reject(403, "An event must belong to a record being saved.");
@@ -772,7 +800,8 @@ if (APP === "issuer") {
         if (review.get(a.bond) !== "approved") throw new Reject(403, "Assignments open once the platform approves " + a.bond + ".");
         const before = (await c.query("select bond from assignments where id = $1", [a.id])).rows[0];
         if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
-        clean.push(a);
+        needsDocument(before, a);
+        clean.push(chain.normalizeRecord(a));
       }
       for (const e of events) if (!review.has(e.bond)) throw new Reject(403, "That event belongs to another issuer.");
       const revs = await applyCommit(c, { bonds, reg: clean, events, issuerId: m.id, autoApprove: m.trusted });
@@ -904,9 +933,10 @@ if (APP === "platform") {
     const status = req.body?.status;
     if (!["approved", "suspended"].includes(status)) throw new Reject(400, "Unknown status.");
     const v = await tx(async (c) => {
-      const r = await c.query("update issuers set status = $2, reviewed_at = now(), reviewed_by = $3 where id = $1",
+      const r = await c.query("update issuers set status = $2, reviewed_at = now(), reviewed_by = $3 where id = $1 returning code",
         [req.params.id, status, u.id]);
       if (!r.rowCount) throw new Reject(404, "No such issuer.");
+      await chain.queueIssuerStatus(c, req.params.id, r.rows[0].code, status);
       return bump(c);
     });
     res.json({ version: v });
@@ -958,6 +988,7 @@ if (APP === "platform") {
       if (b.status !== "approved") throw new Reject(409, "Approve the issuer before its bonds.");
       await c.query("update bonds set review = $2, review_note = $3, reviewed_by = $4, reviewed_at = now() where id = $1",
         [req.params.id, decision, note || null, u.id]);
+      if (decision === "approved") await chain.queueAnchor(c, req.params.id);
       const ev = decision === "approved" ? "BondApproved" : "BondRejected";
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, '—', $3)",
         [crypto.randomUUID(), req.params.id,
@@ -965,6 +996,19 @@ if (APP === "platform") {
       return bump(c);
     });
     res.json({ version: v });
+  }));
+
+  // The chain mirror: queue counts and anything the contract refused.
+  app.get("/api/platform/chain", wrap(async (req, res) => {
+    await needStaff(req);
+    res.json(await chain.summary(pool));
+  }));
+
+  app.post("/api/platform/chain/retry", wrap(async (req, res) => {
+    const u = await needStaff(req);
+    if (!isOwner(u)) throw new Reject(403, "Only the platform owner can retry chain writes.");
+    if (!(await chain.retry(pool, Number(req.body?.seq)))) throw new Reject(404, "That write isn't waiting on a retry.");
+    res.json({ ok: true });
   }));
 
   app.get("/api/platform/staff", wrap(async (req, res) => {
@@ -1012,5 +1056,8 @@ app.use((err, req, res, next) => {
 });
 
 migrate()
-  .then(() => app.listen(PORT, "0.0.0.0", () => console.log(`${APP} listening on ${PORT}`)))
+  .then(() => {
+    app.listen(PORT, "0.0.0.0", () => console.log(`${APP} listening on ${PORT}`));
+    chain.startWorker(pool);
+  })
   .catch((e) => { console.error("Migration failed", e); process.exit(1); });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — holder portal
@@ -44,8 +44,10 @@ const LOCK_KINDS = [
 
 // No paper, no record: every on-chain write carries the hash of the signed
 // document behind it. The demo stands in a random hash for that document.
-const fakeHash = () =>
-  "0x" + Math.random().toString(16).slice(2, 8) + "…" + Math.random().toString(16).slice(2, 6);
+async function sha256File(file) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 const pendingOf = (reg, id) =>
   reg.filter((c) => c.parent === id && c.origin === "AssignOut" && PENDING.includes(c.status));
@@ -147,6 +149,44 @@ function Rows({ data }) {
   );
 }
 
+// Picks or takes a dropped file and keeps only its name and SHA-256. Nothing is uploaded.
+function DocDrop({ label, value, onChange, hint }) {
+  const [over, setOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const take = async (f) => {
+    if (!f) return;
+    setBusy(true);
+    try { onChange({ name: f.name, hash: await sha256File(f) }); } finally { setBusy(false); }
+  };
+  return (
+    <div className="mb-4">
+      <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 6, fontFamily: sans }}>{label}</div>
+      <label className="block px-3 py-4"
+        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => { e.preventDefault(); setOver(false); take(e.dataTransfer.files?.[0]); }}
+        style={{ border: over ? "2px solid " + T.ink : "1px dashed " + T.rule, borderRadius: 2, cursor: "pointer",
+          background: over ? T.band : T.white, fontSize: 14, color: T.ink, textAlign: "center", wordBreak: "break-all" }}>
+        {busy ? "Hashing…" : value ? value.name : over ? "Drop to hash it" : "Drop the PDF here, or choose it"}
+        {value && <span style={{ display: "block", fontSize: 12, color: T.inkSoft, marginTop: 2 }}>
+          {shortHash(value.hash)} · drop another file to replace it</span>}
+        <input type="file" style={{ display: "none" }} onChange={(e) => take(e.target.files?.[0])} />
+      </label>
+      {hint && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
+    </div>
+  );
+}
+
+// A record's on-chain standing, linked to the block explorer.
+function OnChain({ rec, info }) {
+  const st = chainStatus(rec, info);
+  if (!st) return null;
+  const color = st.tone === "bad" ? T.red : st.tone === "good" ? T.ink : T.inkSoft;
+  return st.href
+    ? <a href={st.href} target="_blank" rel="noreferrer" style={{ color, textDecoration: "underline", textUnderlineOffset: 2 }}>{st.label}{st.tone === "good" ? " · view" : ""}</a>
+    : <span style={{ color }}>{st.label}</span>;
+}
+
 function Note({ children, kind = "quiet" }) {
   const skin = kind === "warn"
     ? { background: "#F7E9E8", borderLeft: "3px solid " + T.red }
@@ -163,7 +203,7 @@ function Note({ children, kind = "quiet" }) {
 /* ---------------- app ---------------- */
 
 export default function HolderPortal() {
-  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers } =
+  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, chainInfo } =
     useRegistry({ onNotice: (m) => flash(m) });
   // Every approved issuer shares this registry; each record names its issuer.
   const issuerOf = (rec) => {
@@ -213,6 +253,7 @@ export default function HolderPortal() {
   const [aContact, setAContact] = useState("");
   const [aPosition, setAPosition] = useState("");
   const [aAddress, setAAddress] = useState("");
+  const [aDoc, setADoc] = useState(null); // the signed assignment to the new party
   const [aErr, setAErr] = useState("");
   const [childIssued, setChildIssued] = useState(null);
 
@@ -301,6 +342,7 @@ export default function HolderPortal() {
     if (!aParty.trim()) return setAErr("Enter the assignee's legal name.");
     if (!aContact.trim()) return setAErr("Name the person the assignment is addressed to.");
     if (!aAddress.trim()) return setAErr("Add a mailing address.");
+    if (!aDoc) return setAErr("Add the signed assignment. Only its SHA-256 hash is kept.");
     if (stepUp.trim() !== STEP_UP_DEMO) return setAErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
     setAErr("");
 
@@ -320,10 +362,10 @@ export default function HolderPortal() {
       status: "AwaitingCredential",
       created: today(),
       accepted: null,
-      docHash: fakeHash(), // hash of the signed child instrument
+      docHash: aDoc.hash, // SHA-256 of the signed child instrument
+      docFile: aDoc.name,
       filingRef: null,
       deliveryRef: null,
-      tx: fakeHash(),
       lockReason: null,
       lockedOn: null,
       unlockRequested: false,
@@ -336,7 +378,7 @@ export default function HolderPortal() {
     ]);
     emit(child.bond, child.id, "AssignedOut", "RELAYER", child.docHash);
     setChildIssued(child);
-    setAUnits(""); setAParty(""); setAContact(""); setAPosition(""); setAAddress("");
+    setAUnits(""); setAParty(""); setAContact(""); setAPosition(""); setAAddress(""); setADoc(null);
     setStepUp(""); setStepUpNeeded(false);
     setView("childIssued");
   }
@@ -351,7 +393,7 @@ export default function HolderPortal() {
       if (a.id === open.id) return { ...a, units: a.units + child.units };
       return a;
     }));
-    emit(child.bond, child.id, "AssignOutCancelled", "RELAYER", fakeHash());
+    emit(child.bond, child.id, "AssignOutCancelled", "RELAYER", "—");
     flash("Cancelled. " + usd(child.units) + " returned to your record.");
   }
 
@@ -361,7 +403,7 @@ export default function HolderPortal() {
       ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: today(),
           rotationRequested: lockRotate, unlockRequested: false }
       : a)));
-    emit(open.bond, open.id, "Locked", "RELAYER", fakeHash());
+    emit(open.bond, open.id, "Locked", "RELAYER", "—");
     setLockKind("pledge"); setLockRotate(false);
     setView("position");
     flash(lockRotate
@@ -388,7 +430,7 @@ export default function HolderPortal() {
     if (stepUp.trim() !== STEP_UP_DEMO) return setRdErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
     setRdErr("");
     setReg((r) => r.map((a) => (a.id === open.id ? { ...a, status: "PendingRedemption" } : a)));
-    emit(open.bond, open.id, "RedemptionRequested", "RELAYER", fakeHash());
+    emit(open.bond, open.id, "RedemptionRequested", "RELAYER", "—");
     setStepUp(""); setStepUpNeeded(false);
     setView("position");
     flash("Redemption requested. The record is frozen pending issuer review.");
@@ -406,7 +448,7 @@ export default function HolderPortal() {
       return setRErr("Enter the assignee's legal name, your own name and position, and a contact for verification.");
     setRErr("");
     // The details stay in the register; only a hash of the request goes on-chain.
-    const requestHash = fakeHash();
+    const requestHash = null; // the chain gets a hash of this request, computed by the server
     setReg((r) => r.map((a) => (a.id === rec.id
       ? { ...a, status: "CredentialRequested", requestedParty: rParty.trim(), requestedBy: rContact.trim(),
           requestedContact: rPhone.trim(), requestedOn: today(), requestHash }
@@ -649,10 +691,10 @@ export default function HolderPortal() {
                 ["Assignor", open.assignor],
                 ["Parent", open.parent || "Issuer-originated"],
                 ["Accepted", open.accepted || "—"],
-                ["Document hash", open.docHash],
-                ["UCC-3 filing ref", open.filingRef || "Not yet filed"],
-                ["Delivery ref", open.deliveryRef || "—"],
-                ["Transaction", open.tx],
+                ["Document hash", shortHash(open.docHash)],
+                ["UCC-3 filing", open.filingRef ? "Filed · " + shortHash(open.filingRef) : "Not yet filed"],
+                ["Delivery ref", open.deliveryRef ? shortHash(open.deliveryRef) : "—"],
+                chainInfo && ["On-chain", <OnChain rec={open} info={chainInfo} />],
               ]} />
             </div>
 
@@ -755,6 +797,8 @@ export default function HolderPortal() {
             <Field label="Position" value={aPosition} onChange={setAPosition} placeholder="Treasurer, Managing Member" />
             <Area label="Mailing address" value={aAddress} onChange={setAAddress}
               placeholder={"Company E, LLC\nAttn: name, position\nStreet\nCity, State ZIP"} />
+            <DocDrop label="Signed assignment" value={aDoc} onChange={(v) => { setADoc(v); setAErr(""); }}
+              hint="The assignment you signed to this party. It's hashed on this device; only the hash is kept and written on-chain." />
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Confirm it's you</div>
             <Field label="Code sent to your verified contact" value={stepUp} onChange={(v) => { setStepUp(v); setAErr(""); }}
@@ -789,8 +833,7 @@ export default function HolderPortal() {
               ["Amount", usd(childIssued.units)],
               ["Proportion", pct(childIssued.units, childIssued.bond)],
               ["Status", LABEL[childIssued.status]],
-              ["Document hash", childIssued.docHash],
-              ["Transaction", childIssued.tx],
+              ["Document hash", shortHash(childIssued.docHash)],
             ]} />
 
             <div className="mt-4">
@@ -970,10 +1013,10 @@ export default function HolderPortal() {
                   ["Proportion", pct(vRec.units, vRec.bond)],
                   ["Parent", vRec.parent || "Issuer-originated"],
                   ["Document hash", vRec.docHash],
-                  ["UCC-3 filing ref", vRec.filingRef || "Not yet filed"],
-                  ["Delivery ref", vRec.deliveryRef || "—"],
+                  ["UCC-3 filing", vRec.filingRef ? "Filed · " + shortHash(vRec.filingRef) : "Not yet filed"],
+                  ["Delivery ref", vRec.deliveryRef ? shortHash(vRec.deliveryRef) : "—"],
                   ["Last updated", vRec.accepted || vRec.created],
-                  ["Transaction", vRec.tx],
+                  chainInfo && ["On-chain", <OnChain rec={vRec} info={chainInfo} />],
                 ]} />
 
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "20px 0 8px" }}>

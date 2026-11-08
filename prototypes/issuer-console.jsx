@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — issuer console
@@ -39,8 +39,6 @@ const TERMINAL = ["Cancelled", "Superseded", "Redeemed"];
 // Children created by assignOut that are neither Accepted nor Cancelled.
 const PENDING = ["AwaitingCredential", "CredentialRequested", "Issued"];
 
-const fakeHash = () =>
-  "0x" + Math.random().toString(16).slice(2, 8) + "…" + Math.random().toString(16).slice(2, 6);
 
 const LABEL = {
   AwaitingCredential: "Awaiting credential",
@@ -129,6 +127,18 @@ export function Rows({ data }) {
   );
 }
 
+// On-chain standing of a bond or record, as a line of text with an explorer link.
+export function ChainLink({ s }) {
+  if (!s) return null;
+  const color = s.tone === "bad" ? T.red : s.tone === "good" ? T.ink : T.inkSoft;
+  const text = <span style={{ color }}>{s.label}</span>;
+  return s.href ? (
+    <a href={s.href} target="_blank" rel="noreferrer" style={{ color, textDecoration: "underline", textUnderlineOffset: 2 }}>
+      {s.label}{s.tone === "good" ? " · view" : ""}
+    </a>
+  ) : text;
+}
+
 export function Note({ children, kind = "quiet" }) {
   const skin = kind === "warn" ? { background: "#F7E9E8", borderLeft: "3px solid " + T.red }
     : kind === "caution" ? { background: "#F2EAD3", borderLeft: "3px solid " + T.amber }
@@ -208,7 +218,7 @@ export function Sheet({ title, children, onClose }) {
 /* ---------------- console ---------------- */
 
 export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssuerStatus }) {
-  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo } =
+  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo, chainInfo } =
     useRegistry({ issuer: issuerId, onNotice: (m) => flash(m) });
   const [pickedBond, setActiveBond] = useState(null);
   const activeBond = bonds.some((b) => b.id === pickedBond) ? pickedBond : bonds[0]?.id || null;
@@ -227,7 +237,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const [rpParty, setRpParty] = useState("");
   const [rpContact, setRpContact] = useState("");
   const [rpAddress, setRpAddress] = useState("");
-  const [rpDoc, setRpDoc] = useState("");
+  const [rpDoc, setRpDoc] = useState(null); // the supporting document (court order, certificate…)
+  const [rpInstr, setRpInstr] = useState(null); // the signed replacement instrument
+  const [nDoc, setNDoc] = useState(null); // the signed assignment instrument
 
   const [nUnits, setNUnits] = useState("");
   const [nParty, setNParty] = useState("");
@@ -312,7 +324,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const clearForms = () => {
     setMail(""); setReason(""); setRecHash(""); setFiling(""); setFiledBy("assignor"); setDocRef("");
-    setIMail(""); setPMail(""); setRpParty(""); setRpContact(""); setRpAddress(""); setRpDoc("");
+    setIMail(""); setPMail(""); setRpParty(""); setRpContact(""); setRpAddress(""); setRpDoc(null); setRpInstr(null);
   };
   const done = (m) => { clearForms(); setSheet(null); flash(m); };
 
@@ -333,7 +345,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!mail.trim() || !a.filingRef) return;
     let passkey;
     try { passkey = await newPasskey(a.id); } catch (e) { return flash(e.message); }
-    const deliveryRef = fakeHash();
+    const deliveryRef = "pending"; // the server sets the real hash from the mailing numbers
     patch(a.id, { status: "Issued", passkeyMail: mail.trim(), deliveryRef });
     emit(a.bond, a.id, "CredentialIssued", "ISSUER", deliveryRef);
     emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", deliveryRef);
@@ -345,7 +357,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!reason.trim()) return;
     patch(a.id, { status: "AwaitingCredential", requestedParty: null, requestedBy: null,
       requestedContact: null, requestedOn: null });
-    emit(a.bond, a.id, "CredentialRequestRejected", "ISSUER", fakeHash());
+    emit(a.bond, a.id, "CredentialRequestRejected", "ISSUER", "—");
     done("Request rejected. The assignment is back to awaiting a credential.");
   }
 
@@ -358,7 +370,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
       if (x.id === parent.id) return { ...x, units: x.units + a.units };
       return x;
     }));
-    emit(a.bond, a.id, "AssignOutCancelled", "ISSUER", fakeHash());
+    emit(a.bond, a.id, "AssignOutCancelled", "ISSUER", "—");
     done("Cancelled. " + usd(a.units) + " returned to " + parent.id + ".");
   }
 
@@ -398,13 +410,13 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   function rejectRedemption(a) {
     if (!reason.trim()) return;
     patch(a.id, { status: "Accepted" });
-    emit(a.bond, a.id, "RedemptionRejected", "ISSUER", fakeHash());
+    emit(a.bond, a.id, "RedemptionRejected", "ISSUER", "—");
     done("Rejected. Returned to Accepted.");
   }
 
   function setFilingRef(a) {
     if (!filing.trim()) return;
-    const filingRef = fakeHash();
+    const filingRef = "pending"; // the server sets the real hash from the filing number
     patch(a.id, { filingRef, filingNumber: filing.trim(), filedBy });
     emit(a.bond, a.id, "FilingRecorded", "ISSUER", filingRef);
     done("UCC-3 filing reference recorded.");
@@ -414,7 +426,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     const needInstrument = a.origin !== "AssignOut" && !a.instrumentMail;
     const needPasskey = !a.passkeyMail;
     if ((needInstrument && !iMail.trim()) || (needPasskey && !pMail.trim())) return;
-    const deliveryRef = fakeHash();
+    const deliveryRef = "pending"; // the server sets the real hash from the mailing numbers
     patch(a.id, {
       instrumentMail: needInstrument ? iMail.trim() : a.instrumentMail,
       passkeyMail: needPasskey ? pMail.trim() : a.passkeyMail,
@@ -426,20 +438,20 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   async function replaceAssignment(a) {
     if (!["Accepted", "Issued"].includes(a.status) || pendingOf(a.id).length > 0) return;
-    if (!rpParty.trim() || !rpContact.trim() || !rpAddress.trim() || !rpDoc.trim()) return;
+    if (!rpParty.trim() || !rpContact.trim() || !rpAddress.trim() || !rpDoc || !rpInstr) return;
     const seq = String(reg.filter((x) => x.bond === a.bond).length + 1).padStart(5, "0");
     const rec = {
       bond: a.bond, id: a.bond + "-A" + seq, parent: a.id, origin: "Replacement",
       assignor: issuerName + " (replacement)",
       party: rpParty.trim(), contact: rpContact.trim(), position: "", address: rpAddress.trim(),
       units: a.units, issuedUnits: a.units, status: "Issued", created: today(), accepted: null,
-      docHash: fakeHash(), filingRef: null, deliveryRef: null, tx: fakeHash(),
+      docHash: rpInstr.hash, docFile: rpInstr.name, filingRef: null, deliveryRef: null,
       instrumentMail: null, passkeyMail: null,
     };
     let passkey;
     try { passkey = await newPasskey(rec.id); } catch (e) { return flash(e.message); }
     setReg((r) => [rec, ...r.map((x) => (x.id === a.id ? { ...x, status: "Superseded" } : x))]);
-    emit(a.bond, a.id, "AssignmentReplaced", "ISSUER", rpDoc.trim());
+    emit(a.bond, a.id, "AssignmentReplaced", "ISSUER", rpDoc.hash);
     emit(a.bond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
     done(a.id + " replaced by " + rec.id + ". Mail the new instrument and passkey, then file the UCC-3.");
     showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ", replacing " + a.id + ".");
@@ -465,7 +477,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
       recordedOn: today(), reversed: false };
     setBonds((bs) => bs.map((b) => (b.id === activeBond
       ? { ...b, unassigned: b.unassigned - u, prior: [...b.prior, entry] } : b)));
-    emit(activeBond, ref, "PriorInstrumentRecorded", "ISSUER", fakeHash());
+    emit(activeBond, ref, "PriorInstrumentRecorded", "ISSUER", "—");
     setPRef(""); setPUnits(""); setPHolder(""); setPrMail("");
     flash(ref + " recorded. " + usd(u) + " taken off " + activeBond + ".");
   }
@@ -477,7 +489,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
       ? { ...b, unassigned: b.unassigned + entry.units,
           prior: b.prior.map((p) => (p.id === entry.id ? { ...p, reversed: true, reversedReason: reason.trim() } : p)) }
       : b)));
-    emit(bid, entry.ref, "PriorInstrumentReversed", "ISSUER", fakeHash());
+    emit(bid, entry.ref, "PriorInstrumentReversed", "ISSUER", "—");
     done(entry.ref + " reversed. " + usd(entry.units) + " returned to unassigned.");
   }
 
@@ -488,21 +500,22 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!nParty.trim()) return setNErr("Enter the holder's legal name.");
     if (!nContact.trim()) return setNErr("Name the person the instrument is addressed to.");
     if (!nAddress.trim()) return setNErr("Add a mailing address — both documents go by certified post.");
+    if (!nDoc) return setNErr("Add the signed assignment instrument. Only its SHA-256 hash is kept.");
     setNErr("");
     const seq = String(scoped.length + 1).padStart(5, "0");
     const rec = {
       bond: activeBond, id: activeBond + "-A" + seq, parent: null, origin: "Issuer", assignor: issuerName,
       party: nParty.trim(), contact: nContact.trim(), position: nPosition.trim(), address: nAddress.trim(),
       units: u, issuedUnits: u, status: "Issued", created: today(), accepted: null,
-      docHash: fakeHash(),
-      filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null, tx: fakeHash(),
+      docHash: nDoc.hash, docFile: nDoc.name,
+      filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null,
     };
     let passkey;
     try { passkey = await newPasskey(rec.id); } catch (e) { return setNErr(e.message); }
     setReg((r) => [rec, ...r]);
     setBonds((bs) => bs.map((b) => (b.id === activeBond ? { ...b, unassigned: b.unassigned - u } : b)));
     emit(activeBond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
-    setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress("");
+    setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress(""); setNDoc(null);
     setTab("records");
     flash(rec.id + " issued. Mail both documents separately, then record the numbers.");
     showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".");
@@ -790,6 +803,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <Area label="Mailing address" value={nAddress} onChange={setNAddress}
               placeholder={"Company F, LLC\nAttn: name, position\nStreet\nCity, State ZIP"} />
 
+            <FileHash label="Signed assignment instrument" value={nDoc} onChange={(v) => { setNDoc(v); setNErr(""); }}
+              hint="No paper, no record: the instrument is hashed in this browser and only its SHA-256 is kept and written on-chain." />
+
             {nErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 14 }}>{nErr}</p>}
 
             <Button disabled={!approved || !bondLive} onClick={issueAssignment}>Issue — multisig {THRESHOLD}</Button>
@@ -884,6 +900,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 ["Redeemed and retired", usd(bond.redeemed)],
                 ["Unassigned", usd(bond.unassigned)],
                 ["Check", reconciled(activeBond) ? "Reconciled — the lines add up to the total" : "Mismatch — activity frozen"],
+                chainInfo && bond.review === "approved" && ["On-chain", <ChainLink s={chainStatus(bond, chainInfo)} />],
               ]} />
             </div>
 
@@ -1089,9 +1106,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               pending.length > 0 && ["Pending transfers", pending.length + " · " + usd(pending.reduce((t, c) => t + c.units, 0))],
               ["Created", a.created],
               ["Accepted", a.accepted || "—"],
-              ["Document hash", a.docHash],
-              ["UCC-3 filing ref", a.filingRef ? a.filingRef + (a.filedBy ? " · filed by " + a.filedBy : "") : "Not yet filed"],
-              ["Delivery ref", a.deliveryRef || "—"],
+              ["Document hash", (a.docFile ? a.docFile + " · " : "") + shortHash(a.docHash)],
+              ["UCC-3 filing", a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "") : a.filingRef ? shortHash(a.filingRef) : "Not yet filed"],
+              ["Delivery ref", a.deliveryRef ? shortHash(a.deliveryRef) : "—"],
+              chainInfo && ["On-chain", <ChainLink s={chainStatus(a, chainInfo)} />],
               ["Instrument mail", a.instrumentMail || (isChild ? "Delivered by assignor" : "Not yet mailed")],
               ["Passkey mail", a.passkeyMail || "Not yet mailed"],
             ]} />
@@ -1300,13 +1318,16 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                       {usd(a.units)}. The amount can't change.
                     </Note>
                     <div className="mt-4">
-                      <Field label="Hash of the supporting document" value={rpDoc} onChange={setRpDoc} placeholder="0x…" mono />
+                      <FileHash label="Supporting document" value={rpDoc} onChange={setRpDoc}
+                        hint="The court order, certificate or other paper behind the replacement. Hashed here; not uploaded." />
+                      <FileHash label="Signed replacement instrument" value={rpInstr} onChange={setRpInstr}
+                        hint="Its SHA-256 goes on-chain as the new record's document." />
                       <Field label="Rightful holder's legal name" value={rpParty} onChange={setRpParty} placeholder="Estate of …" />
                       <Field label="Attention of" value={rpContact} onChange={setRpContact} placeholder="Full name" />
                       <Area label="Mailing address" value={rpAddress} onChange={setRpAddress}
                         placeholder={"Legal name\nAttn: name, position\nStreet\nCity, State ZIP"} />
                       <Button variant="quiet" danger
-                        disabled={!rpDoc.trim() || !rpParty.trim() || !rpContact.trim() || !rpAddress.trim()}
+                        disabled={!rpDoc || !rpInstr || !rpParty.trim() || !rpContact.trim() || !rpAddress.trim()}
                         onClick={() => replaceAssignment(a)}>
                         Replace — multisig {THRESHOLD}
                       </Button>

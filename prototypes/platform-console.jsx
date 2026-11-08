@@ -223,6 +223,68 @@ function BondReviewCard({ b, onDone }) {
 
 /* ---------------- staff ---------------- */
 
+const FN_LABEL = {
+  registerIssuer: "Register issuer", anchorBond: "Anchor bond", recordPriorInstrument: "Record prior instrument",
+  reversePriorInstrument: "Reverse prior instrument", issueAssignment: "Issue assignment", assignOut: "Assign out",
+  replaceAssignment: "Replace assignment", setFilingRef: "Record UCC-3 filing", setDeliveryRef: "Record mailing",
+  accept: "Accept", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
+  issueCredential: "Issue credential", cancelAssignOut: "Cancel assign-out", issuerCancelAssignOut: "Cancel assign-out (issuer)",
+  lock: "Lock", unlock: "Unlock", recordRotation: "Record passkey rotation", requestRedemption: "Request redemption",
+  approveRedemption: "Approve redemption", rejectRedemption: "Reject redemption", suspendIssuer: "Suspend issuer",
+  reinstateIssuer: "Reinstate issuer", unsupported: "No matching contract call",
+};
+
+// The on-chain mirror: what's waiting, what went through, and anything the contract refused.
+function ChainPanel({ me, flash }) {
+  const [s, setS] = useState(null);
+  const [err, setErr] = useState("");
+  const load = useCallback(() => api.chainSummary().then(setS).catch((e) => setErr(e.message)), []);
+  useEffect(() => { load(); const t = setInterval(load, POLL_MS); return () => clearInterval(t); }, [load]);
+  if (!s) return <Loading error={err} />;
+  if (!s.enabled) return (
+    <div>
+      <Heading>Chain</Heading>
+      <Lede>The on-chain mirror is off on this console: CHAIN_CONTRACT isn't set.</Lede>
+    </div>
+  );
+  const n = (k) => s.counts[k] || 0;
+  const retry = async (seq) => {
+    try { await api.chainRetry(seq); flash("Queued again."); await load(); } catch (e) { flash(e.message); }
+  };
+  return (
+    <div>
+      <Heading>Chain</Heading>
+      <Lede>
+        Every change the contract tracks is written to it in order, one bond at a time. If the
+        contract refuses a write, later writes for that bond wait until it's fixed and retried.
+      </Lede>
+      <Rows data={[
+        ["Contract", <a href={s.explorer + "/address/" + s.contract} target="_blank" rel="noreferrer"
+          style={{ color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 }}>{s.contract.slice(0, 10) + "…" + s.contract.slice(-6)}</a>],
+        ["Recorded", String(n("confirmed"))],
+        ["Waiting to be written", String(n("queued") + n("sent"))],
+        ["Refused", String(n("failed"))],
+        s.last && ["Last transaction", <a href={s.explorer + "/tx/" + s.last.tx} target="_blank" rel="noreferrer"
+          style={{ color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 }}>{new Date(s.last.updated_at).toLocaleString()}</a>],
+      ]} />
+      {s.failed.length > 0 && (
+        <div className="mt-5">
+          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Refused writes</div>
+          {s.failed.map((f) => (
+            <div key={f.seq} className="px-3 py-3 mb-2" style={{ border: "1px solid " + T.red, borderRadius: 2, background: T.white }}>
+              <div style={{ fontSize: 14, color: T.ink }}>{FN_LABEL[f.fn] || f.fn} · {f.ref}</div>
+              <div style={{ fontSize: 13, color: T.red, marginTop: 4, lineHeight: 1.5, wordBreak: "break-word" }}>{f.error}</div>
+              {me.role === "owner" && (
+                <div className="mt-2"><Button variant="quiet" onClick={() => retry(f.seq)}>Retry</Button></div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StaffPanel({ me }) {
   const [staff, setStaff] = useState(null);
   const [invite, setInvite] = useState(null);
@@ -329,7 +391,7 @@ export default function PlatformApp() {
     (fStatus === "all" || b.review === fStatus) && (fIssuer === "all" || b.issuer.id === fIssuer));
   const live = bonds.filter((b) => b.review === "approved");
 
-  const tabs = [["review", "Review"], ["issuers", "Issuers"], ["bonds", "Bond directory"], ["staff", "Staff"]];
+  const tabs = [["review", "Review"], ["issuers", "Issuers"], ["bonds", "Bond directory"], ["chain", "Chain"], ["staff", "Staff"]];
   const select = { fontFamily: sans, fontSize: 14, color: T.ink, background: T.white, border: "1px solid " + T.rule,
     borderRadius: 2, padding: "8px 10px", width: "100%" };
 
@@ -444,6 +506,7 @@ export default function PlatformApp() {
         </div>
       )}
 
+      {tab === "chain" && <ChainPanel me={me.user} flash={flash} />}
       {tab === "staff" && <StaffPanel me={me.user} />}
 
       {toast && (
