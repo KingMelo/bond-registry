@@ -1,0 +1,1047 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bond Interest Registry</title>
+<meta name="description" content="Interests in private bonds, divided into units and assigned on record.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f%5B%5D=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; border: 0 solid; }
+h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+p, h1, h2, h3, h4, h5, h6, figure, blockquote, dl, dd, pre, hr { margin: 0; }
+ul, ol, menu { margin: 0; padding: 0; list-style: none; }
+img, svg, video, canvas { display: block; max-width: 100%; }
+a { color: inherit; text-decoration: none; }
+
+:root {
+  --font-general: "General Sans", system-ui, sans-serif;
+  --font-onest: "Onest", system-ui, sans-serif;
+  --radius-pill: 999px;
+  --lk-asset: #000;
+}
+html { font-size: 16px; background: var(--lk-asset); }
+body {
+  margin: 0; height: 100svh; overflow: hidden; background: var(--lk-asset);
+  font-family: var(--font-onest), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+.lk-stage { position: relative; width: 100%; height: 100svh; overflow: hidden; background: var(--lk-asset); }
+
+/* The asset: the Gilded Gyre scene, full bleed behind everything. */
+.lk-bg { position: absolute; inset: 0; }
+.lk-bg canvas { display: block; width: 100%; height: 100%; max-width: none; }
+
+.uip-layer { position: absolute; inset: 0; display: flex; flex-direction: column; }
+html.lk-js [data-rise] { opacity: 0; }
+
+/* ── Look-library primitives used here ── */
+.lk { overflow: hidden; color: rgba(255, 255, 255, 0.94); }
+.lk-brand { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.78rem; font-weight: 650; letter-spacing: -0.01em; }
+.lk-mark { width: 0.62rem; height: 0.62rem; flex: none; border: 2px solid currentColor; border-radius: 50%; }
+.lk-pill {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; width: fit-content;
+  padding: 0.34rem 0.8rem; border-radius: var(--radius-pill); font-size: 0.66rem; font-weight: 550; white-space: nowrap;
+}
+.lk-pill-dark { background: rgba(13, 13, 13, 0.92); color: rgba(255, 255, 255, 0.95); font-weight: 600; }
+.lk-pill-ghost { border: 1px solid color-mix(in srgb, currentColor 40%, transparent); }
+.lk .lkx-nav {
+  position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 0.9rem 1.2rem; font-size: 0.66rem;
+}
+.lk .lkx-h1 { font-family: var(--font-general), system-ui, sans-serif; font-size: 2.1rem; font-weight: 600; line-height: 1.04; letter-spacing: -0.02em; }
+.lk .lkx-sub { font-size: 0.7rem; line-height: 1.5; opacity: 0.78; }
+.lk .lkx-cta { display: flex; align-items: center; gap: 0.6rem; }
+.lk .lk-pill { pointer-events: auto; cursor: pointer; }
+.lk .lk-pill:hover { filter: brightness(1.08); box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 20%, transparent); }
+.lk .lk-pill:active { filter: brightness(0.92); }
+.lk .lk-pill:focus-visible, .lk-divide .lkx-navcell:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+/* ══ Split lab ══ */
+.lk-divide {
+  --d-nav-fs: 24px; --d-nav-py: 24px; --d-nav-px: 10px; --d-mark: 18px; --d-brand-gap: 8px;
+  --d-star: 82px; --d-head-gap: 24px; --d-h1: 72px;
+  --d-sub: 24px; --d-sub-max: none;
+  --d-btn-fs: 24px; --d-btn-px: 48px; --d-btn-py: 20px; --d-btn-gap: 16px;
+  --d-pad-x: 51px; --d-pad-b: 30px; --d-foot-gap: 40px;
+  --d-ring: 606px;
+  --d-split: 49.48%;
+  --d-line: rgba(255, 255, 255, 0.28);
+  --d-panel: rgba(16, 16, 16, 0.62);
+  --d-panel-ink: #f2f2f2;
+  --d-panel-dim: rgba(242, 242, 242, 0.45);
+  --d-navbg: rgba(10, 10, 10, 0.42);
+  --d-cta: #f2f2f2;
+  --d-cta-ink: #0c0c0c;
+  --d-cta-hover: #ffffff;
+  color: var(--d-panel-ink);
+  font-family: var(--font-general), system-ui, sans-serif;
+}
+.lk-divide .lkx-nav {
+  align-items: stretch; gap: 0; padding: 0; background: var(--d-navbg);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--d-line); color: #fff;
+  font-size: var(--d-nav-fs); font-weight: 400; line-height: 1;
+}
+.lk-divide .lkx-navmain { display: flex; align-items: stretch; width: var(--d-split); }
+.lk-divide .lkx-navcell {
+  display: flex; flex: 1 0 0; min-width: 0; align-items: center; justify-content: center;
+  padding: var(--d-nav-py) var(--d-nav-px); border-right: 1px solid var(--d-line);
+  white-space: nowrap; pointer-events: auto; cursor: pointer;
+}
+.lk-divide .lkx-navcontact { flex: none; width: calc(var(--d-split) / 4); border-right: 0; border-left: 1px solid var(--d-line); }
+.lk-divide .lkx-navcell:hover { background: rgba(255, 255, 255, 0.16); }
+.lk-divide .lk-brand { gap: var(--d-brand-gap); font-size: inherit; font-weight: 400; letter-spacing: 0; }
+.lk-divide .lk-mark { width: var(--d-mark); height: var(--d-mark); border-width: 1px; border-color: #fff; }
+
+.lk-divide .lkx-cols { display: flex; flex: 1; min-height: 0; position: relative; z-index: 2; }
+.lk-divide .lkx-colcopy {
+  display: flex; flex-direction: column; align-items: center; flex: none; width: var(--d-split);
+  padding: 0 var(--d-pad-x) var(--d-pad-b); background: var(--d-panel);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  text-align: center; overflow: hidden;
+}
+.lk-divide .lkx-gap { display: block; width: 100%; }
+.lk-divide .lkx-gap-a { flex: 58 1 0; min-height: var(--d-gap-a, 0px); }
+.lk-divide .lkx-gap-b { flex: 42 1 0; min-height: var(--d-gap-b, 0px); }
+.lk-divide .lkx-head { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--d-head-gap); width: 100%; }
+.lk-divide .lkx-star { width: var(--d-star); height: var(--d-star); flex: none; }
+.lk-divide .lkx-h1 {
+  font-family: var(--font-general), system-ui, sans-serif; font-size: var(--d-h1); font-weight: 400;
+  line-height: 1.2; letter-spacing: 0; text-transform: uppercase; color: var(--d-panel-ink);
+}
+.lk-divide .lkx-h1 em { font-style: normal; color: var(--d-panel-dim); }
+.lk-divide .lkx-foot { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--d-foot-gap); width: 100%; }
+.lk-divide .lkx-sub { max-width: var(--d-sub-max); font-size: var(--d-sub); line-height: 1.2; color: var(--d-panel-ink); opacity: 1; }
+.lk-divide .lkx-cta { gap: var(--d-btn-gap); }
+.lk-divide .lk-pill { padding: var(--d-btn-py) var(--d-btn-px); border-radius: 32px; font-size: var(--d-btn-fs); font-weight: 400; line-height: 1; }
+.lk-divide .lk-pill-dark { background: var(--d-cta); color: var(--d-cta-ink); }
+.lk-divide .lk-pill-ghost { border: 1px solid rgba(242, 242, 242, 0.5); color: var(--d-panel-ink); }
+.lk-divide .lk-pill:hover { filter: none; box-shadow: none; }
+.lk-divide .lk-pill-dark:hover { background: var(--d-cta-hover); }
+.lk-divide .lk-pill-ghost:hover { background: rgba(255, 255, 255, 0.08); }
+.lk-divide .lk-pill:active { filter: brightness(0.94); }
+
+.lk-divide .lkx-colviz { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.lk-divide .lkx-rings {
+  position: absolute; left: calc(49.5% - var(--d-ring) / 2); top: calc(50% - var(--d-ring) / 2);
+  width: var(--d-ring); height: var(--d-ring);
+}
+.lk-divide .lkx-rings svg { width: 100%; height: 100%; overflow: visible; }
+.lk-divide .lkx-orbit, .lk-divide .lkx-dash { transform-box: view-box; transform-origin: 50% 50%; }
+.lk-divide .lkx-orbit-1 { animation: lk-divide-spin 61s linear infinite; }
+.lk-divide .lkx-orbit-2 { animation: lk-divide-spin 43s linear infinite reverse; }
+.lk-divide .lkx-orbit-3 { animation: lk-divide-spin 29s linear infinite; }
+.lk-divide .lkx-dash { animation: lk-divide-spin 127s linear infinite reverse; }
+@keyframes lk-divide-spin { to { transform: rotate(360deg); } }
+
+/* ══ RESPONSIVE ══ */
+@media (max-width: 1900px) { .lk-divide {
+  --d-nav-fs: 21px; --d-nav-py: 21px; --d-mark: 16px; --d-brand-gap: 7px;
+  --d-star: 73px; --d-head-gap: 21px; --d-h1: 64px; --d-sub: 21px;
+  --d-btn-fs: 21px; --d-btn-px: 43px; --d-btn-py: 18px; --d-btn-gap: 14px;
+  --d-pad-x: 46px; --d-pad-b: 27px; --d-foot-gap: 36px; --d-ring: 539px; } }
+@media (max-width: 1700px) { .lk-divide {
+  --d-nav-fs: 19px; --d-nav-py: 19px; --d-mark: 14px; --d-brand-gap: 6px;
+  --d-star: 64px; --d-head-gap: 19px; --d-h1: 56px; --d-sub: 19px;
+  --d-btn-fs: 19px; --d-btn-px: 38px; --d-btn-py: 16px; --d-btn-gap: 12px;
+  --d-pad-x: 42px; --d-pad-b: 24px; --d-foot-gap: 32px; --d-ring: 471px; } }
+@media (max-width: 1500px) { .lk-divide {
+  --d-nav-fs: 17px; --d-nav-py: 17px; --d-mark: 13px; --d-brand-gap: 6px;
+  --d-star: 57px; --d-head-gap: 17px; --d-h1: 50px; --d-sub: 17px;
+  --d-btn-fs: 17px; --d-btn-px: 33px; --d-btn-py: 14px; --d-btn-gap: 11px;
+  --d-pad-x: 38px; --d-pad-b: 22px; --d-foot-gap: 28px; --d-ring: 422px; } }
+@media (max-width: 1340px) { .lk-divide {
+  --d-nav-fs: 16px; --d-nav-py: 15px; --d-mark: 12px; --d-brand-gap: 5px;
+  --d-star: 50px; --d-head-gap: 15px; --d-h1: 44px; --d-sub: 16px;
+  --d-btn-fs: 16px; --d-btn-px: 30px; --d-btn-py: 13px; --d-btn-gap: 10px;
+  --d-pad-x: 34px; --d-pad-b: 20px; --d-foot-gap: 25px; --d-ring: 373px; } }
+@media (max-width: 1200px) { .lk-divide {
+  --d-nav-fs: 15px; --d-nav-py: 14px; --d-mark: 11px; --d-brand-gap: 5px;
+  --d-star: 46px; --d-head-gap: 14px; --d-h1: 40px; --d-sub: 15px;
+  --d-btn-fs: 15px; --d-btn-px: 27px; --d-btn-py: 12px; --d-btn-gap: 9px;
+  --d-pad-x: 30px; --d-pad-b: 18px; --d-foot-gap: 23px; --d-ring: 338px; } }
+@media (max-width: 1080px) { .lk-divide {
+  --d-nav-fs: 14px; --d-nav-py: 13px; --d-mark: 10px; --d-brand-gap: 5px;
+  --d-star: 41px; --d-head-gap: 12px; --d-h1: 36px; --d-sub: 14px;
+  --d-btn-fs: 14px; --d-btn-px: 24px; --d-btn-py: 11px; --d-btn-gap: 8px;
+  --d-pad-x: 26px; --d-pad-b: 17px; --d-foot-gap: 21px; --d-ring: 304px; } }
+@media (max-width: 960px) { .lk-divide {
+  --d-nav-fs: 13px; --d-nav-py: 12px; --d-mark: 10px; --d-brand-gap: 4px;
+  --d-star: 36px; --d-head-gap: 11px; --d-h1: 32px; --d-sub: 13px;
+  --d-btn-fs: 13px; --d-btn-px: 22px; --d-btn-py: 10px; --d-btn-gap: 8px;
+  --d-pad-x: 22px; --d-pad-b: 16px; --d-foot-gap: 19px; --d-ring: 270px; } }
+@media (max-width: 860px) {
+  .lk-divide {
+    --d-nav-fs: 15px; --d-nav-py: 13px; --d-mark: 12px; --d-brand-gap: 5px;
+    --d-star: 46px; --d-head-gap: 14px; --d-h1: 40px;
+    --d-sub: 16px; --d-sub-max: 430px;
+    --d-btn-fs: 16px; --d-btn-px: 30px; --d-btn-py: 13px; --d-btn-gap: 10px;
+    --d-pad-x: 32px; --d-pad-b: 32px; --d-foot-gap: 24px;
+    --d-gap-a: 48px; --d-gap-b: 36px; --d-ring: 392px;
+  }
+  .lk-divide .lkx-navmain { flex: 1; width: auto; }
+  .lk-divide .lkx-navcontact { width: auto; padding-inline: calc(var(--d-nav-px) + 6px); }
+  .lk-divide .lkx-cols { flex-direction: column; }
+  .lk-divide .lkx-colcopy { width: 100%; flex: none; }
+  .lk-divide .lkx-colviz { width: 100%; flex: 1 1 auto; min-height: 160px; }
+  .lk-divide .lkx-sub br { display: none; }
+}
+@media (max-width: 600px) { .lk-divide {
+  --d-nav-fs: 13px; --d-nav-py: 12px; --d-nav-px: 6px; --d-mark: 11px; --d-brand-gap: 4px;
+  --d-star: 40px; --d-head-gap: 12px; --d-h1: 32px; --d-sub: 14px; --d-sub-max: 330px;
+  --d-btn-fs: 14px; --d-btn-px: 24px; --d-btn-py: 12px; --d-btn-gap: 9px;
+  --d-pad-x: 24px; --d-pad-b: 28px; --d-foot-gap: 20px; --d-gap-a: 36px; --d-gap-b: 30px; --d-ring: 294px; } }
+@media (max-width: 600px) { .lk-wide { display: none; } }
+@media (max-width: 480px) { .lk-divide {
+  --d-nav-fs: 11px; --d-nav-py: 11px; --d-nav-px: 4px; --d-mark: 9px; --d-brand-gap: 4px;
+  --d-star: 34px; --d-head-gap: 11px; --d-h1: 26px; --d-sub: 13px; --d-sub-max: 280px;
+  --d-btn-fs: 13px; --d-btn-px: 20px; --d-btn-py: 11px; --d-btn-gap: 8px;
+  --d-pad-x: 16px; --d-pad-b: 24px; --d-foot-gap: 16px; --d-gap-a: 30px; --d-gap-b: 26px; --d-ring: 226px; } }
+@media (max-width: 360px) { .lk-divide {
+  --d-nav-fs: 10px; --d-nav-py: 10px; --d-nav-px: 3px; --d-mark: 8px; --d-brand-gap: 3px;
+  --d-star: 30px; --d-head-gap: 10px; --d-h1: 22px; --d-sub: 12px; --d-sub-max: 240px;
+  --d-btn-fs: 12px; --d-btn-px: 18px; --d-btn-py: 10px; --d-btn-gap: 8px;
+  --d-pad-x: 14px; --d-pad-b: 20px; --d-foot-gap: 14px; --d-gap-a: 22px; --d-gap-b: 20px; --d-ring: 206px; } }
+@media (min-width: 1081px) and (max-height: 760px) { .lk-divide {
+  --d-star: 44px; --d-head-gap: 13px; --d-h1: 38px; --d-sub: 15px; --d-btn-fs: 15px; --d-btn-py: 11px;
+  --d-foot-gap: 22px; --d-pad-b: 18px; --d-ring: 333px; } }
+@media (min-width: 861px) and (max-width: 1080px) and (max-height: 760px) { .lk-divide {
+  --d-star: 34px; --d-head-gap: 11px; --d-h1: 30px; --d-sub: 13px; --d-btn-fs: 13px; --d-btn-px: 22px; --d-btn-py: 10px;
+  --d-foot-gap: 18px; --d-pad-b: 16px; --d-ring: 255px; } }
+@media (min-width: 861px) and (max-height: 600px) { .lk-divide {
+  --d-star: 30px; --d-head-gap: 10px; --d-h1: 28px; --d-sub: 13px; --d-btn-fs: 13px; --d-btn-px: 22px; --d-btn-py: 9px;
+  --d-foot-gap: 16px; --d-pad-b: 14px; --d-ring: 226px; } }
+@media (max-width: 860px) and (max-height: 620px) { .lk-divide {
+  --d-star: 30px; --d-head-gap: 10px; --d-h1: 24px; --d-sub: 13px; --d-btn-fs: 13px; --d-btn-py: 10px;
+  --d-foot-gap: 14px; --d-pad-b: 16px; --d-gap-a: 18px; --d-gap-b: 18px; --d-ring: 206px; } }
+@media (prefers-reduced-motion: reduce) {
+  html.lk-js [data-rise] { opacity: 1; }
+  .lk-divide .lkx-orbit, .lk-divide .lkx-dash { animation: none; }
+}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.143.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.143.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div class="lk-stage">
+  <div class="lk-bg" id="lkBg"><canvas id="scene"></canvas></div>
+
+  <div class="uip-layer lk lk-divide">
+    <nav class="lkx-nav" data-rise="0" aria-label="Main">
+      <div class="lkx-navmain">
+        <a class="lkx-navcell" href="/">
+          <span class="lk-brand"><span class="lk-mark" aria-hidden="true"></span><span class="lk-wide">Bond</span>Registry</span>
+        </a>
+        <a class="lkx-navcell" href="/holder">Holders</a>
+        <a class="lkx-navcell" href="__ISSUER_URL__">Issuers</a>
+        <a class="lkx-navcell" href="/holder#verify">Verify</a>
+      </div>
+      <a class="lkx-navcell lkx-navcontact" href="/holder#request">Request<span class="lk-wide">&nbsp;access</span></a>
+    </nav>
+
+    <div class="lkx-cols">
+      <div class="lkx-colcopy">
+        <i class="lkx-gap lkx-gap-a" aria-hidden="true"></i>
+        <div class="lkx-head">
+          <svg class="lkx-star" viewBox="-6.4787 -6.4787 82 82" fill="none" aria-hidden="true" data-rise="1">
+            <path d="M33.1088 1.17417C33.3973 -0.391387 35.6409 -0.391392 35.9293 1.17416L38.3917 14.5404C39.9003 22.7299 46.3083 29.1378 54.4978 30.6465L67.864 33.1088C69.4296 33.3973 69.4296 35.6409 67.864 35.9293L54.4978 38.3917C46.3083 39.9003 39.9003 46.3083 38.3917 54.4978L35.9293 67.864C35.6409 69.4296 33.3973 69.4296 33.1088 67.864L30.6465 54.4978C29.1378 46.3083 22.7299 39.9003 14.5404 38.3917L1.17417 35.9293C-0.391387 35.6409 -0.391392 33.3973 1.17416 33.1088L14.5404 30.6465C22.7299 29.1378 29.1378 22.7299 30.6465 14.5404L33.1088 1.17417Z" fill="currentColor"/>
+          </svg>
+          <h1 class="lkx-h1" data-rise="2">A <em>recorded</em> interest<br/>
+          in a private bond,<br/>
+          backed by <em>paper</em></h1>
+        </div>
+        <i class="lkx-gap lkx-gap-b" aria-hidden="true"></i>
+        <div class="lkx-foot">
+          <p class="lkx-sub" data-rise="3">Bond interests, divided into units and assigned on record.<br/>
+          No paper, no record. Nothing is ever rewritten.</p>
+          <div class="lkx-cta" data-rise="4">
+            <a class="lk-pill lk-pill-dark" href="/holder">Holder sign in</a>
+            <a class="lk-pill lk-pill-ghost" href="__ISSUER_URL__">Issuer sign in</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="lkx-colviz">
+        <div class="lkx-rings" data-rise="5">
+          <svg viewBox="0 0 606 606" fill="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="lkDivideRing1" gradientUnits="userSpaceOnUse" x1="303" y1="0" x2="303" y2="606">
+                <stop stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0.2"/>
+              </linearGradient>
+              <linearGradient id="lkDivideRing2" gradientUnits="userSpaceOnUse" x1="303" y1="70" x2="303" y2="536">
+                <stop stop-color="#fff" stop-opacity="0.2"/><stop offset="1" stop-color="#fff"/>
+              </linearGradient>
+            </defs>
+            <circle cx="303" cy="303" r="302.5" stroke="url(#lkDivideRing1)"/>
+            <circle cx="303" cy="303" r="232.5" stroke="url(#lkDivideRing2)"/>
+            <circle class="lkx-dash" cx="303" cy="303" r="162.5" stroke="#fff" stroke-dasharray="1.5 11.25"/>
+            <g class="lkx-orbit lkx-orbit-1"><circle cx="306" cy="0" r="6" fill="#fff"/></g>
+            <g class="lkx-orbit lkx-orbit-3"><circle cx="391" cy="164" r="6" fill="#fff"/></g>
+            <g class="lkx-orbit lkx-orbit-2"><circle cx="356" cy="529" r="6" fill="#fff"/></g>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const STEP_MS = 45, FROM_Y = 14, TENSION = 220, FRICTION = 26, MASS = 1, PRECISION = 0.01, SUBSTEP = 1 / 240;
+  document.documentElement.classList.add("lk-js");
+  const nodes = Array.from(document.querySelectorAll("[data-rise]"));
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let generation = 0;
+  const rest = (el) => { el.style.transform = ""; el.style.opacity = "1"; el.style.willChange = ""; };
+  const rise = (el, delayMs, gen) => {
+    el.style.opacity = "0";
+    el.style.transform = "translate3d(0," + FROM_Y + "px,0)";
+    el.style.willChange = "transform, opacity";
+    if (reduced) { window.setTimeout(() => { if (gen === generation) rest(el); }, delayMs); return; }
+    let x = FROM_Y, v = 0, last = null;
+    const frame = (now) => {
+      if (gen !== generation) return;
+      if (last === null) last = now;
+      const dt = Math.min((now - last) / 1000, 0.064);
+      last = now;
+      const steps = Math.max(1, Math.ceil(dt / SUBSTEP));
+      const h = dt / steps;
+      for (let i = 0; i < steps; i++) { const a = (-TENSION * x - FRICTION * v) / MASS; v += a * h; x += v * h; }
+      const p = 1 - x / FROM_Y;
+      el.style.transform = "translate3d(0," + x.toFixed(3) + "px,0)";
+      el.style.opacity = String(Math.max(0, Math.min(1, p)));
+      if (Math.abs(x) < PRECISION && Math.abs(v) < PRECISION) return rest(el);
+      requestAnimationFrame(frame);
+    };
+    window.setTimeout(() => { if (gen === generation) requestAnimationFrame(frame); }, delayMs);
+  };
+  const play = () => { const gen = ++generation; nodes.forEach((el) => rise(el, (Number(el.dataset.rise) || 0) * STEP_MS, gen)); };
+  play();
+  addEventListener("keydown", (e) => {
+    if ((e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey && !(e.target instanceof HTMLInputElement)) play();
+  });
+})();
+</script>
+
+<script type="module">
+
+import * as THREE from 'three'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js'
+import { GammaCorrectionShader } from 'three/addons/shaders/GammaCorrectionShader.js'
+
+/* ============================================================
+   CONFIG  — every tweakable value lives here. Colors are '#rrggbb'
+   strings; everything else is a number. A raymarched globe of
+   nested golden rings (an armillary / gyroscope sphere) hovers over
+   a rippling reflective pool, framed by a mossy green canyon. The
+   rings are polished gold metal that reflect the canyon (so their
+   flanks read green, their hollow warm gold); the water mirrors the
+   whole scene with ripple distortion + fresnel + sun sparkle.
+   The UI panel + localStorage persistence are generated from these keys.
+============================================================ */
+const CONFIG = {
+  cGoldLow: '#ffca80',
+  cGoldMid: '#382600',
+  cGoldHigh: '#ffffff',
+  cSpec: '#fffad6',
+  cRock: '#000000',
+  cMoss: '#000000',
+  cFoliage: '#05243d',
+  cMist: '#000919',
+  cWater: '#00030a',
+  cWaterShallow: '#000a14',
+  radius: 1.6,
+  tube: 0.01,
+  rimTube: 1,
+  latRings: 3,
+  meridians: 2,
+  spinSpeed: 0.29,
+  tilt: -0.76,
+  bobAmount: 0.245,
+  bobSpeed: 0.7,
+  camDist: 5.75,
+  camHeight: 1.16,
+  lookY: 0.09,
+  focal: 1.92,
+  metalBright: 1.69,
+  envReflect: 1.22,
+  specPow: 75,
+  specStr: 1.22,
+  rim: 0.18,
+  innerGlow: 0.44,
+  envBright: 1.08,
+  foliageAmt: 0.82,
+  waterY: -1.05,
+  horizonDist: 9,
+  reflStrength: 0.72,
+  rippleAmp: 0.62,
+  rippleFreq: 7.5,
+  rippleSpeed: 1.82,
+  rippleChop: 0.46,
+  waterTint: 0.42,
+  sparkle: 1,
+  cursorRipple: 0.85,
+  cursorSpeed: 1.7,
+  cursorFreq: 13,
+  cursorWidth: 0.5,
+  cursorDecay: 1.1,
+  cursorReach: 3,
+  cursorLife: 5.4,
+  cursorSpacing: 0.1,
+  grain: 0.008,
+  vignette: 0.3,
+  mouseStrength: 0.76,
+  mouseLerp: 0.11,
+  maxDpr: 1.5,
+  minDpr: 0.6,
+}
+
+/* ---------- DEFAULTS + localStorage (load BEFORE building the scene) ---------- */
+
+function hexToVec3(hex) {
+  const n = parseInt(hex.slice(1), 16)
+  return new THREE.Vector3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255)
+}
+
+/* ---------- RENDERER / SCENE / CAMERA ---------- */
+const canvas = document.getElementById('scene')
+const renderer = new THREE.WebGL1Renderer({ canvas, antialias: true })
+renderer.setPixelRatio(window.devicePixelRatio)
+renderer.setClearColor(0x000000, 1)
+const scene = new THREE.Scene()
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 10)
+camera.position.set(0, 0, 1)   // unused by the clip-space quad, but RenderPass needs a camera
+
+/* ============================================================
+   SCENE: GILDED GYRE — a fullscreen raymarched fragment shader.
+   The globe is the union (min) of exact torus SDFs: a stack of
+   LATITUDE rings whose radii trace a sphere profile, a thick face-on
+   RIM ring, and a couple of MERIDIAN great-circles for cage depth.
+   The whole assembly is rigid-rotated by transforming the ray into
+   object space ONCE (no per-step trig). Metal shading reflects the
+   procedural canyon backdrop, so the rings pick up its greens with a
+   warm gold tint. A planar water surface at uWaterY mirrors the
+   scene: water pixels reflect their ray about a ripple-perturbed
+   normal and re-march, then blend with deep water by fresnel + add a
+   sun sparkle. Pointer sways the gyre + drops a warm glow; a click
+   pumps the energy (brighter gold, choppier ripples).
+   Reference: a brass gyroscope sphere over a pool in a green gorge.
+============================================================ */
+// Cursor ripple trail: each entry is (worldX, worldZ, spawnTime). The shader
+// grows an expanding ring from each on the actual water plane, so the ripples
+// are perspective-correct (smaller as they recede). Seeded far in the past so
+// empty slots contribute nothing.
+const TRAIL_N = 12
+const trail = Array.from({ length: TRAIL_N }, () => new THREE.Vector3(0, 0, -1000))
+
+const gyreUniforms = {
+  uBgTex:      { value: null },   // baked canyon backdrop (filled by bakeBackground)
+  uTrail:      { value: trail },
+  uCursorAmp:  { value: CONFIG.cursorRipple },
+  uCursorSpeed:{ value: CONFIG.cursorSpeed },
+  uCursorFreq: { value: CONFIG.cursorFreq },
+  uCursorWidth:{ value: CONFIG.cursorWidth },
+  uCursorDecay:{ value: CONFIG.cursorDecay },
+  uCursorReach:{ value: CONFIG.cursorReach },
+  uCursorLife: { value: CONFIG.cursorLife },
+  uBobAmt:     { value: CONFIG.bobAmount },
+  uBobSpeed:   { value: CONFIG.bobSpeed },
+  uRes:        { value: new THREE.Vector2(1, 1) },
+  uTime:       { value: 0 },
+  uPhase:      { value: 0 },
+  uAlpha:      { value: 0 },
+  uMouse:      { value: new THREE.Vector2(0, 0) },
+  uEnergy:     { value: 0 },
+  uRadius:     { value: CONFIG.radius },
+  uTube:       { value: CONFIG.tube },
+  uRimTube:    { value: CONFIG.rimTube },
+  uLat:        { value: CONFIG.latRings },
+  uMer:        { value: CONFIG.meridians },
+  uTilt:       { value: CONFIG.tilt },
+  uCamDist:    { value: CONFIG.camDist },
+  uCamHeight:  { value: CONFIG.camHeight },
+  uLookY:      { value: CONFIG.lookY },
+  uFocal:      { value: CONFIG.focal },
+  uMetalBright:{ value: CONFIG.metalBright },
+  uEnvReflect: { value: CONFIG.envReflect },
+  uSpecPow:    { value: CONFIG.specPow },
+  uSpecStr:    { value: CONFIG.specStr },
+  uRim:        { value: CONFIG.rim },
+  uInner:      { value: CONFIG.innerGlow },
+  uEnvBright:  { value: CONFIG.envBright },
+  uFoliage:    { value: CONFIG.foliageAmt },
+  uWaterY:     { value: CONFIG.waterY },
+  uHorizonDist:{ value: CONFIG.horizonDist },
+  uReflStr:    { value: CONFIG.reflStrength },
+  uRipAmp:     { value: CONFIG.rippleAmp },
+  uRipFreq:    { value: CONFIG.rippleFreq },
+  uRipSpeed:   { value: CONFIG.rippleSpeed },
+  uRipChop:    { value: CONFIG.rippleChop },
+  uWaterTint:  { value: CONFIG.waterTint },
+  uSparkle:    { value: CONFIG.sparkle },
+  uGrain:      { value: CONFIG.grain },
+  uVignette:   { value: CONFIG.vignette },
+  uMouseStr:   { value: CONFIG.mouseStrength },
+  ucGoldLow:   { value: hexToVec3(CONFIG.cGoldLow) },
+  ucGoldMid:   { value: hexToVec3(CONFIG.cGoldMid) },
+  ucGoldHigh:  { value: hexToVec3(CONFIG.cGoldHigh) },
+  ucSpec:      { value: hexToVec3(CONFIG.cSpec) },
+  ucRock:      { value: hexToVec3(CONFIG.cRock) },
+  ucMoss:      { value: hexToVec3(CONFIG.cMoss) },
+  ucFoliage:   { value: hexToVec3(CONFIG.cFoliage) },
+  ucMist:      { value: hexToVec3(CONFIG.cMist) },
+  ucWater:     { value: hexToVec3(CONFIG.cWater) },
+  ucWaterShallow: { value: hexToVec3(CONFIG.cWaterShallow) },
+}
+
+const gyreMat = new THREE.ShaderMaterial({
+  uniforms: gyreUniforms,
+  depthTest: false, depthWrite: false,
+  vertexShader: `
+    void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    precision highp float;
+    #define PI 3.14159265
+    #define TRAIL_N 12
+    uniform vec3  uTrail[TRAIL_N];
+    uniform float uCursorAmp, uCursorSpeed, uCursorFreq, uCursorWidth, uCursorDecay, uCursorReach, uCursorLife;
+    uniform float uBobAmt, uBobSpeed;
+    uniform sampler2D uBgTex;
+    uniform vec2  uRes, uMouse;
+    uniform float uTime, uPhase, uAlpha, uEnergy;
+    uniform float uRadius, uTube, uRimTube, uLat, uMer, uTilt;
+    uniform float uCamDist, uCamHeight, uLookY, uFocal;
+    uniform float uMetalBright, uEnvReflect, uSpecPow, uSpecStr, uRim, uInner;
+    uniform float uEnvBright, uFoliage;
+    uniform float uWaterY, uHorizonDist, uReflStr, uRipAmp, uRipFreq, uRipSpeed, uRipChop, uWaterTint, uSparkle;
+    uniform float uGrain, uVignette, uMouseStr;
+    uniform vec3  ucGoldLow, ucGoldMid, ucGoldHigh, ucSpec;
+    uniform vec3  ucRock, ucMoss, ucFoliage, ucMist, ucWater, ucWaterShallow;
+
+    mat3 gRot, gRotT;
+    const vec3 KEY = vec3(0.40, 0.66, 0.62);
+
+    /* ---- hash / value noise / fbm ---- */
+    float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+    float noise(vec2 p){
+      vec2 i = floor(p), f = fract(p);
+      float a = hash(i), b = hash(i + vec2(1,0)), c = hash(i + vec2(0,1)), d = hash(i + vec2(1,1));
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    }
+    // 3 octaves is plenty for the water's low-amplitude drift term (the canyon
+    // backdrop is baked once into uBgTex at full detail, so its fbm cost is gone)
+    float fbm(vec2 p){
+      float s = 0.0, a = 0.5;
+      for (int i = 0; i < 3; i++){ s += a * noise(p); p = p * 2.03 + vec2(11.3, 7.7); a *= 0.5; }
+      return s;
+    }
+
+    // the canyon backdrop is precomputed (it is fully static) into an
+    // equirectangular HDR texture; sample it by world direction instead of
+    // re-running fbm per pixel every frame
+    vec3 bg(vec3 rd){
+      vec2 uv = vec2(atan(rd.z, rd.x) * (0.5 / PI) + 0.5, asin(clamp(rd.y, -1.0, 1.0)) / PI + 0.5);
+      return texture2D(uBgTex, uv).rgb;
+    }
+
+    mat3 rotX(float a){ float c = cos(a), s = sin(a); return mat3(1.,0.,0., 0.,c,-s, 0.,s,c); }
+    mat3 rotY(float a){ float c = cos(a), s = sin(a); return mat3(c,0.,s, 0.,1.,0., -s,0.,c); }
+    mat3 transpose3(mat3 m){
+      return mat3(m[0][0], m[1][0], m[2][0],
+                  m[0][1], m[1][1], m[2][1],
+                  m[0][2], m[1][2], m[2][2]);
+    }
+
+    /* torus around the Y axis (ring lies flat in the xz plane) */
+    float sdTorusY(vec3 p, float ra, float rb){ vec2 q = vec2(length(p.xz) - ra, p.y); return length(q) - rb; }
+    /* torus around the Z axis (ring stands up in the xy plane) */
+    float sdTorusZ(vec3 p, float ra, float rb){ vec2 q = vec2(length(p.xy) - ra, p.z); return length(q) - rb; }
+
+    /* the gyre, evaluated in OBJECT space (caller pre-rotates the ray) */
+    float mapRings(vec3 p){
+      float R = uRadius;
+      float d = 1e9;
+      // thick face-on rim ring (the bright outer circle)
+      d = min(d, sdTorusZ(p, R, uTube * uRimTube));
+      // stacked latitude rings tracing a sphere profile
+      for (int i = 0; i < 32; i++){
+        if (i >= int(uLat)) break;
+        float fi = (float(i) + 0.5) / uLat;
+        float y  = (fi * 2.0 - 1.0) * R * 0.985;
+        float rr = sqrt(max(0.0001, R * R - y * y));
+        d = min(d, sdTorusY(p - vec3(0.0, y, 0.0), rr, uTube));
+      }
+      // a few meridian great-circles for cage depth
+      for (int i = 0; i < 6; i++){
+        if (i >= int(uMer)) break;
+        float a = (float(i) + 0.5) * PI / uMer;
+        vec3 pm = rotY(a) * p;
+        d = min(d, sdTorusZ(pm, R * 0.992, uTube));
+      }
+      return d;
+    }
+
+    // 4-tap tetrahedron gradient — same normal as 6-tap central differences,
+    // two fewer SDF evaluations per shaded pixel.
+    vec3 calcNormal(vec3 p){
+      vec2 k = vec2(1.0, -1.0);
+      float e = 0.0016;
+      return normalize(
+        k.xyy * mapRings(p + k.xyy * e) +
+        k.yyx * mapRings(p + k.yyx * e) +
+        k.yxy * mapRings(p + k.yxy * e) +
+        k.xxx * mapRings(p + k.xxx * e));
+    }
+
+    /* polished gold metal: reflect the canyon, tint it gold, add spec + rim */
+    vec3 shadeMetal(vec3 rd, vec3 n, float tHit){
+      vec3 v = -rd;
+      vec3 refl = reflect(rd, n);
+      vec3 env  = bg(refl);
+
+      float dif  = max(0.0, dot(n, KEY));
+      float spec = pow(max(0.0, dot(refl, KEY)), uSpecPow);
+      float fres = pow(1.0 - max(0.0, dot(n, v)), 3.0);
+
+      vec3 gold = mix(ucGoldLow, ucGoldMid, dif);
+      gold = mix(gold, ucGoldHigh, fres * 0.5);
+
+      // metal = base gold + canyon reflection tinted by gold + specular
+      vec3 col = gold * 0.55 + env * gold * uEnvReflect + spec * ucSpec * uSpecStr;
+      col += fres * uRim * ucGoldHigh;
+      col += ucGoldMid * uInner * (0.45 + 0.55 * sin(tHit * 2.0 + uTime));
+      col *= uMetalBright * (1.0 + uEnergy * 0.45);
+      return col;
+    }
+
+    vec3 marchScene(vec3 ro, vec3 rd, out float tHit, out float hitMask){
+      // gentle vertical float: translate the gyre in world Y before rotation
+      // (the bounding sphere + SDF stay centred at the object origin)
+      float bob = uBobAmt * sin(uTime * uBobSpeed);
+      vec3 roO = gRot * (ro - vec3(0.0, bob, 0.0));
+      vec3 rdO = gRot * rd;
+
+      // Analytic bounding-sphere cull. The whole gyre fits in a sphere of
+      // radius (radius + rim half-thickness) at the object origin, so a ray
+      // that misses that sphere can NEVER hit a ring — skip the march and
+      // return the backdrop immediately. This is exact (pixel-identical) and
+      // culls the large majority of the screen (sky, far canyon, most water
+      // reflections) to a single quadratic. It also clamps the march to the
+      // sphere chord [tNear, tFar] instead of a fixed far distance, so the
+      // few ring pixels iterate far less.
+      float Rb = uRadius + uTube * uRimTube + 0.05;
+      float bb = dot(roO, rdO);
+      float cc = dot(roO, roO) - Rb * Rb;
+      float disc = bb * bb - cc;
+      if (disc < 0.0){ tHit = 1e9; hitMask = 0.0; return bg(rd); }
+      float sq = sqrt(disc);
+      float tFar = -bb + sq;
+      if (tFar < 0.0){ tHit = 1e9; hitMask = 0.0; return bg(rd); }
+
+      float t = max(-bb - sq, 0.0), d;
+      bool hit = false;
+      for (int i = 0; i < 80; i++){
+        vec3 p = roO + rdO * t;
+        d = mapRings(p);
+        if (d < 0.0008){ hit = true; break; }
+        t += d;
+        if (t > tFar) break;
+      }
+      tHit = t;
+      if (!hit){ hitMask = 0.0; return bg(rd); }
+      hitMask = 1.0;
+      vec3 pO = roO + rdO * t;
+      vec3 nO = calcNormal(pO);
+      vec3 nW = gRotT * nO;
+      return shadeMetal(rd, nW, t);
+    }
+
+    /* water height field + finite-difference normal */
+    float waterH(vec2 q){
+      float amp = uRipAmp * (1.0 + uEnergy * 0.6);
+      float r = length(q);
+      float h = sin(r * uRipFreq - uTime * uRipSpeed) * exp(-r * 0.28);
+      h += 0.5 * sin(q.x * uRipFreq * 0.5 + uTime * 0.6);
+      h += 0.4 * (fbm(q * 1.6 + vec2(0.0, uTime * 0.15)) - 0.5);
+      h *= amp;
+
+      // cursor wake: an expanding ring grows from every recent touch point,
+      // evaluated in world space on the water plane so it foreshortens with
+      // distance (near ripples large, far ripples small) for an in-perspective read.
+      // It dissipates two ways so it never sweeps the whole pool or pops out:
+      //   - spatially, the ring loses energy as it spreads (exp(-front*reach))
+      //   - temporally, exp(-age*decay) shaped to reach EXACTLY zero at the
+      //     lifetime cutoff (smoothstep taper), so there is no hard edge
+      for (int i = 0; i < TRAIL_N; i++){
+        vec3 tr = uTrail[i];
+        float age = uTime - tr.z;
+        if (age < 0.0 || age > uCursorLife) continue;
+        float d = length(q - tr.xy);
+        float front = age * uCursorSpeed;                       // wavefront radius
+        float w = max(uCursorWidth, 0.001);
+        float env = exp(-(d - front) * (d - front) / (w * w));  // gaussian shell at the front
+        float osc = sin((d - front) * uCursorFreq);             // ripples trailing the front
+        float spread = exp(-front * uCursorReach);              // ring weakens as it travels out
+        float ramp = smoothstep(0.0, 0.1, age);                 // ease in on birth
+        float taper = smoothstep(uCursorLife, uCursorLife * 0.55, age); // -> 0 at the cutoff (no pop)
+        float fade = exp(-age * uCursorDecay) * ramp * taper;
+        h += uCursorAmp * env * osc * spread * fade;
+      }
+      return h;
+    }
+    vec3 waterNormal(vec2 q){
+      vec2 e = vec2(0.085, 0.0);
+      float h0 = waterH(q);
+      float hx = waterH(q + e.xy);
+      float hy = waterH(q + e.yx);
+      return normalize(vec3(h0 - hx, mix(0.9, 0.35, uRipChop), h0 - hy));
+    }
+
+    void main(){
+      vec2 uv = (2.0 * gl_FragCoord.xy - uRes) / uRes.y;
+
+      // gyre rigid rotation, built once per pixel
+      float ay = uPhase + uMouse.x * uMouseStr;
+      float ax = uTilt  + uMouse.y * uMouseStr * 0.6;
+      gRot  = rotY(ay) * rotX(ax);
+      gRotT = transpose3(gRot);
+
+      // camera
+      vec3 ro = vec3(0.0, uCamHeight, uCamDist);
+      vec3 ta = vec3(0.0, uLookY, 0.0);
+      vec3 fw = normalize(ta - ro);
+      vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
+      vec3 up = cross(rt, fw);
+      vec3 rd = normalize(uv.x * rt + uv.y * up + uFocal * fw);
+
+      // direct view: march the gyre first so it can occlude (float above) the water
+      float tG, gMask;
+      vec3 directCol = marchScene(ro, rd, tG, gMask);
+
+      vec3 col;
+      float tW = (uWaterY - ro.y) / rd.y;        // ray vs water plane
+      bool onWater = rd.y < -0.0005 && tW > 0.0 && (gMask < 0.5 || tW < tG);
+      if (onWater){
+        // ---- water surface (the gyre floats on top of it) ----
+        vec3 hp = ro + rd * tW;
+        vec3 wn = waterNormal(hp.xz);
+        vec3 refl = reflect(rd, wn);
+        float rT, rM;
+        vec3 rcol = marchScene(hp + wn * 0.01, refl, rT, rM);
+
+        // depth gradient: luminous teal shallows near the shore -> deep at distance
+        float depth = clamp(tW / 7.0, 0.0, 1.0);
+        vec3 base = mix(ucWaterShallow, ucWater, depth);
+
+        float fres = pow(1.0 - max(0.0, dot(-rd, wn)), 3.0);
+        fres = mix(0.10, 1.0, fres);
+        vec3 water = mix(rcol, base, uWaterTint);
+        col = mix(base, water, clamp(fres * uReflStr, 0.0, 1.0));
+
+        // soft ripple shimmer
+        col *= 1.0 + 0.10 * sin(hp.z * 8.0 - uTime * uRipSpeed);
+        // sun sparkle on the crests
+        float sp = pow(max(0.0, dot(refl, KEY)), 220.0);
+        col += sp * uSparkle * ucSpec * (1.4 + uEnergy);
+
+        // distance-based horizon: the water dissolves into the canyon/sky it
+        // reflects by the time it reaches uHorizonDist, so there is no hard
+        // ocean/sky edge and the horizon can sit closer or farther on demand
+        float hz = smoothstep(uHorizonDist * 0.55, uHorizonDist, tW);
+        if (hz > 0.001) col = mix(col, bg(rd), hz);   // skip canyon noise where it adds nothing
+      } else {
+        // ---- gyre + canyon above the waterline ----
+        col = directCol;
+      }
+
+      // grain + vignette
+      col += (hash(uv + uTime) - 0.5) * uGrain;
+      float vig = 1.0 - uVignette * dot(uv * vec2(0.52, 0.62), uv * vec2(0.52, 0.62));
+      col *= clamp(vig, 0.0, 1.0);
+
+      col = max(col, 0.0) * uAlpha;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+})
+const gyreQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gyreMat)
+gyreQuad.frustumCulled = false
+scene.add(gyreQuad)
+
+/* ---------- COMPOSER (gyre → gamma; no bloom) ---------- */
+const composer = new EffectComposer(renderer)
+composer.addPass(new RenderPass(scene, camera))
+composer.addPass(new ShaderPass(GammaCorrectionShader))
+
+/* ---------- BAKED CANYON BACKDROP ----------
+   The canyon background() is fully static (no time term), so instead of
+   re-running its fbm on every pixel every frame, render it ONCE into an
+   equirectangular HDR texture and sample it by ray direction (uBgTex). It is
+   re-baked only when a canyon colour/param changes (from applyConfig). A
+   half-float target preserves the >1 misty highlights; if the WebGL1 context
+   can't render half-float it falls back to 8-bit (only the brightest mist
+   clips slightly). This removes the dominant frame-wide noise cost. */
+const BG_W = 1024, BG_H = 512
+let bgType = THREE.HalfFloatType
+if (!(renderer.extensions.get('OES_texture_half_float') &&
+      renderer.extensions.get('OES_texture_half_float_linear') &&
+      renderer.extensions.get('EXT_color_buffer_half_float'))) bgType = THREE.UnsignedByteType
+const bgRT = new THREE.WebGLRenderTarget(BG_W, BG_H, {
+  wrapS: THREE.RepeatWrapping, wrapT: THREE.ClampToEdgeWrapping,
+  minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+  type: bgType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
+})
+gyreUniforms.uBgTex.value = bgRT.texture
+
+const bakeUniforms = {
+  uBakeRes:   { value: new THREE.Vector2(BG_W, BG_H) },
+  uEnvBright: { value: CONFIG.envBright },
+  uFoliage:   { value: CONFIG.foliageAmt },
+  ucRock:     { value: hexToVec3(CONFIG.cRock) },
+  ucMoss:     { value: hexToVec3(CONFIG.cMoss) },
+  ucFoliage:  { value: hexToVec3(CONFIG.cFoliage) },
+  ucMist:     { value: hexToVec3(CONFIG.cMist) },
+}
+const bakeMat = new THREE.ShaderMaterial({
+  uniforms: bakeUniforms,
+  depthTest: false, depthWrite: false,
+  vertexShader: `
+    void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    precision highp float;
+    #define PI 3.14159265
+    uniform vec2  uBakeRes;
+    uniform float uEnvBright, uFoliage;
+    uniform vec3  ucRock, ucMoss, ucFoliage, ucMist;
+    float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+    float noise(vec2 p){
+      vec2 i = floor(p), f = fract(p);
+      float a = hash(i), b = hash(i + vec2(1,0)), c = hash(i + vec2(0,1)), d = hash(i + vec2(1,1));
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    }
+    float fbm(vec2 p){
+      float s = 0.0, a = 0.5;
+      for (int i = 0; i < 5; i++){ s += a * noise(p); p = p * 2.03 + vec2(11.3, 7.7); a *= 0.5; }
+      return s;
+    }
+    // byte-for-byte the same canyon the shader used to compute live, now baked
+    vec3 background(vec3 rd){
+      float dz = max(0.22, -rd.z + 0.35);
+      vec2 q = vec2(rd.x, rd.y) / dz;
+      float ax = abs(q.x);
+      float wall = smoothstep(0.18, 1.15, ax);
+      vec3 col = mix(ucMist, ucMoss, smoothstep(0.0, 0.7, ax));
+      col = mix(col, ucRock, wall);
+      float veg  = fbm(q * 3.0 + vec2(2.0, -1.0));
+      float veg2 = fbm(q * 7.0 + 10.0);
+      col = mix(col, ucFoliage,       smoothstep(0.55, 0.85, veg) * (0.35 + 0.65 * wall) * uFoliage);
+      col = mix(col, ucFoliage * 0.7, smoothstep(0.60, 0.92, veg2) * 0.30 * uFoliage);
+      float str = sin(q.x * 30.0 + veg * 3.0) * 0.5 + 0.5;
+      col *= 1.0 - wall * 0.24 * str;
+      float vy = clamp(q.y * 0.5 + 0.45, 0.0, 1.0);
+      col *= mix(0.58, 1.30, vy);                                 // lifted shadows -> sunnier, airier
+      col += ucMist * 0.42 * (1.0 - wall) * smoothstep(-0.25, 0.7, q.y);  // more sun pouring down the gap
+      return col * uEnvBright;
+    }
+    void main(){
+      vec2 uv = gl_FragCoord.xy / uBakeRes;          // [0,1] equirect cell
+      float lon = (uv.x - 0.5) * 2.0 * PI;
+      float lat = (uv.y - 0.5) * PI;
+      float cl = cos(lat);
+      vec3 dir = vec3(cl * cos(lon), sin(lat), cl * sin(lon));
+      gl_FragColor = vec4(background(dir), 1.0);
+    }`,
+})
+const bakeScene = new THREE.Scene()
+const bakeQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bakeMat)
+bakeQuad.frustumCulled = false
+bakeScene.add(bakeQuad)
+const bakeCam = new THREE.Camera()
+function bakeBackground() {
+  bakeUniforms.uEnvBright.value = CONFIG.envBright
+  bakeUniforms.uFoliage.value = CONFIG.foliageAmt
+  bakeUniforms.ucRock.value.copy(hexToVec3(CONFIG.cRock))
+  bakeUniforms.ucMoss.value.copy(hexToVec3(CONFIG.cMoss))
+  bakeUniforms.ucFoliage.value.copy(hexToVec3(CONFIG.cFoliage))
+  bakeUniforms.ucMist.value.copy(hexToVec3(CONFIG.cMist))
+  const prev = renderer.getRenderTarget()
+  renderer.setRenderTarget(bgRT)
+  renderer.render(bakeScene, bakeCam)
+  renderer.setRenderTarget(prev)
+}
+
+/* ---------- INTERACTION (pointer wakes the water + glow, click pumps energy) ---------- */
+const mouse = new THREE.Vector2(0, 0), mouseTarget = new THREE.Vector2(0, 0)
+let energy = 0, energyTarget = 0
+
+// Project a screen pointer onto the water plane, reproducing the in-shader
+// camera EXACTLY so the wake lands where the cursor visually touches the water.
+const _ro = new THREE.Vector3(), _ta = new THREE.Vector3(), _fw = new THREE.Vector3()
+const _rt = new THREE.Vector3(), _up = new THREE.Vector3(), _rd = new THREE.Vector3()
+const _wy = new THREE.Vector3(0, 1, 0)
+function cursorWaterXZ(clientX, clientY) {
+  const w = window.innerWidth, h = window.innerHeight
+  const uvx = ((clientX / w) * 2 - 1) * (w / h)          // shader: uv.x = ndcX * aspect
+  const uvy = -((clientY / h) * 2 - 1)                   // shader: uv.y = ndcY (y-up)
+  _ro.set(0, CONFIG.camHeight, CONFIG.camDist)
+  _ta.set(0, CONFIG.lookY, 0)
+  _fw.copy(_ta).sub(_ro).normalize()
+  _rt.copy(_fw).cross(_wy).normalize()
+  _up.copy(_rt).cross(_fw)
+  _rd.copy(_rt).multiplyScalar(uvx).addScaledVector(_up, uvy).addScaledVector(_fw, CONFIG.focal).normalize()
+  if (_rd.y > -1e-4) return null                          // ray points up — never meets the pool
+  const t = (CONFIG.waterY - _ro.y) / _rd.y
+  if (t <= 0 || t > 60) return null                       // behind camera or absurdly far
+  return { x: _ro.x + _rd.x * t, z: _ro.z + _rd.z * t }
+}
+
+let trailHead = 0
+let lastX = 1e9, lastZ = 1e9
+function dropRipple(clientX, clientY) {
+  const p = cursorWaterXZ(clientX, clientY)
+  if (!p) return
+  if (Math.hypot(p.x - lastX, p.z - lastZ) < CONFIG.cursorSpacing) return   // space the wake out
+  trail[trailHead].set(p.x, p.z, performance.now() / 1000)
+  trailHead = (trailHead + 1) % TRAIL_N
+  lastX = p.x; lastZ = p.z
+}
+
+window.addEventListener('pointermove', e => {
+  const nx = (e.clientX / window.innerWidth) * 2 - 1
+  const ny = -((e.clientY / window.innerHeight) * 2 - 1)
+  energyTarget = Math.min(1, energyTarget + Math.hypot(nx - mouseTarget.x, ny - mouseTarget.y) * 1.4)
+  mouseTarget.set(nx, ny)
+  dropRipple(e.clientX, e.clientY)
+}, { passive: true })
+window.addEventListener('pointerdown', e => { energyTarget = 1; dropRipple(e.clientX, e.clientY) }, { passive: true })
+
+/* ---------- CONFIG → uniforms ---------- */
+function applyConfig() {
+  gyreUniforms.ucGoldLow.value.copy(hexToVec3(CONFIG.cGoldLow))
+  gyreUniforms.ucGoldMid.value.copy(hexToVec3(CONFIG.cGoldMid))
+  gyreUniforms.ucGoldHigh.value.copy(hexToVec3(CONFIG.cGoldHigh))
+  gyreUniforms.ucSpec.value.copy(hexToVec3(CONFIG.cSpec))
+  gyreUniforms.ucRock.value.copy(hexToVec3(CONFIG.cRock))
+  gyreUniforms.ucMoss.value.copy(hexToVec3(CONFIG.cMoss))
+  gyreUniforms.ucFoliage.value.copy(hexToVec3(CONFIG.cFoliage))
+  gyreUniforms.ucMist.value.copy(hexToVec3(CONFIG.cMist))
+  gyreUniforms.ucWater.value.copy(hexToVec3(CONFIG.cWater))
+  gyreUniforms.ucWaterShallow.value.copy(hexToVec3(CONFIG.cWaterShallow))
+  gyreUniforms.uRadius.value = CONFIG.radius
+  gyreUniforms.uTube.value = CONFIG.tube
+  gyreUniforms.uRimTube.value = CONFIG.rimTube
+  gyreUniforms.uLat.value = CONFIG.latRings
+  gyreUniforms.uMer.value = CONFIG.meridians
+  gyreUniforms.uTilt.value = CONFIG.tilt
+  gyreUniforms.uCamDist.value = CONFIG.camDist
+  gyreUniforms.uCamHeight.value = CONFIG.camHeight
+  gyreUniforms.uLookY.value = CONFIG.lookY
+  gyreUniforms.uFocal.value = CONFIG.focal
+  gyreUniforms.uMetalBright.value = CONFIG.metalBright
+  gyreUniforms.uEnvReflect.value = CONFIG.envReflect
+  gyreUniforms.uSpecPow.value = CONFIG.specPow
+  gyreUniforms.uSpecStr.value = CONFIG.specStr
+  gyreUniforms.uRim.value = CONFIG.rim
+  gyreUniforms.uInner.value = CONFIG.innerGlow
+  gyreUniforms.uEnvBright.value = CONFIG.envBright
+  gyreUniforms.uFoliage.value = CONFIG.foliageAmt
+  gyreUniforms.uWaterY.value = CONFIG.waterY
+  gyreUniforms.uHorizonDist.value = CONFIG.horizonDist
+  gyreUniforms.uReflStr.value = CONFIG.reflStrength
+  gyreUniforms.uRipAmp.value = CONFIG.rippleAmp
+  gyreUniforms.uRipFreq.value = CONFIG.rippleFreq
+  gyreUniforms.uRipSpeed.value = CONFIG.rippleSpeed
+  gyreUniforms.uRipChop.value = CONFIG.rippleChop
+  gyreUniforms.uCursorAmp.value = CONFIG.cursorRipple
+  gyreUniforms.uCursorSpeed.value = CONFIG.cursorSpeed
+  gyreUniforms.uCursorFreq.value = CONFIG.cursorFreq
+  gyreUniforms.uCursorWidth.value = CONFIG.cursorWidth
+  gyreUniforms.uCursorDecay.value = CONFIG.cursorDecay
+  gyreUniforms.uCursorReach.value = CONFIG.cursorReach
+  gyreUniforms.uCursorLife.value = CONFIG.cursorLife
+  gyreUniforms.uBobAmt.value = CONFIG.bobAmount
+  gyreUniforms.uBobSpeed.value = CONFIG.bobSpeed
+  gyreUniforms.uWaterTint.value = CONFIG.waterTint
+  gyreUniforms.uSparkle.value = CONFIG.sparkle
+  gyreUniforms.uGrain.value = CONFIG.grain
+  gyreUniforms.uVignette.value = CONFIG.vignette
+  gyreUniforms.uMouseStr.value = CONFIG.mouseStrength
+  bakeBackground()                              // canyon params may have changed → re-bake
+  curDpr = Math.min(curDpr, dprCeil())          // honour a lowered maxDpr immediately
+  curDpr = Math.max(curDpr, CONFIG.minDpr)
+  setSizes()
+}
+
+/* ---------- RESIZE / ADAPTIVE RESOLUTION ----------
+   The internal render resolution auto-scales between minDpr and
+   min(devicePixelRatio, maxDpr) to hold a smooth framerate: full sharpness
+   when the GPU keeps up, softening only when frames start to drop. */
+function dprCeil() { return Math.min(window.devicePixelRatio || 1, CONFIG.maxDpr) }
+let curDpr = dprCeil()
+function setSizes() {
+  const w = window.innerWidth, h = window.innerHeight
+  renderer.setPixelRatio(curDpr); renderer.setSize(w, h, false)
+  camera.aspect = w / h; camera.updateProjectionMatrix()
+  composer.setPixelRatio(curDpr); composer.setSize(w, h)
+  gyreUniforms.uRes.value.copy(renderer.getDrawingBufferSize(new THREE.Vector2()))
+}
+function resize() { setSizes() }
+window.addEventListener('resize', resize)
+
+let fpsAccum = 0, fpsFrames = 0
+function adaptResolution(rawDt) {
+  fpsAccum += rawDt; fpsFrames++
+  if (fpsAccum < 0.5) return                    // average over ~0.5s windows
+  const fps = fpsFrames / fpsAccum
+  fpsAccum = 0; fpsFrames = 0
+  const ceil = dprCeil()
+  let next = curDpr
+  if (fps < 50 && curDpr > CONFIG.minDpr) next = Math.max(CONFIG.minDpr, curDpr - 0.15)
+  else if (fps > 58 && curDpr < ceil)     next = Math.min(ceil, curDpr + 0.1)
+  if (Math.abs(next - curDpr) > 0.001) { curDpr = next; setSizes() }
+}
+
+/* ---------- RENDER LOOP ---------- */
+let last = performance.now() / 1000
+let phase = 0
+const appearStart = performance.now()
+function render() {
+  requestAnimationFrame(render)
+  const now = performance.now() / 1000
+  const rawDt = now - last
+  const dt = Math.min(0.05, rawDt); last = now
+  adaptResolution(rawDt)
+
+  phase += dt * CONFIG.spinSpeed
+  energyTarget *= 0.94
+  energy += (energyTarget - energy) * 0.1
+  mouse.lerp(mouseTarget, CONFIG.mouseLerp)
+
+  gyreUniforms.uTime.value = now
+  gyreUniforms.uPhase.value = phase
+  gyreUniforms.uEnergy.value = energy
+  gyreUniforms.uMouse.value.copy(mouse)
+  gyreUniforms.uAlpha.value = Math.max(0, Math.min(1, (performance.now() - appearStart - 250) / 1200))
+
+  composer.render()
+}
+
+resize()
+applyConfig()
+render()
+</script>
+</body>
+</html>

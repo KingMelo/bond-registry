@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars } from "../src/registry.jsx";
 
 /* ================================================================
@@ -178,9 +178,21 @@ export default function HolderPortal() {
     const b = bonds.find((x) => x.id === bondId);
     return b ? ((u / b.total) * 100).toFixed(6) + "%" : "—";
   };
-  const [tab, setTab] = useState("access");
+  const [tab, setTab] = useState(() => {
+    // The front page links straight to a tab: /holder#request, /holder#verify.
+    const h = typeof window !== "undefined" ? window.location.hash.slice(1) : "";
+    return ["access", "request", "verify"].includes(h) ? h : "access";
+  });
   const [view, setView] = useState(null);
   const [openId, setOpenId] = useState(null);
+  useEffect(() => {
+    const onHash = () => {
+      const h = window.location.hash.slice(1);
+      if (["access", "request", "verify"].includes(h)) { setTab(h); setView(null); setOpenId(null); }
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [toast, setToast] = useState("");
 
   // sign-in
@@ -437,7 +449,7 @@ export default function HolderPortal() {
 
       <div className="mx-auto" style={{ maxWidth: 560, padding: "20px 18px 56px" }}>
         <div className="flex items-baseline justify-between">
-          <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontWeight: 500 }}>Interest Registry</div>
+          <a href="/" style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontWeight: 500, textDecoration: "none", display: "block" }}>Interest Registry</a>
         </div>
 
         <div className="flex gap-4 mt-4 mb-5" style={{ borderBottom: "1px solid " + T.rule }}>

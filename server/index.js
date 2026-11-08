@@ -8,6 +8,7 @@ import express from "express";
 import pg from "pg";
 import crypto from "node:crypto";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { ISSUERS, BONDS, ASSIGNMENTS, PASSKEYS, EVENTS } from "./seed.js";
@@ -865,7 +866,25 @@ if (APP === "platform") {
 }
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", APP);
-app.use(express.static(dir, { index: "index.html" }));
+// The holder site's front page: the public landing with the Holder and
+// Issuer sign-in buttons. The holder portal itself lives at /holder.
+if (APP === "holder") {
+  const ISSUER_URL = process.env.ISSUER_URL || "https://registrar-production-1538.up.railway.app";
+  const esc = (v) => String(v).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
+  let home = null;
+  const sendHome = async (req, res, next) => {
+    try {
+      if (home === null) {
+        const raw = await fs.readFile(path.join(dir, "home.html"), "utf8");
+        home = raw.replaceAll("__ISSUER_URL__", esc(ISSUER_URL));
+      }
+      res.type("html").send(home);
+    } catch (e) { next(e); }
+  };
+  app.get("/", sendHome);
+  app.get("/home.html", sendHome);
+}
+app.use(express.static(dir, { index: false }));
 app.get("*", (req, res) => res.sendFile(path.join(dir, "index.html")));
 
 app.use((err, req, res, next) => {

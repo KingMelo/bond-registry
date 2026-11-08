@@ -12,7 +12,7 @@ The apps share one register in Postgres through a small API server (`server/`). 
 
 | Service | `APP` | Who uses it |
 |---|---|---|
-| Holder portal | `holder` | Public: holders sign in with their passkey, request access, verify an assignment. Shows approved issuers only. |
+| Holder portal | `holder` | Public. `/` is the front page ([`apps/holder/public/home.html`](apps/holder/public/home.html)) with Holder and Issuer sign-in buttons; the portal itself is at `/holder` (`/holder#request`, `/holder#verify` open those tabs). Holders sign in with their passkey, request access, verify an assignment. Shows approved issuers only. |
 | Issuer console | `issuer` | Issuer accounts (email and password). Each issuer sees and changes only its own bonds. |
 | Platform console | `platform` | Platform staff only. Reviews issuers and bonds; directory of every bond's totals. Never shows holder names or contact details. |
 
@@ -44,4 +44,4 @@ DATABASE_URL=postgres://… APP=platform PORT=4103 ADMIN_SETUP_CODE=… npm star
 
 An empty database is created and loaded with the sample register (issuer `KPII`) on first start. A register from before issuer accounts is assigned to `KPII` automatically.
 
-Environment variables: `DATABASE_URL` (required), `APP` (`holder` or `issuer`), `ADMIN_SETUP_CODE` (platform console only; needed until the platform owner account exists), `PASSKEY_PEPPER` (mixed into passkey hashes; set it once and keep it, or existing passkeys stop working), `PGSSL=1` (for databases that need TLS), `SEED_SAMPLE=0` (start an empty database with no sample issuer).
+Environment variables: `DATABASE_URL` (required), `APP` (`holder` or `issuer`), `ADMIN_SETUP_CODE` (platform console only; needed until the platform owner account exists), `PASSKEY_PEPPER` (mixed into passkey hashes; set it once and keep it, or existing passkeys stop working), `PGSSL=1` (for databases that need TLS), `SEED_SAMPLE=0` (start an empty database with no sample issuer), `ISSUER_URL` (holder site only; where the front page's Issuer sign-in button goes, defaults to the live issuer console).
