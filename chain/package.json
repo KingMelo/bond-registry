@@ -1,0 +1,21 @@
+{
+  "name": "bond-registry-chain",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The on-chain registry contract for the Bond Interest Registry (Polygon PoS).",
+  "scripts": {
+    "build": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:amoy": "hardhat run scripts/deploy.js --network amoy",
+    "deploy:polygon": "hardhat run scripts/deploy.js --network polygon"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "2.0.8",
+    "@nomicfoundation/hardhat-ethers": "3.0.8",
+    "@openzeppelin/contracts": "5.1.0",
+    "chai": "4.5.0",
+    "ethers": "6.13.4",
+    "hardhat": "2.22.17",
+    "solc": "0.8.28"
+  }
+}
