@@ -115,6 +115,22 @@ describe("BondInterestRegistry", () => {
     });
   });
 
+  describe("amounts in cents", () => {
+    it("takes $10.40 off a $2,000,000.00 bond exactly", async () => {
+      const { reg, I, RL } = await setup();
+      const cents = (dollars) => BigInt(Math.round(Number(dollars) * 100)); // "10.40" -> 1040
+      await I.recordPriorInstrument(BOND, id("PN-1040"), cents("10.40"), h("e"));
+      await accepted(I, RL, A1, cents("9428.87"));
+      await RL.assignOut(BOND, A1, C1, cents("10.40"), h("d"));
+      const t = await totals(reg);
+      expect(t.prior).to.equal(1040n);                          // $10.40
+      expect((await reg.assignments(A1)).units).to.equal(941847n); // $9,428.87 - $10.40 = $9,418.47
+      expect((await reg.assignments(C1)).units).to.equal(1040n);   // $10.40
+      expect(t.unassigned).to.equal(TOTAL - 1040n - 942887n);     // $1,990,560.73
+      expect(t.reconciled).to.equal(true);
+    });
+  });
+
   describe("prior instruments", () => {
     it("takes the units off the bond and refuses a duplicate", async () => {
       const { reg, I, issuer } = await setup();
