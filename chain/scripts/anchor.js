@@ -33,7 +33,11 @@ async function main() {
   if (!bondDisplay) throw new Error("Set BOND_ID, e.g. KJPII-0001-BD.");
   const dep = process.env.CONTRACT ? { address: process.env.CONTRACT }
     : JSON.parse(fs.readFileSync(path.join(__dirname, "..", "deployments", network.name + ".json"), "utf8"));
-  const [signer] = await ethers.getSigners();
+  // Public RPC endpoints sit behind load balancers that can report a stale nonce between
+  // back-to-back transactions; the NonceManager counts locally after the first lookup.
+  const [baseSigner] = await ethers.getSigners();
+  const signer = new ethers.NonceManager(baseSigner);
+  signer.address = baseSigner.address;
   const reg = await ethers.getContractAt("BondInterestRegistry", dep.address, signer);
   console.log(`${dry ? "DRY RUN — " : ""}${network.name} · contract ${dep.address} · signer ${signer.address}`);
 
