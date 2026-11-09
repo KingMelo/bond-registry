@@ -60,12 +60,38 @@ describe("BondInterestRegistry", () => {
       await expect(reg.connect(platform).registerIssuer(id("NEW"), ethers.ZeroAddress)).to.be.revertedWithCustomError(reg, "ZeroAddress");
     });
 
-    it("an issuer's Safe can be moved; the old address loses access", async () => {
-      const { reg, platform, issuer, stranger } = await setup();
-      await expect(reg.connect(platform).setIssuerAccount(ISS, stranger.address, h("signer change")))
+    it("an issuer moves its own account; the old address loses access", async () => {
+      const { reg, issuer, stranger } = await setup();
+      await expect(reg.connect(issuer).setIssuerAccount(ISS, stranger.address, h("signer change")))
         .to.emit(reg, "IssuerAccountChanged").withArgs(ISS, stranger.address, h("signer change"));
       await expect(reg.connect(issuer).issueAssignment(BOND, A1, 100, h("d"))).to.be.revertedWithCustomError(reg, "NotIssuer");
       await reg.connect(stranger).issueAssignment(BOND, A1, 100, h("d"));
+      // and only the new account can move it again
+      await expect(reg.connect(issuer).setIssuerAccount(ISS, issuer.address, h("take back"))).to.be.revertedWithCustomError(reg, "NotIssuer");
+    });
+
+    it("nobody else can move an issuer's account: not the platform, admin, relayer or another issuer", async () => {
+      const { reg, admin, platform, relayer, guardian, stranger } = await setup();
+      for (const who of [platform, admin, relayer, guardian, stranger])
+        await expect(reg.connect(who).setIssuerAccount(ISS, who.address, h("takeover"))).to.be.revertedWithCustomError(reg, "NotIssuer");
+      // even an account holding every role
+      await reg.connect(admin).grantRole(await reg.PLATFORM_ROLE(), admin.address);
+      await expect(reg.connect(admin).setIssuerAccount(ISS, admin.address, h("takeover"))).to.be.revertedWithCustomError(reg, "NotIssuer");
+      await expect(reg.connect(stranger).setIssuerAccount(id("NOPE"), stranger.address, h("x"))).to.be.revertedWithCustomError(reg, "UnknownIssuer");
+    });
+
+    it("a suspended issuer can rotate its account, and stays suspended", async () => {
+      const { reg, platform, issuer, stranger } = await setup();
+      await reg.connect(platform).suspendIssuer(ISS, h("suspend"));
+      await reg.connect(issuer).setIssuerAccount(ISS, stranger.address, h("rotate"));
+      expect((await reg.issuers(ISS)).suspended).to.equal(true);
+      await expect(reg.connect(stranger).issueAssignment(BOND, A1, 100, h("d"))).to.be.revertedWithCustomError(reg, "IssuerIsSuspended");
+    });
+
+    it("moving an account needs a document hash and a real address", async () => {
+      const { reg, issuer } = await setup();
+      await expect(reg.connect(issuer).setIssuerAccount(ISS, issuer.address, ethers.ZeroHash)).to.be.revertedWithCustomError(reg, "ZeroHash");
+      await expect(reg.connect(issuer).setIssuerAccount(ISS, ethers.ZeroAddress, h("x"))).to.be.revertedWithCustomError(reg, "ZeroAddress");
     });
 
     it("the relayer can't act as an issuer, and an issuer can't act as the relayer", async () => {

@@ -21,8 +21,10 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 ///    no payable functions and no token transfers.
 ///
 /// Roles:
-///  - PLATFORM registers issuers and the address (a 2-of-3 Safe) that acts for each.
-///  - Each issuer's address acts only on that issuer's bonds.
+///  - PLATFORM registers each issuer once, with the address (a Safe) that acts for it,
+///    and can suspend or reinstate it.
+///  - Each issuer's address acts only on that issuer's bonds, and only it can move the
+///    issuer to a new address. The platform can't.
 ///  - RELAYER (the platform's signing key) makes holder-initiated transitions only.
 ///  - GUARDIAN pauses and unpauses in an emergency.
 ///
@@ -203,15 +205,17 @@ contract BondInterestRegistry is AccessControl, Pausable {
     }
 
     /// Moves an issuer to a new Safe, for example after a signer change.
-    function setIssuerAccount(bytes32 issuerId, address account, bytes32 docHash)
-        external
-        onlyRole(PLATFORM_ROLE)
-        whenNotPaused
-        nonZero(docHash)
-    {
+    /// Moves an issuer to a new account (for example a new Safe). Only the issuer's current account
+    /// can do this: the platform registers an issuer once and can suspend or reinstate it, but can
+    /// never take over its on-chain identity. Lost keys are recovered inside the issuer's Safe
+    /// (by its owners replacing a key), not here. Allowed while suspended, so a compromised account
+    /// can be rotated out; the move doesn't lift the suspension.
+    function setIssuerAccount(bytes32 issuerId, address account, bytes32 docHash) external whenNotPaused nonZero(docHash) {
         if (account == address(0)) revert ZeroAddress();
-        if (issuers[issuerId].account == address(0)) revert UnknownIssuer(issuerId);
-        issuers[issuerId].account = account;
+        Issuer storage iss = issuers[issuerId];
+        if (iss.account == address(0)) revert UnknownIssuer(issuerId);
+        if (iss.account != msg.sender) revert NotIssuer(issuerId, msg.sender);
+        iss.account = account;
         emit IssuerAccountChanged(issuerId, account, docHash);
     }
 

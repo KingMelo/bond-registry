@@ -6,7 +6,8 @@
 //   DRY_RUN=1       print the plan only
 //
 // Order matters, and is safe to re-run:
-//   1. point each issuer at the Safe (needs the platform role, still on this key);
+//   1. point each issuer at the Safe. Only an issuer's current account can move it, so this works
+//      for issuers this key still acts for (on a fresh deployment, before any move);
 //   2. grant PLATFORM, GUARDIAN and DEFAULT_ADMIN to the Safe;
 //   3. only once the Safe verifiably holds all three, renounce them from this key.
 // The relayer role stays on this key: holder actions keep going straight through.
@@ -42,6 +43,8 @@ async function main() {
     const iss = await reg.issuers(id);
     if (iss.account === ethers.ZeroAddress) throw new Error(code + " isn't registered on-chain.");
     if (iss.account.toLowerCase() === safe.toLowerCase()) { console.log(`  ${code} already acts through the Safe`); continue; }
+    if (iss.account.toLowerCase() !== me.address.toLowerCase())
+      throw new Error(`${code} acts through ${iss.account}; only that account can move it, so this key can't.`);
     await send(`setIssuerAccount ${code} → Safe`, () => reg.setIssuerAccount(id, safe, tag("issuer " + code + " to Safe " + safe)));
   }
 
