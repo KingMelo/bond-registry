@@ -19,9 +19,10 @@ The compiler is the npm build of solc 0.8.28, so no native compiler download is 
 
 | Network | Address |
 |---|---|
-| Polygon Amoy (testnet, chain 80002) | [`0x91312fB0c4eEe48031EF4a0C6b53A89A943109c8`](https://amoy.polygonscan.com/address/0x91312fB0c4eEe48031EF4a0C6b53A89A943109c8) |
+| Polygon Amoy (testnet, chain 80002) | [`0x4d73e74E99A5A79C5aD3D0Dc53A63c137A5Dd296`](https://amoy.polygonscan.com/address/0x4d73e74E99A5A79C5aD3D0Dc53A63c137A5Dd296) (v2, adds `rejectAssignment`) |
+| Polygon Amoy, retired | [`0x91312fB0c4eEe48031EF4a0C6b53A89A943109c8`](https://amoy.polygonscan.com/address/0x91312fB0c4eEe48031EF4a0C6b53A89A943109c8) (v1, see `deployments/amoy-v1*.json`) |
 
-Details in [`deployments/amoy.json`](deployments/amoy.json). On Amoy all four roles sit on the
+Details in [`deployments/amoy.json`](deployments/amoy.json). Switching `CHAIN_CONTRACT` to a new deployment makes the app's sender rebuild bonds, prior instruments and simple records on it. On Amoy all four roles sit on the
 testnet deployer wallet; nothing is on mainnet.
 
 ## Deploying
