@@ -2,26 +2,12 @@
   "network": "amoy",
   "chainId": 80002,
   "contract": "BondInterestRegistry",
-  "version": 2,
-  "address": "0x4d73e74E99A5A79C5aD3D0Dc53A63c137A5Dd296",
-  "deployTx": "0x7f2a0cbe7b618a4b9272b184771808703521888c775c1872bcbd5d2a7c61508a",
-  "block": 52363638,
-  "gasUsed": 3287154,
-  "deployedAt": "2026-11-09T01:04:16Z",
-  "commit": "396c995",
-  "replaces": "amoy-v1.json (0x91312fB0c4eEe48031EF4a0C6b53A89A943109c8), which had no way to record a holder's rejection",
-  "roles": {
-    "admin": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "platform": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "guardian": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
-    "movedAt": "2026-11-09T15:37:00Z",
-    "note": "Governing roles and the KJPII issuer account moved to the Amoy Safe (owner: the Trezor) by scripts/move-roles.js; the deployer key keeps only RELAYER and pays gas.",
-    "txs": {
-      "setIssuerAccount": "0x774dc20fb0250603fd4e944705de6e36c2dcaac4ebda0829ac47e91d3691c0cc",
-      "renounceAdmin": "0xec8c24a63438c6130ca637df7cbad6d2598591992e4355738716ee78906e24da"
-    }
-  },
-  "explorer": "https://amoy.polygonscan.com/address/0x4d73e74E99A5A79C5aD3D0Dc53A63c137A5Dd296",
-  "note": "Testnet only. The app's sender rebuilt the register on this contract when it switched; see the Chain tab in the platform console."
+  "version": 3,
+  "address": "0x9d5398D32bC4058e79C19F10F52fa5116b3040C8",
+  "deployTx": "0x4515344d9ea6a3ee0840c775f23dde4f42ed602c484eff8e4283615dfaac8f10",
+  "block": 52427364,
+  "gasUsed": 3289760,
+  "deployedAt": "2026-11-09T18:46:24Z",
+  "changes": "v3: only an issuer's current account can move it to a new account (setIssuerAccount); the platform can no longer re-point issuers.",
+  "explorer": "https://amoy.polygonscan.com/address/0x9d5398D32bC4058e79C19F10F52fa5116b3040C8"
 }
