@@ -9,5 +9,24 @@
   "gasUsed": 3289760,
   "deployedAt": "2026-11-09T18:46:24Z",
   "changes": "v3: only an issuer's current account can move it to a new account (setIssuerAccount); the platform can no longer re-point issuers.",
-  "explorer": "https://amoy.polygonscan.com/address/0x9d5398D32bC4058e79C19F10F52fa5116b3040C8"
+  "explorer": "https://amoy.polygonscan.com/address/0x9d5398D32bC4058e79C19F10F52fa5116b3040C8",
+  "roles": {
+    "admin": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "platform": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "guardian": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4"
+  },
+  "roleHolders": {
+    "admin": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "platform": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "guardian": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "issuerKJPII": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "movedAt": "2026-11-09T19:13:24Z",
+    "note": "roles (above) are the constructor arguments. Governing roles and KJPII moved to the Amoy Safe (owner: the Trezor) by move-roles.js after the register was replayed; the deployer keeps only RELAYER.",
+    "txs": {
+      "setIssuerAccount": "0x8164530299d82c7f2801a11b3c0aab774fc460f0f11401e8d4bbadc3a71bed4f",
+      "renounceAdmin": "0xc5478345423e7658778bd0b892038563080836d537db8084e41c9433715d4f62"
+    }
+  }
 }
