@@ -55,7 +55,7 @@ async function main() {
   console.log("Submitted; guid", sub.result);
 
   // 4. Poll until the explorer has rebuilt it.
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 120; i++) { // the explorer's queue can take several minutes
     await new Promise((res) => setTimeout(res, 5000));
     const st = await call({ module: "contract", action: "checkverifystatus", guid: sub.result });
     console.log("  status:", st.result);

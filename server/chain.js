@@ -422,8 +422,12 @@ export function startWorker(pool, log = console) {
       if (!r) await new Promise((res) => setTimeout(res, 1500));
     }
     if (!r) return; // still pending: handled as 'sent' next round
-    await mark(op, r.status === 1 ? { status: "confirmed", block: r.blockNumber }
-      : { status: "failed", error: "Transaction reverted on-chain" });
+    if (r.status === 1) return mark(op, { status: "confirmed", block: r.blockNumber });
+    // Reverted after a clean dry run: usually a node behind a load balancer that hadn't seen the
+    // previous write yet. Try again a few times; the dry run before each send catches a real refusal.
+    await mark(op, op.attempts + 1 < 3
+      ? { status: "queued", note: "reverted on-chain; retrying" }
+      : { status: "failed", error: "Transaction reverted on-chain three times" });
   }
 
   async function tick() {
