@@ -1,0 +1,23 @@
+{
+  "amoy": {
+    "address": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "chainId": 80002,
+    "version": "1.4.1",
+    "owners": ["0xCb6378796c459BD202b323d4fed566778F8e4a7A"],
+    "threshold": 1,
+    "createdTx": "0x5cb1cc7cb23b79522f5d7bb84a0bc013a2a252cba5fa55ede5915da45a6619f4",
+    "block": 52411933,
+    "createdBy": "scripts/create-safe.js; the deployer paid gas and is not an owner",
+    "explorer": "https://amoy.polygonscan.com/address/0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "use": "Testnet: will hold the issuer role for KJPII and the platform role on the Amoy registry"
+  },
+  "polygon": {
+    "address": "0x1b67310EcFc4c2a268088eA5b9891873AD758874",
+    "chainId": 137,
+    "version": "1.5.0",
+    "owners": ["0xCb6378796c459BD202b323d4fed566778F8e4a7A"],
+    "threshold": 1,
+    "createdBy": "the owner, in the Safe app",
+    "use": "Mainnet: will hold the same roles when the registry is deployed to Polygon"
+  }
+}
