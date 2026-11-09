@@ -694,7 +694,7 @@ export default function HolderPortal() {
 
             <div className="mt-6">
               <Note>
-                The passkey arrives in its own certified mailing, on a different day from the
+                Your passkey comes in a sealed envelope inside the certified mailing with your
                 instrument. Nothing from the registry will ever email you one or ask for it.
                 <div style={{ marginTop: 8, color: T.ink, fontVariantNumeric: "tabular-nums" }}>
                   Demo · accepted: …A00001 / 7KQM-R4XW-9TPH-C2NV
@@ -1014,7 +1014,7 @@ export default function HolderPortal() {
               <Note>
                 <strong style={{ fontWeight: 600 }}>No passkey appears here, by design.</strong> Deliver
                 your signed instrument to {childIssued.party}. They request access with the
-                assignment ID; the issuer verifies them and mails the passkey separately.
+                assignment ID; the issuer verifies them and mails their passkey.
               </Note>
             </div>
 

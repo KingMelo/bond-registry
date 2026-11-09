@@ -241,7 +241,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const [filedBy, setFiledBy] = useState("assignor");
   const [docRef, setDocRef] = useState("");
   const [iMail, setIMail] = useState("");
-  const [pMail, setPMail] = useState("");
   const [rpParty, setRpParty] = useState("");
   const [rpContact, setRpContact] = useState("");
   const [rpAddress, setRpAddress] = useState("");
@@ -295,8 +294,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const pendingOf = (id) =>
     reg.filter((c) => c.parent === id && c.origin === "AssignOut" && PENDING.includes(c.status));
 
-  // Children deliver their own instrument through the assignor; everything else
-  // needs both mailings recorded once it is issued.
+  // One certified mailing carries the instrument and the passkey document together. Children get
+  // their instrument from the assignor, so their mailing carries the passkey alone.
   const mailingMissing = (a) =>
     !TERMINAL.includes(a.status) && !["AwaitingCredential", "CredentialRequested"].includes(a.status) &&
     (!a.passkeyMail || (a.origin !== "AssignOut" && !a.instrumentMail));
@@ -312,7 +311,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (a.status === "Locked" && a.unlockRequested) out.push(a.lockKind === "pledge"
       ? ["Unlock request · pledge", "Needs the pledgee's signed release before you unlock."]
       : ["Unlock request", "Verify the holder's identity before you unlock."]);
-    if (mailingMissing(a)) out.push(["Mailing not recorded", "Record the certified mail numbers for the instrument and passkey."]);
+    if (mailingMissing(a)) out.push(["Mailing not recorded", "Record the certified mailing's tracking number."]);
     return out;
   };
 
@@ -339,7 +338,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const clearForms = () => {
     setMail(""); setReason(""); setRecHash(""); setFiling(""); setFiledBy("assignor"); setDocRef("");
-    setIMail(""); setPMail(""); setRpParty(""); setRpContact(""); setRpAddress(""); setRpDoc(null); setRpInstr(null);
+    setIMail(""); setRpParty(""); setRpContact(""); setRpAddress(""); setRpDoc(null); setRpInstr(null);
   };
   const done = (m) => { clearForms(); setSheet(null); flash(m); };
 
@@ -440,15 +439,16 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   function recordMailing(a) {
     const needInstrument = a.origin !== "AssignOut" && !a.instrumentMail;
     const needPasskey = !a.passkeyMail;
-    if ((needInstrument && !iMail.trim()) || (needPasskey && !pMail.trim())) return;
-    const deliveryRef = "pending"; // the server sets the real hash from the mailing numbers
+    const mail = iMail.trim();
+    if (!mail || (!needInstrument && !needPasskey)) return;
+    const deliveryRef = "pending"; // the server sets the real hash from the tracking number
     patch(a.id, {
-      instrumentMail: needInstrument ? iMail.trim() : a.instrumentMail,
-      passkeyMail: needPasskey ? pMail.trim() : a.passkeyMail,
+      instrumentMail: needInstrument ? mail : a.instrumentMail,
+      passkeyMail: needPasskey ? mail : a.passkeyMail,
       deliveryRef,
     });
     emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", deliveryRef);
-    done("Mailings recorded. Only their hash goes on-chain.");
+    done("Mailing recorded. Only its hash goes on-chain.");
   }
 
   async function replaceAssignment(a) {
@@ -532,7 +532,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     emit(activeBond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
     setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress(""); setNDoc(null);
     setTab("records");
-    flash(rec.id + " issued. Mail both documents separately, then record the numbers.");
+    flash(rec.id + " issued. Mail the instrument and passkey document together by certified post, then record the tracking number.");
     showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".");
   }
 
@@ -848,9 +848,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             <div className="mt-4">
               <Note kind="caution">
-                After issuing: mail the instrument by certified post, then the passkey document
-                in a separate mailing on a different day. Record both numbers, then file the
-                UCC-3 and record its reference.
+                After issuing: mail the signed instrument and the sealed passkey document together
+                in one certified mailing and record its tracking number. Then file the UCC-3 and
+                record its reference.
               </Note>
             </div>
           </div>
@@ -1072,8 +1072,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             {sheet.passkey}
           </div>
           <Note kind="warn">
-            Shown once. Copy it onto the confidential passkey document and mail it by certified
-            post, separately from the instrument. Only its hash is stored — if it is lost, rotate it.
+            Shown once. Copy it onto the confidential passkey document, seal it in its own envelope,
+            and send it in the same certified mailing as the instrument. Only its hash is stored;
+            if it is lost, issue a new one.
           </Note>
           <div className="mt-4">
             <Button onClick={() => setSheet(null)}>I've recorded it</Button>
@@ -1156,8 +1157,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               ["UCC-3 filing", a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "") : a.filingRef ? shortHash(a.filingRef) : "Not yet filed"],
               ["Delivery ref", a.deliveryRef ? shortHash(a.deliveryRef) : "—"],
               chainInfo && ["On-chain", <ChainLink s={chainStatus(a, chainInfo)} />],
-              ["Instrument mail", a.instrumentMail || (isChild ? "Delivered by assignor" : "Not yet mailed")],
-              ["Passkey mail", a.passkeyMail || "Not yet mailed"],
+              ...(a.instrumentMail && a.passkeyMail && a.instrumentMail !== a.passkeyMail
+                ? [["Instrument mail", a.instrumentMail], ["Passkey mail", a.passkeyMail]]
+                : [["Certified mailing", (a.passkeyMail || a.instrumentMail)
+                    ? (a.passkeyMail || a.instrumentMail) + (isChild ? " · passkey (instrument from the assignor)" : " · instrument and passkey")
+                    : "Not yet mailed"]]),
             ]} />
 
             {a.credLocked && (
@@ -1302,19 +1306,14 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             {mailingMissing(a) && (
               <div className="mt-5">
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Record mailings</div>
-                {needInstrument && (
-                  <Field label="Certified mail number for the instrument" value={iMail} onChange={setIMail}
-                    placeholder="9407 1000 0000 0000 0000 00" mono />
-                )}
-                {needPasskey && (
-                  <Field label="Certified mail number for the passkey" value={pMail} onChange={setPMail}
-                    placeholder="9407 1000 0000 0000 0000 00" mono
-                    hint="A separate mailing, on a different day. Only a hash of the numbers goes on-chain." />
-                )}
-                <Button variant="quiet" disabled={(needInstrument && !iMail.trim()) || (needPasskey && !pMail.trim())}
-                  onClick={() => recordMailing(a)}>
-                  Record mailings{signNote}
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Record the mailing</div>
+                <Field label="Certified mail tracking number" value={iMail} onChange={setIMail}
+                  placeholder="9407 1000 0000 0000 0000 00" mono
+                  hint={needInstrument
+                    ? "One mailing: the signed instrument and the sealed passkey document. Only a hash of the number goes on-chain."
+                    : "The mailing with the sealed passkey document. Only a hash of the number goes on-chain."} />
+                <Button variant="quiet" disabled={!iMail.trim()} onClick={() => recordMailing(a)}>
+                  Record mailing{signNote}
                 </Button>
               </div>
             )}
