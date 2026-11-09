@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { T, serif, sans, Label, Chip, Button, Field, Area, Rows, Note } from "./issuer-console.jsx";
 import { Shell, Heading, Lede, ErrorText, TextLink, ForgotPassword, NewPassword, resetToken } from "./issuer-account.jsx";
 import { api, Loading, dollars } from "../src/registry.jsx";
+import { SignatureQueue } from "./trezor-sign.jsx";
 
 /* ================================================================
    Platform console — the platform's own back office.
@@ -258,11 +259,16 @@ function ChainPanel({ me, flash }) {
         Every change the contract tracks is written to it in order, one bond at a time. If the
         contract refuses a write, later writes for that bond wait until it's fixed and retried.
       </Lede>
+      {s.platformSafe && me.role === "owner" && (
+        <SignatureQueue load={api.platformSigning} submit={api.platformSign} T={T} sans={sans} serif={serif} onDone={load} />
+      )}
       <Rows data={[
         ["Contract", <a href={s.explorer + "/address/" + s.contract} target="_blank" rel="noreferrer"
           style={{ color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 }}>{s.contract.slice(0, 10) + "…" + s.contract.slice(-6)}</a>],
         ["Recorded", String(n("confirmed"))],
         ["Waiting to be written", String(n("queued") + n("sent"))],
+        n("signing") > 0 && ["Waiting for signatures", String(n("signing"))],
+        s.platformSafe && ["Platform role held by", "Safe " + s.platformSafe],
         ["Refused", String(n("failed"))],
         s.last && ["Last transaction", <a href={s.explorer + "/tx/" + s.last.tx} target="_blank" rel="noreferrer"
           style={{ color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 }}>{new Date(s.last.updated_at).toLocaleString()}</a>],

@@ -82,6 +82,8 @@ async function migrate() {
         id text primary key, code text unique not null, legal_name text not null,
         status text not null default 'pending', created_at timestamptz not null default now(),
         reviewed_at timestamptz);
+      -- The Safe an issuer acts through on-chain, once it has one (then its calls need owner signatures).
+      alter table issuers add column if not exists safe_address text;
       create table if not exists users (
         id text primary key, email text unique not null, name text not null,
         pw_salt text not null, pw_hash text not null, is_admin boolean not null default false,
@@ -695,7 +697,7 @@ if (APP === "issuer") {
   async function membership(req, issuerId) {
     const u = await needUser(req);
     const r = await pool.query(
-      `select m.role, i.id, i.code, i.legal_name, i.status, i.trusted from memberships m join issuers i on i.id = m.issuer_id
+      `select m.role, i.id, i.code, i.legal_name, i.status, i.trusted, i.safe_address from memberships m join issuers i on i.id = m.issuer_id
        where m.user_id = $1 and m.issuer_id = $2`, [u.id, issuerId]);
     if (!r.rows[0]) throw new Reject(403, "You don't have access to this issuer.");
     return { user: u, ...r.rows[0] };
@@ -803,7 +805,7 @@ if (APP === "issuer") {
     const v = await version(pool);
     if (req.query.since && Number(req.query.since) === v) return res.json({ version: v, unchanged: true });
     const state = await readState("b.issuer_id = $1", [m.id]);
-    res.json({ version: v, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role, trusted: m.trusted } });
+    res.json({ version: v, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role, trusted: m.trusted, safe: m.safe_address || null } });
   }));
 
   app.post("/api/commit", wrap(async (req, res) => {
@@ -875,6 +877,20 @@ if (APP === "issuer") {
     if (!id || normKey(passkey).length < 16) throw new Reject(400, "A 16-character passkey is required.");
     await setPasskey(pool, id, passkey);
     res.json({ ok: true });
+  }));
+
+  // Chain writes waiting on this issuer's Safe, and a signature for one of them.
+  app.get("/api/issuer/signing", wrap(async (req, res) => {
+    const m = await membership(req, req.query.issuer);
+    res.json({ safe: m.safe_address || null, items: await chain.awaitingSignature(pool, m.safe_address) });
+  }));
+
+  app.post("/api/issuer/sign", wrap(async (req, res) => {
+    const m = await membership(req, req.body?.issuer);
+    if (!m.safe_address) throw new Reject(409, "This issuer doesn't sign through a Safe.");
+    const r = await chain.addSignature(pool, Number(req.body?.seq), m.safe_address, String(req.body?.signature || ""));
+    if (!r.ok) throw new Reject(422, r.error);
+    res.json(r);
   }));
 
   app.post("/api/issuer/clear-lockout", wrap(async (req, res) => {
@@ -1043,6 +1059,21 @@ if (APP === "platform") {
   }));
 
   // The chain mirror: queue counts and anything the contract refused.
+  // Chain writes waiting on the platform's Safe (registering and suspending issuers), and a signature.
+  app.get("/api/platform/signing", wrap(async (req, res) => {
+    await needStaff(req);
+    res.json({ safe: chain.PLATFORM_SAFE, items: await chain.awaitingSignature(pool, chain.PLATFORM_SAFE) });
+  }));
+
+  app.post("/api/platform/sign", wrap(async (req, res) => {
+    const u = await needStaff(req);
+    if (!isOwner(u)) throw new Reject(403, "Only the platform owner can sign for the platform.");
+    if (!chain.PLATFORM_SAFE) throw new Reject(409, "The platform doesn't sign through a Safe.");
+    const r = await chain.addSignature(pool, Number(req.body?.seq), chain.PLATFORM_SAFE, String(req.body?.signature || ""));
+    if (!r.ok) throw new Reject(422, r.error);
+    res.json(r);
+  }));
+
   app.get("/api/platform/chain", wrap(async (req, res) => {
     await needStaff(req);
     res.json(await chain.summary(pool));

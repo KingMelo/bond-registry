@@ -33,6 +33,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
+import * as safeLib from "./safe.js";
 
 const ABI = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "registry-abi.json"), "utf8"));
 export const CONTRACT = process.env.CHAIN_CONTRACT || "";
@@ -87,6 +88,11 @@ export const SCHEMA = `
   -- Writes belong to one contract. Rows written before this column existed are the first
   -- (since replaced) deployment's, so a new contract starts with a clean queue.
   alter table chain_ops add column if not exists contract text;
+  -- When the acting role is a Safe: which Safe, the Safe transaction to sign, and the owner
+  -- signatures collected so far. Status 'signing' while it waits for them.
+  alter table chain_ops add column if not exists safe text;
+  alter table chain_ops add column if not exists safe_tx jsonb;
+  alter table chain_ops add column if not exists signatures jsonb not null default '[]';
   create index if not exists chain_ops_open on chain_ops (status, seq);
   create index if not exists chain_ops_ref on chain_ops (ref, seq);
 `;
@@ -255,7 +261,8 @@ export async function statusFor(pool, bondIds, recordIds) {
     const key = recordIds.includes(o.ref) ? o.ref : o.bond;
     const s = out.get(key) || { state: "confirmed", tx: null, error: null, pending: 0 };
     if (o.status === "failed") { s.state = "failed"; s.error = s.error || o.error; }
-    else if (o.status === "queued" || o.status === "sent") { if (s.state !== "failed") s.state = "pending"; s.pending++; }
+    else if (o.status === "signing") { if (s.state !== "failed") s.state = "signing"; s.pending++; }
+    else if (o.status === "queued" || o.status === "sent") { if (s.state !== "failed" && s.state !== "signing") s.state = "pending"; s.pending++; }
     if (o.tx && o.status === "confirmed" && (key === o.ref || o.fn === "anchorBond")) s.tx = o.tx;
     out.set(key, s);
   }
@@ -285,7 +292,8 @@ async function alreadyDone(reg, op, signer) {
     case "registerIssuer": {
       const i = await reg.issuers(a[0]);
       if (i.account === ethers.ZeroAddress) return false;
-      if (i.account.toLowerCase() !== signer.toLowerCase()) throw new Error("Issuer is registered on-chain to " + i.account + ", not this signer.");
+      if (i.account.toLowerCase() !== String(a[1]).toLowerCase() && i.account.toLowerCase() !== signer.toLowerCase())
+        throw new Error("Issuer is registered on-chain to " + i.account + ".");
       return true;
     }
     case "anchorBond": {
@@ -341,6 +349,59 @@ const revertReason = (e) => {
   return null;
 };
 
+// ------------------------------------------------------------------ Safes
+
+/** The platform's Safe, when the platform role is held by one. */
+export const PLATFORM_SAFE = process.env.CHAIN_PLATFORM_SAFE ? ethers.getAddress(process.env.CHAIN_PLATFORM_SAFE) : null;
+let readProvider = null;
+const provider = () => (readProvider ||= new ethers.JsonRpcProvider(process.env.CHAIN_RPC_URL || process.env.CHAIN_PUBLIC_RPC));
+
+/** Which Safe must approve this op, or null when the platform's key sends it directly. */
+export async function safeFor(pool, op) {
+  if (op.role === "relayer") return null;
+  if (op.role === "platform") return PLATFORM_SAFE;
+  // Issuer calls act for the issuer that owns the op's bond.
+  const r = (await pool.query("select i.safe_address from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [op.bond])).rows[0];
+  return r?.safe_address ? ethers.getAddress(r.safe_address) : null;
+}
+
+/** The address an issuer acts through on-chain: its Safe if it has one, otherwise the platform's key. */
+async function issuerAccount(pool, issuerId, fallback) {
+  const r = (await pool.query("select safe_address from issuers where id = $1", [issuerId])).rows[0];
+  return r?.safe_address ? ethers.getAddress(r.safe_address) : fallback;
+}
+
+/** Ops waiting on a Safe's owners, oldest first, with what a wallet needs to sign them. */
+export async function awaitingSignature(pool, safe) {
+  if (!enabled || !safe) return [];
+  const rows = (await pool.query(
+    "select seq, bond, ref, fn, safe_tx, signatures, created_at from chain_ops where contract = $1 and status = 'signing' and safe = $2 order by seq",
+    [CONTRACT, ethers.getAddress(safe)])).rows;
+  if (!rows.length) return [];
+  const st = await safeLib.safeState(provider(), safe);
+  return rows.map((r) => ({
+    seq: Number(r.seq), bond: r.bond, ref: r.ref, fn: r.fn, createdAt: r.created_at,
+    safe: r.safe_tx.safe, nonce: Number(r.safe_tx.message.nonce), owners: st.owners, threshold: st.threshold,
+    signedBy: (r.signatures || []).map((x) => x.signer),
+    typedData: safeLib.typedDataFor(r.safe_tx),
+    explorer: EXPLORER,
+  }));
+}
+
+/** Records one owner's signature on a waiting op. Refuses anything that isn't a current owner's. */
+export async function addSignature(pool, seq, safe, signature) {
+  const op = (await pool.query("select * from chain_ops where seq = $1 and contract = $2 and status = 'signing'", [seq, CONTRACT])).rows[0];
+  if (!op || ethers.getAddress(op.safe) !== ethers.getAddress(safe)) return { ok: false, error: "That approval isn't waiting for this Safe." };
+  let signer;
+  try { signer = ethers.getAddress(safeLib.signerOf(op.safe_tx, signature)); } catch { return { ok: false, error: "That signature couldn't be read." }; }
+  const st = await safeLib.safeState(provider(), op.safe);
+  if (!st.owners.includes(signer)) return { ok: false, error: `The signature is from ${signer}, which isn't an owner of this Safe.` };
+  if (Number(op.safe_tx.message.nonce) !== st.nonce) return { ok: false, error: "This approval is out of date; it will be prepared again. Refresh and sign the new one." };
+  const sigs = (op.signatures || []).filter((x) => x.signer !== signer).concat([{ signer, signature, at: new Date().toISOString() }]);
+  await pool.query("update chain_ops set signatures = $2, updated_at = now() where seq = $1", [seq, JSON.stringify(sigs)]);
+  return { ok: true, signer, signatures: sigs.length, threshold: st.threshold };
+}
+
 export function startWorker(pool, log = console) {
   if (!enabled || process.env.CHAIN_WORKER !== "1") return null;
   if (!process.env.CHAIN_SIGNER_KEY || !process.env.CHAIN_RPC_URL) {
@@ -375,12 +436,18 @@ export function startWorker(pool, log = console) {
     } catch (e) { await c.query("rollback").catch(() => {}); throw e; } finally { c.release(); }
   }
 
-  async function next() {
-    // The oldest open op whose bond has nothing failed.
-    return (await pool.query(`
-      select * from chain_ops o where o.contract = $1 and o.status in ('queued','sent')
+  /**
+   * The next op of each bond's lane (bonds go strictly in order; different bonds don't wait on
+   * each other), oldest first. A lane stops at a failed op until it's fixed and retried.
+   */
+  async function heads() {
+    const open = (await pool.query(`
+      select * from chain_ops o where o.contract = $1 and o.status in ('queued','sent','signing')
         and not exists (select 1 from chain_ops f where f.contract = $1 and f.status = 'failed' and f.bond is not distinct from o.bond and f.seq < o.seq)
-      order by o.seq limit 1`, [CONTRACT])).rows[0];
+      order by o.seq`, [CONTRACT])).rows;
+    const seen = new Set(), out = [];
+    for (const o of open) { const k = o.bond ?? ""; if (!seen.has(k)) { seen.add(k); out.push(o); } }
+    return out;
   }
   const mark = (op, fields) => {
     const keys = Object.keys(fields);
@@ -388,11 +455,19 @@ export function startWorker(pool, log = console) {
       [op.seq, ...keys.map((k) => fields[k])]);
   };
 
+  async function resolveArgs(op) {
+    // "$SIGNER" is the account an issuer is registered with: its Safe if it has one.
+    const acct = op.fn === "registerIssuer" ? await issuerAccount(pool, op.ref, wallet.address) : wallet.address;
+    return op.args.map((x) => (x === "$SIGNER" ? acct : x));
+  }
+
   async function handle(op) {
     if (typeof reg[op.fn] !== "function" || (op.fn === "anchorBond" && !op.args.length))
       return mark(op, { status: "failed", error: op.error || "Nothing to send for " + op.fn + "." });
-    const args = op.args.map((x) => (x === "$SIGNER" ? wallet.address : x));
+    const args = await resolveArgs(op);
     const opx = { ...op, args };
+    const safe = op.safe || (await safeFor(pool, op));
+    if (safe) return handleSafe(op, opx, safe);
     if (op.status === "sent" && op.tx) {
       const r = await provider.getTransactionReceipt(op.tx);
       if (r && r.status === 1) return mark(op, { status: "confirmed", block: r.blockNumber });
@@ -430,17 +505,80 @@ export function startWorker(pool, log = console) {
       : { status: "failed", error: "Transaction reverted on-chain three times" });
   }
 
+  // Waits for a receipt by polling; null if it doesn't arrive in time (picked up next round).
+  async function waitReceipt(hash) {
+    for (let i = 0; i < 90; i++) {
+      const r = await provider.getTransactionReceipt(hash).catch(() => null);
+      if (r) return r;
+      await new Promise((res) => setTimeout(res, 1500));
+    }
+    return null;
+  }
+
+  /**
+   * An op whose role is held by a Safe: prepare the Safe transaction and wait for owner signatures,
+   * then submit it. The platform's key only pays the gas; the Safe checks the signatures.
+   */
+  async function handleSafe(op, opx, safe) {
+    const data = iface.encodeFunctionData(op.fn, opx.args);
+    if (op.status === "sent" && op.tx) {
+      const r = await provider.getTransactionReceipt(op.tx);
+      if (r && r.status === 1) return mark(op, { status: "confirmed", block: r.blockNumber });
+      if (!r && Date.now() - new Date(op.updated_at).getTime() < 10 * 60_000) return;
+      // Reverted or dropped: fall through and decide from the chain.
+    }
+    if (await alreadyDone(reg, opx, wallet.address)) return mark(op, { status: "confirmed", note: "already on-chain" });
+    const st = await safeLib.safeState(provider, safe);
+
+    if (op.status !== "signing" || !op.safe_tx || Number(op.safe_tx.message.nonce) !== st.nonce) {
+      // One approval at a time per Safe, in order: the Safe's nonce makes them sequential anyway.
+      const other = (await pool.query("select 1 from chain_ops where contract = $1 and status = 'signing' and safe = $2 and seq <> $3",
+        [CONTRACT, safe, op.seq])).rows.length;
+      if (other) return;
+      // Dry run as the Safe: a refusal is caught before anyone is asked to sign.
+      try { await provider.call({ from: safe, to: CONTRACT, data }); }
+      catch (e) {
+        const why = revertReason(e) || e.shortMessage || e.message;
+        return mark(op, { status: "failed", error: "The contract would refuse " + op.fn + " from the Safe: " + why, safe });
+      }
+      const stx = safeLib.buildSafeTx({ safe, chainId: (await provider.getNetwork()).chainId, to: CONTRACT, data, nonce: st.nonce });
+      return mark(op, { status: "signing", safe, safe_tx: JSON.stringify(stx), signatures: "[]", note: "waiting for " + st.threshold + " signature(s)" });
+    }
+
+    const valid = (op.signatures || []).filter((x) => st.owners.includes(x.signer));
+    if (valid.length < st.threshold) return; // still waiting on owners
+    const safeC = new ethers.Contract(safe, safeLib.SAFE_ABI, signer);
+    const args = safeLib.execArgs(op.safe_tx, valid.slice(0, st.threshold));
+    let tx;
+    try {
+      await safeC.execTransaction.staticCall(...args);
+      tx = await safeC.execTransaction(...args);
+    } catch (e) {
+      signer.reset();
+      const why = revertReason(e) || e.reason || e.shortMessage;
+      if (why) return mark(op, { status: "failed", error: "The Safe refused to execute " + op.fn + ": " + why });
+      throw e;
+    }
+    await mark(op, { status: "sent", tx: tx.hash, attempts: op.attempts + 1 });
+    const r = await waitReceipt(tx.hash);
+    if (!r) return;
+    if (r.status === 1) return mark(op, { status: "confirmed", block: r.blockNumber });
+    await mark(op, { status: "failed", error: "The Safe transaction reverted on-chain" });
+  }
+
   async function tick() {
     if (busy || stopped) return;
     if (wait > 0) { wait--; return; }
     busy = true;
     try {
-      for (let i = 0; i < 25; i++) {
-        const op = await next();
-        if (!op) break;
-        await handle(op);
-        const after = (await pool.query("select status from chain_ops where seq = $1", [op.seq])).rows[0];
-        if (after?.status === "sent") break; // still waiting on it
+      for (let round = 0; round < 25; round++) {
+        let progressed = false;
+        for (const op of await heads()) {
+          await handle(op);
+          const after = (await pool.query("select status from chain_ops where seq = $1", [op.seq])).rows[0];
+          if (after?.status === "confirmed") progressed = true; // its lane may have more to do
+        }
+        if (!progressed) break;
       }
     } catch (e) {
       log.error("Chain sender:", e.shortMessage || e.message);
@@ -479,5 +617,5 @@ export async function summary(pool) {
   const counts = Object.fromEntries((await pool.query("select status, count(*)::int as n from chain_ops where contract = $1 group by status", [CONTRACT])).rows.map((r) => [r.status, r.n]));
   const failed = (await pool.query("select seq, bond, ref, fn, error, updated_at from chain_ops where status = 'failed' and contract = $1 order by seq limit 20", [CONTRACT])).rows;
   const last = (await pool.query("select tx, updated_at from chain_ops where status = 'confirmed' and tx is not null and contract = $1 order by seq desc limit 1", [CONTRACT])).rows[0] || null;
-  return { enabled: true, contract: CONTRACT, explorer: EXPLORER, counts, failed, last };
+  return { enabled: true, contract: CONTRACT, explorer: EXPLORER, counts, failed, last, platformSafe: PLATFORM_SAFE };
 }

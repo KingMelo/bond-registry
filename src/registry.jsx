@@ -46,6 +46,10 @@ export const api = {
   staff: () => call("GET", "/api/platform/staff"),
   staffInvite: () => call("POST", "/api/platform/invite"),
   chainSummary: () => call("GET", "/api/platform/chain"),
+  signing: (issuer) => call("GET", "/api/issuer/signing?issuer=" + encodeURIComponent(issuer)),
+  sign: (issuer, seq, signature) => call("POST", "/api/issuer/sign", { issuer, seq, signature }),
+  platformSigning: () => call("GET", "/api/platform/signing"),
+  platformSign: (seq, signature) => call("POST", "/api/platform/sign", { seq, signature }),
   chainRetry: (seq) => call("POST", "/api/platform/chain/retry", { seq }),
 };
 
@@ -173,6 +177,7 @@ export function chainStatus(rec, chainInfo) {
   const contract = chainInfo.explorer + "/address/" + chainInfo.contract;
   if (!c) return { label: "Not on-chain yet", href: null, tone: "soft" };
   if (c.state === "failed") return { label: "Not written: " + (c.error || "the contract refused it"), href: contract, tone: "bad" };
+  if (c.state === "signing") return { label: "Waiting for your signature", href: null, tone: "soft" };
   if (c.state === "pending") return { label: "Writing to the chain…", href: contract, tone: "soft" };
   return { label: "Recorded on-chain", href: c.tx ? chainInfo.explorer + "/tx/" + c.tx : contract, tone: "good" };
 }

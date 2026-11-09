@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { SignatureQueue } from "./trezor-sign.jsx";
 import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -32,8 +33,6 @@ const pct = (u, total) => ((u / total) * 100).toFixed(6) + "%";
 // Every amount is stored in cents and shown in dollars.
 const usd = dollars;
 
-const CONTRACT = "0x7A3f9C21D4e8B07a55F3cb1290Ae44D6b8E1B214";
-const THRESHOLD = "2 of 3";
 
 const TERMINAL = ["Cancelled", "Superseded", "Redeemed", "Rejected"];
 // Children created by assignOut that are neither Accepted nor Cancelled.
@@ -265,6 +264,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const [rbTitle, setRbTitle] = useState("");
   const [rbAssignor, setRbAssignor] = useState(""); // the party assigning interests in the bond
+  const [toSign, setToSign] = useState(0); // chain writes waiting on the issuer's Safe
+  const signNote = issuerInfo?.safe ? " — needs your signature" : "";
+  const signDone = issuerInfo?.safe ? " Approve it with your Trezor on the Approvals tab." : "";
+  const loadSigning = useCallback(() => api.signing(issuerId), [issuerId]);
+  const submitSig = useCallback((seq, sig) => api.sign(issuerId, seq, sig), [issuerId]);
   const [asEdit, setAsEdit] = useState(null); // the bond's assignor, while being changed
   const [rbUnits, setRbUnits] = useState("");
   const [rbInstr, setRbInstr] = useState(null);
@@ -360,7 +364,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     patch(a.id, { status: "Issued", passkeyMail: mail.trim(), deliveryRef });
     emit(a.bond, a.id, "CredentialIssued", "ISSUER", deliveryRef);
     emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", deliveryRef);
-    done("Credential issued and mailing recorded. Multisig " + THRESHOLD + " signed.");
+    done("Credential issued and mailing recorded." + signDone);
     showPasskey(a.id, passkey, "Credential issued to " + a.party + ".");
   }
 
@@ -612,7 +616,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               style={{ fontFamily: sans, fontSize: 12, background: "none", border: "none", padding: 0,
                 cursor: "pointer", textAlign: "right", color: T.inkSoft, fontVariantNumeric: "tabular-nums" }}>
               <span style={{ color: T.ink }}>{activeBond || "No bonds yet"}</span>
-              <span style={{ display: "block", marginTop: 2 }}>{issuerInfo?.code} · multisig {THRESHOLD}</span>
+              <span style={{ display: "block", marginTop: 2 }}>{issuerInfo?.code} · {issuerInfo?.safe ? "signs through Safe " + issuerInfo.safe.slice(0, 6) + "…" + issuerInfo.safe.slice(-4) : "signed by the platform"}</span>
             </button>
           </div>
         </div>
@@ -641,7 +645,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               style={{ fontFamily: sans, fontSize: 14, color: tab === k ? T.ink : T.inkSoft, padding: "0 0 8px",
                 borderBottom: "2px solid " + (tab === k ? T.ink : "transparent"), background: "none", cursor: "pointer" }}>
               {l}
-              {k === "queue" && queue.length > 0 && <span style={{ color: T.red }}> · {queue.length}</span>}
+              {k === "queue" && queue.length + toSign > 0 && <span style={{ color: T.red }}> · {queue.length + toSign}</span>}
             </button>
           ))}
         </div>
@@ -651,9 +655,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 25, color: T.ink, lineHeight: 1.25 }}>Awaiting your signature</h1>
             <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, margin: "8px 0 18px", maxWidth: "62ch" }}>
-              Across every bond. Nothing here moves without {THRESHOLD} multisig — the relayer
-              cannot activate a holder, unlock a record, or end an interest.
+              Across every bond. {issuerInfo?.safe ? "Issuer actions go on-chain only once your Safe signs them" : "Issuer actions are signed by the platform for now"} — the relayer
+              can never activate a holder, unlock a record, or end an interest.
             </p>
+            {chainInfo && <SignatureQueue load={loadSigning} submit={submitSig} T={T} sans={sans} serif={serif} onCount={setToSign} onDone={reload} />}
 
             {queue.length === 0 && (
               <div className="px-3 py-5 text-center" style={{ border: "1px solid " + T.rule, borderRadius: 2,
@@ -794,7 +799,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   {rbErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{rbErr}</p>}
                   <div className="mb-3 space-y-3">
                     <Button onClick={registerBond}>
-                      Register {issuerInfo?.code}-{String(bonds.length + 1).padStart(4, "0")}-BD — multisig {THRESHOLD}
+                      Register {issuerInfo?.code}-{String(bonds.length + 1).padStart(4, "0")}-BD{signNote}
                     </Button>
                     <Button variant="quiet" onClick={() => { setRbOpen(false); setRbErr(""); }}>Cancel</Button>
                   </div>
@@ -836,7 +841,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             {nErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 14 }}>{nErr}</p>}
 
-            <Button disabled={!approved || !bondLive} onClick={issueAssignment}>Issue — multisig {THRESHOLD}</Button>
+            <Button disabled={!approved || !bondLive} onClick={issueAssignment}>Issue{signNote}</Button>
             <div className="mt-3">
               <Button variant="quiet" onClick={() => setTab("bonds")}>Cancel</Button>
             </div>
@@ -1049,7 +1054,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               ))}
             </div>
             <div className="mt-4">
-              <Rows data={[["Contract", CONTRACT], ["Role", "ISSUER via Safe " + THRESHOLD]]} />
+              <Rows data={[["Contract", chainInfo ? chainInfo.contract : "—"], ["Issuer role held by", issuerInfo?.safe ? "Safe " + issuerInfo.safe : "the platform's key"]]} />
             </div>
           </div>
         )}
@@ -1200,7 +1205,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <Field label="Certified mail number for the passkey" value={mail} onChange={setMail}
                     placeholder="9407 1000 0000 0000 0000 00" mono />
                   <Button disabled={!mail.trim() || !a.filingRef} onClick={() => issueCredential(a)}>
-                    Issue credential — multisig {THRESHOLD}
+                    Issue credential{signNote}
                   </Button>
                 </div>
               </div>
@@ -1223,7 +1228,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <Button variant="quiet" danger
                     disabled={!reason.trim() || !parent || parent.status === "PendingRedemption"}
                     onClick={() => cancelChild(a)}>
-                    Cancel transfer — return {usd(a.units)} to {a.assignor} · multisig {THRESHOLD}
+                    Cancel transfer — return {usd(a.units)} to {a.assignor}{signNote}
                   </Button>
                 </div>
                 <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 6, lineHeight: 1.5 }}>
@@ -1247,7 +1252,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <Field label="Hash of the redemption receipt or release" value={recHash} onChange={setRecHash}
                     placeholder="0x…" mono />
                   <Button danger disabled={!recHash.trim()} onClick={() => approveRedemption(a)}>
-                    Approve redemption — multisig {THRESHOLD}
+                    Approve redemption{signNote}
                   </Button>
                   <div className="mt-3">
                     <Field label="Reason, if rejecting" value={reason} onChange={setReason}
@@ -1283,13 +1288,13 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                       placeholder="9407 1000 0000 0000 0000 00" mono
                       hint="The old hash is discarded. The record stays locked until you unlock it." />
                     <Button disabled={!mail.trim() || !docRef.trim()} onClick={() => rotate(a)}>
-                      Rotate passkey — multisig {THRESHOLD}
+                      Rotate passkey{signNote}
                     </Button>
                   </div>
                 )}
                 <div className="mt-3">
                   <Button variant="quiet" disabled={!docRef.trim()} onClick={() => unlock(a)}>
-                    Unlock — multisig {THRESHOLD}
+                    Unlock{signNote}
                   </Button>
                 </div>
               </div>
@@ -1309,7 +1314,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 )}
                 <Button variant="quiet" disabled={(needInstrument && !iMail.trim()) || (needPasskey && !pMail.trim())}
                   onClick={() => recordMailing(a)}>
-                  Record mailings — multisig {THRESHOLD}
+                  Record mailings{signNote}
                 </Button>
               </div>
             )}
@@ -1370,7 +1375,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                       <Button variant="quiet" danger
                         disabled={!rpDoc || !rpInstr || !rpParty.trim() || !rpContact.trim() || !rpAddress.trim()}
                         onClick={() => replaceAssignment(a)}>
-                        Replace — multisig {THRESHOLD}
+                        Replace{signNote}
                       </Button>
                     </div>
                   </div>
