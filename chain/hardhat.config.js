@@ -19,6 +19,8 @@ const key = process.env.DEPLOYER_KEY ? [process.env.DEPLOYER_KEY] : [];
 module.exports = {
   solidity: { version: SOLC, settings: { optimizer: { enabled: true, runs: 200 }, evmVersion: "paris" } },
   networks: {
+    // Polygon verifies P-256 (passkey) signatures with the RIP-7212 precompile; the local chain matches.
+    hardhat: { enableRip7212: true },
     amoy: { url: process.env.AMOY_RPC_URL || "https://polygon-amoy-bor-rpc.publicnode.com", chainId: 80002, accounts: key },
     polygon: { url: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com", chainId: 137, accounts: key },
   },
