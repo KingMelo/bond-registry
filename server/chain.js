@@ -84,14 +84,17 @@ export const SCHEMA = `
     attempts int not null default 0,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now());
+  -- Writes belong to one contract. Rows written before this column existed are the first
+  -- (since replaced) deployment's, so a new contract starts with a clean queue.
+  alter table chain_ops add column if not exists contract text;
   create index if not exists chain_ops_open on chain_ops (status, seq);
   create index if not exists chain_ops_ref on chain_ops (ref, seq);
 `;
 
 async function queue(c, ops) {
   for (const o of ops) {
-    await c.query("insert into chain_ops (bond, ref, fn, args, role, status, error) values ($1, $2, $3, $4, $5, $6, $7)",
-      [o.bond ?? null, o.ref, o.fn, JSON.stringify(o.args), o.role, o.status || "queued", o.error || null]);
+    await c.query("insert into chain_ops (bond, ref, fn, args, role, status, error, contract) values ($1, $2, $3, $4, $5, $6, $7, $8)",
+      [o.bond ?? null, o.ref, o.fn, JSON.stringify(o.args), o.role, o.status || "queued", o.error || null, CONTRACT]);
   }
 }
 
@@ -106,13 +109,13 @@ function anchorArgs(row) {
 /** Queues everything needed to put an approved bond on-chain: its issuer, the bond, its prior instruments. */
 export async function queueAnchor(c, bondId) {
   if (!enabled) return;
-  if ((await c.query("select 1 from chain_ops where fn = 'anchorBond' and ref = $1", [bondId])).rows.length) return;
+  if ((await c.query("select 1 from chain_ops where fn = 'anchorBond' and ref = $1 and contract = $2", [bondId, CONTRACT])).rows.length) return;
   const row = (await c.query(
     "select b.id, b.data, i.id as issuer_id, i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [bondId])).rows[0];
   if (!row) return;
   const b = row.data;
   const ops = [];
-  if (!(await c.query("select 1 from chain_ops where fn = 'registerIssuer' and ref = $1", [row.issuer_id])).rows.length)
+  if (!(await c.query("select 1 from chain_ops where fn = 'registerIssuer' and ref = $1 and contract = $2", [row.issuer_id, CONTRACT])).rows.length)
     ops.push({ bond: bondId, ref: row.issuer_id, fn: "registerIssuer", args: [id32(row.code), "$SIGNER"], role: "platform" });
   const a = anchorArgs(row);
   ops.push(a.problem
@@ -127,7 +130,7 @@ export async function queueAnchor(c, bondId) {
 /** Prior instruments added or reversed on a bond that is already on-chain. */
 export async function queuePriorChanges(c, bondId, before, after) {
   if (!enabled) return;
-  if (!(await c.query("select 1 from chain_ops where fn = 'anchorBond' and ref = $1", [bondId])).rows.length) return;
+  if (!(await c.query("select 1 from chain_ops where fn = 'anchorBond' and ref = $1 and contract = $2", [bondId, CONTRACT])).rows.length) return;
   const was = new Map(((before && before.prior) || []).map((p) => [p.id, p]));
   const ops = [];
   for (const p of after.prior || []) {
@@ -157,13 +160,14 @@ const TRANSITIONS = {
   "Accepted>PendingRedemption": ["requestRedemption", "relayer"],
   "PendingRedemption>Redeemed": ["approveRedemption", "issuer"],
   "PendingRedemption>Accepted": ["rejectRedemption", "issuer"],
+  "Issued>Rejected": ["rejectAssignment", "relayer"],
 };
 // The event each call usually comes with, for its document reference.
 const EVENT_FOR = {
   accept: "Accepted", requestCredential: "CredentialRequested", rejectCredentialRequest: "CredentialRequestRejected",
   issueCredential: "CredentialIssued", cancelAssignOut: "AssignOutCancelled", issuerCancelAssignOut: "AssignOutCancelled",
   lock: "Locked", unlock: "Unlocked", requestRedemption: "RedemptionRequested", approveRedemption: "Redeemed",
-  rejectRedemption: "RedemptionRejected", recordRotation: "PasskeyRotated",
+  rejectRedemption: "RedemptionRejected", recordRotation: "PasskeyRotated", rejectAssignment: "AssignmentRejected",
 };
 
 /**
@@ -207,9 +211,28 @@ export async function queueRecordChanges(c, { app, before, after, events }) {
   await queue(c, [...created, ...refs, ...moves]);
 }
 
+/**
+ * The calls that rebuild one record on a fresh contract. Covers records that were issued and then
+ * took effect or were rejected, with no transfers; anything with more history is flagged for a
+ * person to replay rather than guessed at.
+ */
+function replayOps(a) {
+  const B = id32(a.bond), A = id32(a.id), ops = [];
+  const simple = a.origin === "Issuer" && ["Issued", "Accepted", "Rejected"].includes(a.status) && Number(a.units) === Number(a.issuedUnits ?? a.units);
+  if (!simple || !isHash(a.docHash))
+    return [{ bond: a.bond, ref: a.id, fn: "unsupported", args: [], role: "issuer", status: "failed",
+      error: `Can't rebuild ${a.id} (${a.origin}, ${a.status}) on the new contract automatically.` }];
+  ops.push({ bond: a.bond, ref: a.id, fn: "issueAssignment", args: [B, A, String(a.issuedUnits ?? a.units), a.docHash], role: "issuer" });
+  if (a.filingRef && isHash(a.filingRef)) ops.push({ bond: a.bond, ref: a.id, fn: "setFilingRef", args: [B, A, a.filingRef], role: "issuer" });
+  if (a.deliveryRef && isHash(a.deliveryRef)) ops.push({ bond: a.bond, ref: a.id, fn: "setDeliveryRef", args: [B, A, a.deliveryRef], role: "issuer" });
+  if (a.status === "Accepted") ops.push({ bond: a.bond, ref: a.id, fn: "accept", args: [B, A, tagged("action", [a.id, "accept", "replay", ""])], role: "relayer" });
+  if (a.status === "Rejected") ops.push({ bond: a.bond, ref: a.id, fn: "rejectAssignment", args: [B, A, tagged("action", [a.id, "rejectAssignment", "replay", a.rejectionReason])], role: "relayer" });
+  return ops;
+}
+
 export async function queueIssuerStatus(c, issuerId, code, status) {
   if (!enabled) return;
-  if (!(await c.query("select 1 from chain_ops where fn = 'registerIssuer' and ref = $1", [issuerId])).rows.length) return;
+  if (!(await c.query("select 1 from chain_ops where fn = 'registerIssuer' and ref = $1 and contract = $2", [issuerId, CONTRACT])).rows.length) return;
   const fn = status === "suspended" ? "suspendIssuer" : "reinstateIssuer";
   await queue(c, [{ bond: null, ref: issuerId, fn, args: [id32(code), tagged("action", [issuerId, fn, new Date().toISOString(), ""])], role: "platform" }]);
 }
@@ -224,8 +247,9 @@ export async function queueIssuerStatus(c, issuerId, code, status) {
 export async function statusFor(pool, bondIds, recordIds) {
   if (!enabled || (!bondIds.length && !recordIds.length)) return new Map();
   const r = await pool.query(
-    `select ref, bond, status, tx, error, fn from chain_ops where ref = any($1) or (bond = any($2) and ref not like bond || '-A%') order by seq`,
-    [recordIds, bondIds]);
+    `select ref, bond, status, tx, error, fn from chain_ops
+      where contract = $3 and (ref = any($1) or (bond = any($2) and ref not like bond || '-A%')) order by seq`,
+    [recordIds, bondIds, CONTRACT]);
   const out = new Map();
   for (const o of r.rows) {
     const key = recordIds.includes(o.ref) ? o.ref : o.bond;
@@ -251,7 +275,8 @@ export const publicInfo = () => (enabled ? {
 // ------------------------------------------------------------------ the sender
 
 const TARGET = { accept: 4, requestCredential: 2, rejectCredentialRequest: 1, issueCredential: 3, cancelAssignOut: 9,
-  issuerCancelAssignOut: 9, lock: 5, unlock: 4, requestRedemption: 6, approveRedemption: 7, rejectRedemption: 4 };
+  issuerCancelAssignOut: 9, lock: 5, unlock: 4, requestRedemption: 6, approveRedemption: 7, rejectRedemption: 4,
+  rejectAssignment: 10 };
 
 /** True when the chain already shows the op's effect, so it must not be sent again. */
 async function alreadyDone(reg, op, signer) {
@@ -291,7 +316,7 @@ async function alreadyDone(reg, op, signer) {
 }
 
 const STATUS_NAME = ["None", "AwaitingCredential", "CredentialRequested", "Issued", "Accepted", "Locked",
-  "PendingRedemption", "Redeemed", "Superseded", "Cancelled"];
+  "PendingRedemption", "Redeemed", "Superseded", "Cancelled", "Rejected"];
 // Contract errors in words: IDs are hashes, so they're left out; statuses and amounts are kept.
 function readable(p) {
   const a = [...p.args];
@@ -336,19 +361,26 @@ export function startWorker(pool, log = console) {
       await c.query("select pg_advisory_xact_lock(424243)");
       const rows = (await c.query(`select b.id from bonds b join issuers i on i.id = b.issuer_id
         where b.review = 'approved' and i.status in ('approved','suspended')
-          and not exists (select 1 from chain_ops o where o.fn = 'anchorBond' and o.ref = b.id) order by b.id`)).rows;
+          and not exists (select 1 from chain_ops o where o.fn = 'anchorBond' and o.ref = b.id and o.contract = $1) order by b.id`, [CONTRACT])).rows;
       for (const r of rows) await queueAnchor(c, r.id);
+      // Records that have nothing on this contract yet (it replaced an earlier deployment):
+      // rebuild them, oldest first, after their bond.
+      const recs = (await c.query(`select a.id, a.data from assignments a join bonds b on b.id = a.bond
+        where b.review = 'approved'
+          and not exists (select 1 from chain_ops o where o.ref = a.id and o.contract = $1)
+        order by a.created_at, a.id`, [CONTRACT])).rows;
+      for (const r of recs) await queue(c, replayOps(r.data));
       await c.query("commit");
-      if (rows.length) log.log(`Chain: queued anchoring for ${rows.length} bond(s)`);
+      if (rows.length || recs.length) log.log(`Chain: queued ${rows.length} bond(s) and ${recs.length} record(s) for this contract`);
     } catch (e) { await c.query("rollback").catch(() => {}); throw e; } finally { c.release(); }
   }
 
   async function next() {
     // The oldest open op whose bond has nothing failed.
     return (await pool.query(`
-      select * from chain_ops o where o.status in ('queued','sent')
-        and not exists (select 1 from chain_ops f where f.status = 'failed' and f.bond is not distinct from o.bond and f.seq < o.seq)
-      order by o.seq limit 1`)).rows[0];
+      select * from chain_ops o where o.contract = $1 and o.status in ('queued','sent')
+        and not exists (select 1 from chain_ops f where f.contract = $1 and f.status = 'failed' and f.bond is not distinct from o.bond and f.seq < o.seq)
+      order by o.seq limit 1`, [CONTRACT])).rows[0];
   }
   const mark = (op, fields) => {
     const keys = Object.keys(fields);
@@ -382,8 +414,15 @@ export function startWorker(pool, log = console) {
       throw e; // network trouble: retried
     }
     await mark(op, { status: "sent", tx: tx.hash, attempts: op.attempts + 1 });
-    const r = await tx.wait(1, 120_000);
-    await mark(op, r && r.status === 1 ? { status: "confirmed", block: r.blockNumber }
+    // Poll for the receipt rather than relying on block subscriptions, which can stall behind a
+    // load-balanced endpoint. If it takes longer than this, the next round picks it up by hash.
+    let r = null;
+    for (let i = 0; i < 90 && !r; i++) {
+      r = await provider.getTransactionReceipt(tx.hash).catch(() => null);
+      if (!r) await new Promise((res) => setTimeout(res, 1500));
+    }
+    if (!r) return; // still pending: handled as 'sent' next round
+    await mark(op, r.status === 1 ? { status: "confirmed", block: r.blockNumber }
       : { status: "failed", error: "Transaction reverted on-chain" });
   }
 
@@ -413,7 +452,7 @@ export function startWorker(pool, log = console) {
 
 /** Puts a failed op (and everything held behind it) back in the queue. */
 export async function retry(pool, seq) {
-  const op = (await pool.query("select * from chain_ops where seq = $1 and status = 'failed'", [seq])).rows[0];
+  const op = (await pool.query("select * from chain_ops where seq = $1 and status = 'failed' and contract = $2", [seq, CONTRACT])).rows[0];
   if (!op) return false;
   let args = op.args;
   if (op.fn === "anchorBond" && !args.length) {
@@ -433,8 +472,8 @@ export async function retry(pool, seq) {
 
 export async function summary(pool) {
   if (!enabled) return { enabled: false };
-  const counts = Object.fromEntries((await pool.query("select status, count(*)::int as n from chain_ops group by status")).rows.map((r) => [r.status, r.n]));
-  const failed = (await pool.query("select seq, bond, ref, fn, error, updated_at from chain_ops where status = 'failed' order by seq limit 20")).rows;
-  const last = (await pool.query("select tx, updated_at from chain_ops where status = 'confirmed' and tx is not null order by seq desc limit 1")).rows[0] || null;
+  const counts = Object.fromEntries((await pool.query("select status, count(*)::int as n from chain_ops where contract = $1 group by status", [CONTRACT])).rows.map((r) => [r.status, r.n]));
+  const failed = (await pool.query("select seq, bond, ref, fn, error, updated_at from chain_ops where status = 'failed' and contract = $1 order by seq limit 20", [CONTRACT])).rows;
+  const last = (await pool.query("select tx, updated_at from chain_ops where status = 'confirmed' and tx is not null and contract = $1 order by seq desc limit 1", [CONTRACT])).rows[0] || null;
   return { enabled: true, contract: CONTRACT, explorer: EXPLORER, counts, failed, last };
 }

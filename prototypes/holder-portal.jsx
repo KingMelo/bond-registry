@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — holder portal
@@ -31,7 +31,7 @@ const STEP_UP_DEMO = "482913";
 
 // Children created by assignOut that are neither Accepted nor Cancelled.
 const PENDING = ["AwaitingCredential", "CredentialRequested", "Issued"];
-const TERMINAL = ["Redeemed", "Superseded", "Cancelled"];
+const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
 
 const LOCK_KINDS = [
   ["pledge", "Pledged to a lender"],
@@ -62,12 +62,13 @@ const LABEL = {
   AwaitingCredential: "Awaiting credential",
   CredentialRequested: "Credential requested",
   Issued: "Issued",
-  Accepted: "Accepted",
+  Accepted: "In effect",
   Locked: "Locked",
   PendingRedemption: "Pending redemption",
   Redeemed: "Redeemed",
   Superseded: "Superseded",
   Cancelled: "Cancelled",
+  Rejected: "Rejected",
 };
 
 const tone = (s) => {
@@ -99,7 +100,7 @@ function Button({ children, onClick, variant = "solid", disabled, danger }) {
     ? { background: danger ? T.red : T.ink, color: T.paper, border: "1px solid " + (danger ? T.red : T.ink) }
     : { background: "transparent", color: danger ? T.red : T.ink, border: "1px solid " + (danger ? T.red : T.rule) };
   return (
-    <button onClick={disabled ? undefined : onClick}
+    <button onClick={disabled ? undefined : onClick} disabled={disabled}
       style={{ fontFamily: sans, fontWeight: 500, fontSize: 15, borderRadius: 2, padding: "11px 18px",
         width: "100%", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.4 : 1, ...skin }}>
       {children}
@@ -285,6 +286,7 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
             {r.status === "Redeemed" ? "This record was redeemed. " + usd(r.units) + " was paid out and retired."
               : r.status === "Superseded" ? "This record is closed. Its amount moved to another record."
               : r.status === "Cancelled" ? "This assign-out was cancelled. Its amount went back to the assignor."
+              : r.status === "Rejected" ? "The holder rejected this assignment. Its amount went back " + (r.origin === "AssignOut" ? "to the assignor's record." : "to the bond.")
               : "This record holds " + usd(r.units) + (r.bond ? " of bond " + r.bond.id : "") + "."}
           </p>
           <Rows data={[
@@ -376,7 +378,7 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
 /* ---------------- app ---------------- */
 
 export default function HolderPortal() {
-  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, chainInfo } =
+  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, chainInfo, responseDays } =
     useRegistry({ onNotice: (m) => flash(m) });
   // Every approved issuer shares this registry; each record names its issuer.
   const issuerOf = (rec) => {
@@ -419,6 +421,8 @@ export default function HolderPortal() {
   const [lockKind, setLockKind] = useState("pledge");
   const [lockRotate, setLockRotate] = useState(false);
   const [rdErr, setRdErr] = useState("");
+  const [rjReason, setRjReason] = useState(""); // why the holder rejects an assignment
+  const [rjErr, setRjErr] = useState("");
 
   // assign out
   const [aUnits, setAUnits] = useState("");
@@ -476,7 +480,7 @@ export default function HolderPortal() {
       return;
     }
     const fresh = (await reload().catch(() => null))?.reg.find((a) => a.id === rec.id) || rec;
-    if (["Redeemed", "Superseded", "Cancelled"].includes(fresh.status)) {
+    if (TERMINAL.includes(fresh.status)) {
       setQErr("This record is " + LABEL[fresh.status].toLowerCase() + " and can no longer be acted on.");
       return;
     }
@@ -485,15 +489,33 @@ export default function HolderPortal() {
     setView(fresh.status === "Issued" ? "claim" : "position");
   }
 
-  function accept() {
-    // A child's acceptance may close its parent: zero units and nothing pending.
+  // The holder confirms the assignment now instead of waiting out the response period.
+  function confirmNow() {
+    // A child taking effect may close its parent: zero units and nothing pending.
     setReg((r) => settleParent(
-      r.map((a) => (a.id === open.id ? { ...a, status: "Accepted", accepted: today() } : a)),
+      r.map((a) => (a.id === open.id ? { ...a, status: "Accepted", accepted: today(), effective: "holder", effectiveOn: today() } : a)),
       open.origin === "AssignOut" ? open.parent : null
     ));
-    emit(open.bond, open.id, "Accepted", "RELAYER");
+    emit(open.bond, open.id, "Acknowledged", "RELAYER");
     setView("position");
-    flash("Accepted. The relayer has written the transition on-chain.");
+    flash("Confirmed. The assignment is in effect, and the chain is being updated.");
+  }
+
+  // The only way to refuse an assignment: explicitly, with a reason. The amount goes back to
+  // the assignor's record for an assign-out, otherwise to the bond.
+  function rejectAssignment() {
+    const why = rjReason.trim();
+    if (!why) return setRjErr("Give a reason for rejecting it. The issuer and the assignor will see it.");
+    setRjErr("");
+    setReg((r) => r.map((a) => {
+      if (a.id === open.id) return { ...a, status: "Rejected", rejectionReason: why, rejectedOn: today() };
+      if (open.origin === "AssignOut" && a.id === open.parent) return { ...a, units: a.units + open.units };
+      return a;
+    }));
+    emit(open.bond, open.id, "AssignmentRejected", "RELAYER", why);
+    setRjReason("");
+    setView(null); setOpenId(null);
+    flash("Rejected. " + usd(open.units) + (open.origin === "AssignOut" ? " goes back to the assignor's record." : " goes back to the bond."));
   }
 
   function requestStepUp(next) {
@@ -503,7 +525,7 @@ export default function HolderPortal() {
   }
 
   function assignOut() {
-    if (open.status !== "Accepted") return setAErr("Only an accepted, unlocked record can assign out.");
+    if (open.status !== "Accepted") return setAErr("Only a record that's in effect and unlocked can assign out.");
     const au = parseUnits(aUnits), u = au.units;
     if (au.error) return setAErr(au.error);
     if (u > open.units) return setAErr("You hold " + usd(open.units) + ".");
@@ -593,8 +615,8 @@ export default function HolderPortal() {
   }
 
   function requestRedemption() {
-    if (open.status !== "Accepted" || open.units <= 0) return setRdErr("Only an accepted record with an amount left can be redeemed.");
-    if (pendingChildren.length > 0) return setRdErr("Settle your pending transfers first. Each must be accepted or cancelled.");
+    if (open.status !== "Accepted" || open.units <= 0) return setRdErr("Only a record that's in effect with an amount left can be redeemed.");
+    if (pendingChildren.length > 0) return setRdErr("Settle your pending transfers first. Each must take effect, be rejected or be cancelled.");
     if (stepUp.trim() !== STEP_UP_DEMO) return setRdErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
     setRdErr("");
     setReg((r) => r.map((a) => (a.id === open.id ? { ...a, status: "PendingRedemption" } : a)));
@@ -686,10 +708,12 @@ export default function HolderPortal() {
         {/* ============ claim ============ */}
         {inHolder && view === "claim" && open && (
           <div>
-            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Accept this assignment</h1>
+            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Review this assignment</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              The passkey checked out. Accepting moves the record from Issued to Accepted and
-              is written on-chain by the relayer.
+              {effectiveDate(open, responseDays)
+                ? "It takes effect on " + effectiveDate(open, responseDays) + " unless you reject it before then. "
+                : "It takes effect " + responseDays + " days after it's mailed, unless you reject it. "}
+              You can confirm it now, or reject it with a reason. Either way it's recorded on-chain.
             </p>
 
             <div className="mb-5 px-3 py-4" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white }}>
@@ -701,7 +725,7 @@ export default function HolderPortal() {
                 {pct(open.units, open.bond)} of {open.bond}
               </div>
               <div className="mt-4 pt-3" style={{ borderTop: "1px solid " + T.rule, fontSize: 14, color: T.ink, lineHeight: 1.6 }}>
-                Check this against the instrument in front of you before accepting.
+                Check this against the instrument in front of you.
               </div>
             </div>
 
@@ -720,37 +744,38 @@ export default function HolderPortal() {
             ]} />
 
             <div className="mt-5 space-y-3">
-              <Button onClick={accept}>Accept — the figures match</Button>
-              <Button variant="quiet" danger onClick={() => setView("mismatch")}>
-                My instrument says something different
+              <Button onClick={confirmNow}>Confirm — the figures match</Button>
+              <Button variant="quiet" danger onClick={() => { setRjErr(""); setView("mismatch"); }}>
+                Reject this assignment
               </Button>
               <Button variant="quiet" onClick={() => { setView(null); setOpenId(null); }}>Back</Button>
             </div>
           </div>
         )}
 
-        {/* ============ mismatch ============ */}
+        {/* ============ reject ============ */}
         {inHolder && view === "mismatch" && open && (
           <div>
-            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Don't accept yet</h1>
+            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Reject this assignment</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              Nothing has been recorded. The record stays Issued and the interest stays where it is.
+              Rejecting is final. {usd(open.units)} goes back {open.origin === "AssignOut" ? "to " + open.assignor + "'s record" : "to the bond"},
+              and this record can't be revived. If the figures are simply wrong, you may prefer to
+              contact {open.assignor} first; until{effectiveDate(open, responseDays) ? " " + effectiveDate(open, responseDays) : " the response period ends"} nothing changes.
             </p>
             <Rows data={[
               ["Assignment", open.id],
-                            ["Registered amount", usd(open.units)],
+              ["Registered amount", usd(open.units)],
               ["Assignor", open.assignor],
-              ["Document hash", open.docHash],
+              ["Document hash", shortHash(open.docHash)],
             ]} />
             <div className="mt-5">
-              <Note kind="warn">
-                Take it up with {open.assignor}. They created this assignment. You can also
-                check your copy of the instrument against the recorded hash on the Verify tab —
-                the file is hashed in your browser and never uploaded.
-              </Note>
-            </div>
-            <div className="mt-4">
-              <Button variant="quiet" onClick={() => setView("claim")}>Back to the assignment</Button>
+              <Area label="Reason for rejecting" value={rjReason} onChange={(v) => { setRjReason(v); setRjErr(""); }}
+                placeholder="For example: the amount on my instrument is different, or I didn't agree to this assignment." />
+              {rjErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{rjErr}</p>}
+              <div className="space-y-3">
+                <Button danger disabled={!rjReason.trim()} onClick={rejectAssignment}>Reject — recorded on-chain</Button>
+                <Button variant="quiet" onClick={() => setView("claim")}>Back to the assignment</Button>
+              </div>
             </div>
           </div>
         )}
@@ -798,7 +823,7 @@ export default function HolderPortal() {
             {open.status === "Superseded" && (
               <div className="mt-4">
                 <Note>
-                  Every unit under this record has been assigned out and accepted, so it is
+                  Every unit under this record has been assigned out and is in effect elsewhere, so it is
                   superseded. It stays on the register as the parent of what came after it.
                 </Note>
               </div>
@@ -807,7 +832,7 @@ export default function HolderPortal() {
               <div className="mt-4">
                 <Note>
                   Every unit has been assigned out. This record stays open until each pending
-                  transfer is accepted or cancelled, so a cancelled amount always has somewhere to return.
+                  transfer takes effect, is rejected or is cancelled, so a cancelled amount always has somewhere to return.
                 </Note>
               </div>
             )}
@@ -824,7 +849,7 @@ export default function HolderPortal() {
                 </Button>
                 {pendingChildren.length > 0 && open.units > 0 && (
                   <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5 }}>
-                    Redemption opens once your pending transfers are accepted or cancelled.
+                    Redemption opens once your pending transfers take effect, are rejected or are cancelled.
                     To redeem part of your holding, assign that portion to yourself first.
                   </div>
                 )}
@@ -839,7 +864,7 @@ export default function HolderPortal() {
                 ["Attention of", open.contact],
                 ["Assignor", open.assignor],
                 ["Parent", open.parent || "Issuer-originated"],
-                ["Accepted", open.accepted || "—"],
+                ["In effect since", open.effectiveOn || open.accepted || "—"],
                 ["Document hash", shortHash(open.docHash)],
                 ["UCC-3 filing", open.filingRef ? "Filed · " + shortHash(open.filingRef) : "Not yet filed"],
                 ["Delivery ref", open.deliveryRef ? shortHash(open.deliveryRef) : "—"],
@@ -1057,7 +1082,7 @@ export default function HolderPortal() {
             <Note kind="warn">
               If the issuer approves, the record becomes Redeemed. That is terminal — the
               contract will not accept any further action on it, ever. If they reject it, the
-              record returns to Accepted. Redemption covers the whole record.
+              record is back in effect. Redemption covers the whole record.
             </Note>
             <div className="mt-5">
               <Field label="Code sent to your verified contact" value={stepUp}
@@ -1116,7 +1141,7 @@ export default function HolderPortal() {
                 ["Issuer verifies you are the named assignee", false],
                 ["Passkey generated and mailed by certified post", false],
                 ["Status moves to Issued", false],
-                ["You accept with the passkey", false],
+                ["It takes effect, unless you reject it within " + responseDays + " days", false],
               ].map(([step, done], i) => (
                 <div key={i} className="flex items-center gap-3 px-3 py-3"
                   style={{ borderTop: i ? "1px solid " + T.rule : "none", fontSize: 14 }}>

@@ -47,7 +47,8 @@ contract BondInterestRegistry is AccessControl, Pausable {
         PendingRedemption,
         Redeemed, // terminal
         Superseded, // terminal
-        Cancelled // terminal
+        Cancelled, // terminal
+        Rejected // terminal: the holder refused the assignment
     }
 
     enum Origin {
@@ -125,6 +126,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
     event RedemptionRejected(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event AssignmentReplaced(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 indexed newId, bytes32 docHash, address actor);
     event Superseded(bytes32 indexed bondId, bytes32 indexed assignmentId);
+    event AssignmentRejected(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 units, bytes32 reasonHash, address actor);
     event FilingRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 filingRef, address actor);
     event DeliveryRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 deliveryRef, address actor);
 
@@ -493,6 +495,34 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit AssignedOut(bondId, parentId, childId, units, docHash, msg.sender);
     }
 
+    /// The holder refuses an assignment before it takes effect. Its units go back where they
+    /// came from: to the assignor's record for an assign-out, otherwise to the bond's unassigned
+    /// balance. An assignment the holder doesn't reject takes effect through `accept`, either
+    /// when they acknowledge it or when the response period ends.
+    function rejectAssignment(bytes32 bondId, bytes32 assignmentId, bytes32 reasonHash)
+        external
+        whenNotPaused
+        onlyRelayerOn(bondId)
+        nonZero(reasonHash)
+        balanced(bondId)
+    {
+        Assignment storage a = _inStatus(bondId, assignmentId, Status.Issued);
+        if (a.pendingChildren != 0) revert PendingChildren(assignmentId, a.pendingChildren);
+        if (a.origin == Origin.AssignOut) {
+            Assignment storage p = assignments[a.parentId];
+            if (isTerminal(p.status) || p.status == Status.PendingRedemption) revert WrongStatus(a.parentId, p.status);
+            p.units += a.units;
+            p.pendingChildren -= 1;
+            p.updatedAt = uint64(block.timestamp);
+        } else {
+            Bond storage b = bonds[bondId];
+            b.live -= a.units;
+            b.unassigned += a.units;
+        }
+        _set(a, Status.Rejected);
+        emit AssignmentRejected(bondId, assignmentId, a.units, reasonHash, msg.sender);
+    }
+
     /// The assignor cancels an assign-out nobody has claimed yet.
     function cancelAssignOut(bytes32 bondId, bytes32 childId, bytes32 docHash)
         external
@@ -559,7 +589,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
     }
 
     function isTerminal(Status s) public pure returns (bool) {
-        return s == Status.Redeemed || s == Status.Superseded || s == Status.Cancelled;
+        return s == Status.Redeemed || s == Status.Superseded || s == Status.Cancelled || s == Status.Rejected;
     }
 
     // ============================================================== internal

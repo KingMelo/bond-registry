@@ -39,7 +39,9 @@ const pool = new pg.Pool({
   ssl: process.env.PGSSL === "1" ? { rejectUnauthorized: false } : false,
 });
 
-const TERMINAL = ["Redeemed", "Superseded", "Cancelled"];
+const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
+// An assignment the holder doesn't reject within this many days of its mailing takes effect.
+const RESPONSE_DAYS = Number(process.env.RESPONSE_DAYS || 30);
 // Never stored in the record itself: credential state lives in its own table.
 const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain"];
 // Contact details and mail numbers stay out of the public holder portal.
@@ -218,7 +220,7 @@ async function setPasskey(c, id, key) {
    holder-initiated transitions in the spec. Everything else is the issuer's. */
 
 const RELAYER_MOVES = {
-  Issued: ["Accepted"],
+  Issued: ["Accepted", "Rejected"], // acknowledged, or refused with a reason
   AwaitingCredential: ["CredentialRequested", "Cancelled"],
   Accepted: ["Locked", "PendingRedemption", "Superseded"],
   Locked: ["Superseded"],
@@ -298,7 +300,35 @@ async function readState(bondFilter, params) {
     }),
     events: events.rows.map((r) => ({ ...r.data, eid: r.eid })),
     chain: chain.publicInfo(),
+    responseDays: RESPONSE_DAYS,
   };
+}
+
+/* An issued assignment the holder hasn't rejected takes effect once the response period after its
+   mailing has passed. Runs on the issuer service; each record is its own transaction, through the
+   same save path as any other change, so it reaches the chain the same way. */
+async function takeEffectWhenDue() {
+  const due = (await pool.query(
+    `select id, bond, data, rev from assignments
+     where data->>'status' = 'Issued' and data->>'deliveredAt' is not null
+       and (data->>'deliveredAt')::timestamptz + make_interval(days => $1) <= now()
+     order by created_at limit 50`, [RESPONSE_DAYS])).rows;
+  for (const r of due) {
+    try {
+      await tx(async (c) => {
+        await applyCommit(c, {
+          bonds: [],
+          reg: [{ ...r.data, status: "Accepted", effective: "deemed", effectiveOn: stampNow().split(" ").slice(0, 3).join(" "), rev: Number(r.rev) }],
+          events: [{ eid: crypto.randomUUID(), bond: r.bond, id: r.id, t: stampNow(), ev: "TookEffect", actor: "SYSTEM",
+            ref: "No rejection within " + RESPONSE_DAYS + " days of mailing" }],
+        });
+        await bump(c);
+      });
+      console.log(`${r.id} took effect: no rejection within ${RESPONSE_DAYS} days`);
+    } catch (e) {
+      if (e.status !== 409) console.error("Taking effect", r.id, e.message); // 409: someone changed it meanwhile; next round
+    }
+  }
 }
 
 /* Saves one commit after the caller's own checks; enforces the units rule for the bonds given. */
@@ -372,7 +402,7 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
         + coalesce((select sum((p->>'units')::numeric) from jsonb_array_elements(b.data->'prior') p
                     where coalesce((p->>'reversed')::boolean, false) = false), 0)
         + coalesce((select sum((a.data->>'units')::numeric) from assignments a
-                    where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled')), 0) as counted
+                    where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled','Rejected')), 0) as counted
     from bonds b where b.id = any($1)`, [touched]);
   const bad = check.rows.find((r) => Number(r.total) !== Number(r.counted));
   if (bad) throw new Reject(422, bad.id + " would no longer add up to its total. Nothing was saved.");
@@ -461,6 +491,17 @@ if (APP === "holder") {
         if (!relayerAllows(before, a))
           throw new Reject(403, "The holder portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
         needsDocument(before, a);
+        if (before?.status === "Issued" && a.status === "Rejected") {
+          if (!String(a.rejectionReason || "").trim()) throw new Reject(400, "Give a reason for rejecting " + a.id + ".");
+          // The amount goes back where it came from: the assignor's record for an assign-out (sent
+          // with this save), otherwise the bond's unassigned balance, which only the server changes.
+          if (before.origin !== "AssignOut") {
+            const r = await c.query(
+              `update bonds set data = jsonb_set(data, '{unassigned}', to_jsonb((data->>'unassigned')::numeric + $2)), rev = rev + 1
+               where id = $1`, [a.bond, Number(before.units)]);
+            if (!r.rowCount) throw new Reject(404, "No such bond.");
+          }
+        }
         clean.push(chain.normalizeRecord(a));
       }
       const bondsOk = new Set(clean.map((a) => a.bond));
@@ -798,10 +839,13 @@ if (APP === "issuer") {
         const a = cleanRecord(raw);
         if (!review.has(a.bond)) throw new Reject(403, "That record belongs to another issuer.");
         if (review.get(a.bond) !== "approved") throw new Reject(403, "Assignments open once the platform approves " + a.bond + ".");
-        const before = (await c.query("select bond from assignments where id = $1", [a.id])).rows[0];
+        const before = (await c.query("select bond, data from assignments where id = $1", [a.id])).rows[0];
         if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
         needsDocument(before, a);
-        clean.push(chain.normalizeRecord(a));
+        const n = chain.normalizeRecord(a);
+        // The response period runs from when the mailing is recorded.
+        n.deliveredAt = before?.data?.deliveredAt || (n.deliveryRef ? new Date().toISOString() : null);
+        clean.push(n);
       }
       for (const e of events) if (!review.has(e.bond)) throw new Reject(403, "That event belongs to another issuer.");
       const revs = await applyCommit(c, { bonds, reg: clean, events, issuerId: m.id, autoApprove: m.trusted });
@@ -950,9 +994,9 @@ if (APP === "platform") {
         (select name from users where id = b.reviewed_by) as reviewer,
         i.id as issuer_id, i.code, i.legal_name, i.status as issuer_status,
         coalesce((select sum((a.data->>'units')::numeric) from assignments a
-          where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled')), 0) as assigned,
+          where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled','Rejected')), 0) as assigned,
         (select count(*)::int from assignments a
-          where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled')) as live_records,
+          where a.bond = b.id and a.data->>'status' not in ('Redeemed','Superseded','Cancelled','Rejected')) as live_records,
         (select count(*)::int from assignments a where a.bond = b.id) as all_records
       from bonds b join issuers i on i.id = b.issuer_id
       order by (b.review = 'pending' and i.status = 'approved') desc, b.id`);
@@ -1059,5 +1103,10 @@ migrate()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => console.log(`${APP} listening on ${PORT}`));
     chain.startWorker(pool);
+    if (APP === "issuer") {
+      const run = () => takeEffectWhenDue().catch((e) => console.error("Taking effect:", e.message));
+      setTimeout(run, 5000);
+      setInterval(run, Number(process.env.RESPONSE_CHECK_MS || 10 * 60_000));
+    }
   })
   .catch((e) => { console.error("Migration failed", e); process.exit(1); });

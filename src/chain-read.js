@@ -6,7 +6,7 @@ import ABI from "../server/registry-abi.json";
 
 export const id32 = (s) => keccak256(toUtf8Bytes(String(s).trim().toUpperCase()));
 export const STATUS = ["None", "AwaitingCredential", "CredentialRequested", "Issued", "Accepted", "Locked",
-  "PendingRedemption", "Redeemed", "Superseded", "Cancelled"];
+  "PendingRedemption", "Redeemed", "Superseded", "Cancelled", "Rejected"];
 const ORIGIN = ["Issuer", "AssignOut", "Replacement"];
 const iface = new Interface(ABI);
 
@@ -61,7 +61,7 @@ export const nameFor = (hash, candidates) => candidates.find((c) => id32(c) === 
 
 // Plain-language names for the contract's events.
 const SAY = {
-  AssignmentIssued: "Issued by the issuer", Accepted: "Accepted by the holder", AssignedOut: "Assigned out",
+  AssignmentIssued: "Issued by the issuer", Accepted: "Took effect", AssignedOut: "Assigned out",
   AssignOutCancelled: "Assign-out cancelled", CredentialRequested: "New holder requested access",
   CredentialRequestRejected: "Access request rejected", CredentialIssued: "New holder activated by the issuer",
   Locked: "Locked by the holder", Unlocked: "Unlocked by the issuer", PasskeyRotated: "Passkey reissued",
@@ -69,6 +69,7 @@ const SAY = {
   AssignmentReplaced: "Replaced by a new record", Superseded: "Closed (superseded)", FilingRecorded: "UCC-3 filing recorded",
   DeliveryRecorded: "Certified mailing recorded", BondAnchored: "Bond anchored",
   PriorInstrumentRecorded: "Prior instrument recorded", PriorInstrumentReversed: "Prior instrument reversed",
+  AssignmentRejected: "Rejected by the holder",
 };
 
 /**

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — issuer console
@@ -35,7 +35,7 @@ const usd = dollars;
 const CONTRACT = "0x7A3f9C21D4e8B07a55F3cb1290Ae44D6b8E1B214";
 const THRESHOLD = "2 of 3";
 
-const TERMINAL = ["Cancelled", "Superseded", "Redeemed"];
+const TERMINAL = ["Cancelled", "Superseded", "Redeemed", "Rejected"];
 // Children created by assignOut that are neither Accepted nor Cancelled.
 const PENDING = ["AwaitingCredential", "CredentialRequested", "Issued"];
 
@@ -44,12 +44,13 @@ const LABEL = {
   AwaitingCredential: "Awaiting credential",
   CredentialRequested: "Credential requested",
   Issued: "Issued",
-  Accepted: "Accepted",
+  Accepted: "In effect",
   Locked: "Locked",
   PendingRedemption: "Pending redemption",
   Redeemed: "Redeemed",
   Superseded: "Superseded",
   Cancelled: "Cancelled",
+  Rejected: "Rejected",
 };
 
 const tone = (s) => {
@@ -124,6 +125,14 @@ export function Rows({ data }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// A small inline text action, for use inside rows.
+function TextBtn({ children, onClick }) {
+  return (
+    <button onClick={onClick} style={{ fontSize: 13, color: T.inkSoft, background: "none", border: "none", cursor: "pointer",
+      textDecoration: "underline", textUnderlineOffset: 2, fontFamily: sans, padding: 0 }}>{children}</button>
   );
 }
 
@@ -218,7 +227,7 @@ export function Sheet({ title, children, onClose }) {
 /* ---------------- console ---------------- */
 
 export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssuerStatus }) {
-  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo, chainInfo } =
+  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo, chainInfo, responseDays } =
     useRegistry({ issuer: issuerId, onNotice: (m) => flash(m) });
   const [pickedBond, setActiveBond] = useState(null);
   const activeBond = bonds.some((b) => b.id === pickedBond) ? pickedBond : bonds[0]?.id || null;
@@ -255,6 +264,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const [pErr, setPErr] = useState("");
 
   const [rbTitle, setRbTitle] = useState("");
+  const [rbAssignor, setRbAssignor] = useState(""); // the party assigning interests in the bond
+  const [asEdit, setAsEdit] = useState(null); // the bond's assignor, while being changed
   const [rbUnits, setRbUnits] = useState("");
   const [rbInstr, setRbInstr] = useState(null);
   const [rbUcc, setRbUcc] = useState(blankUcc1);
@@ -379,7 +390,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     patch(a.id, { status: "Accepted", lockKind: null, lockReason: null, lockedOn: null,
       rotationRequested: false, unlockRequested: false });
     emit(a.bond, a.id, "Unlocked", "ISSUER", docRef.trim());
-    done("Unlocked. Returned to Accepted.");
+    done("Unlocked. Back in effect.");
   }
 
   async function rotate(a) {
@@ -411,7 +422,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!reason.trim()) return;
     patch(a.id, { status: "Accepted" });
     emit(a.bond, a.id, "RedemptionRejected", "ISSUER", "—");
-    done("Rejected. Returned to Accepted.");
+    done("Redemption declined. The record is back in effect.");
   }
 
   function setFilingRef(a) {
@@ -442,7 +453,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     const seq = String(reg.filter((x) => x.bond === a.bond).length + 1).padStart(5, "0");
     const rec = {
       bond: a.bond, id: a.bond + "-A" + seq, parent: a.id, origin: "Replacement",
-      assignor: issuerName + " (replacement)",
+      assignor: (bonds.find((b) => b.id === a.bond)?.assignor || issuerName) + " (replacement)",
       party: rpParty.trim(), contact: rpContact.trim(), position: "", address: rpAddress.trim(),
       units: a.units, issuedUnits: a.units, status: "Issued", created: today(), accepted: null,
       docHash: rpInstr.hash, docFile: rpInstr.name, filingRef: null, deliveryRef: null,
@@ -504,7 +515,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     setNErr("");
     const seq = String(scoped.length + 1).padStart(5, "0");
     const rec = {
-      bond: activeBond, id: activeBond + "-A" + seq, parent: null, origin: "Issuer", assignor: issuerName,
+      bond: activeBond, id: activeBond + "-A" + seq, parent: null, origin: "Issuer", assignor: bond.assignor || issuerName,
       party: nParty.trim(), contact: nContact.trim(), position: nPosition.trim(), address: nAddress.trim(),
       units: u, issuedUnits: u, status: "Issued", created: today(), accepted: null,
       docHash: nDoc.hash, docFile: nDoc.name,
@@ -533,7 +544,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     setRbErr("");
     const live = issuerInfo?.trusted && !!ucc1;
     const id = issuerInfo.code + "-" + String(bonds.length + 1).padStart(4, "0") + "-BD";
-    const b = { id, title: rbTitle.trim(), face: u, total: u, unassigned: u, redeemed: 0, prior: [],
+    const b = { id, title: rbTitle.trim(), assignor: rbAssignor.trim() || issuerName, face: u, total: u, unassigned: u, redeemed: 0, prior: [],
       registered: today(), instrumentHash: rbInstr.hash, instrumentFile: rbInstr.name,
       ...(ucc1 ? { ucc1 } : {}),
       ...(rbMaster ? { masterHash: rbMaster.hash, masterFile: rbMaster.name } : {}),
@@ -542,10 +553,25 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     setBonds((bs) => [...bs, b]);
     emit(id, "—", "BondAnchored", "ISSUER", rbInstr.hash);
     setActiveBond(id);
-    setRbTitle(""); setRbUnits(""); setRbInstr(null); setRbUcc(blankUcc1); setRbMaster(null); setRbOpen(false);
+    setRbTitle(""); setRbAssignor(""); setRbUnits(""); setRbInstr(null); setRbUcc(blankUcc1); setRbMaster(null); setRbOpen(false);
     flash(live ? id + " registered and live. Your own issuers skip platform review."
       : !ucc1 ? id + " registered. Add its UCC-1 on the Records tab" + (issuerInfo?.trusted ? " and it goes live." : " so the platform can review it.")
       : id + " registered. The platform reviews it before you can issue against it.");
+  }
+
+  // The bond's assignor is register text: it isn't on-chain, and the signed instruments are what
+  // count. Changing it corrects the name on the bond and on records issued from it, and is logged.
+  function saveAssignor() {
+    const name = (asEdit || "").trim();
+    if (!name) return;
+    const was = bond.assignor || issuerName;
+    if (name === was) return setAsEdit(null);
+    setBonds((bs) => bs.map((b) => (b.id === bond.id ? { ...b, assignor: name } : b)));
+    setReg((r) => r.map((a) => (a.bond === bond.id && a.origin !== "AssignOut" && a.assignor === was ? { ...a, assignor: name }
+      : a.bond === bond.id && a.origin === "Replacement" && a.assignor === was + " (replacement)" ? { ...a, assignor: name + " (replacement)" } : a)));
+    emit(bond.id, "—", "AssignorUpdated", "ISSUER", was + " → " + name);
+    setAsEdit(null);
+    flash("Assignor set to " + name + ".");
   }
 
   // Adds or corrects a bond's UCC-1 before approval. The owner's own bond goes live with it.
@@ -746,6 +772,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 10 }}>Register a bond</div>
                   <Field label="Bond name" value={rbTitle} onChange={(v) => { setRbTitle(v); setRbErr(""); }}
                     placeholder="Series A Secured Note" />
+                  <Field label="Assignor" value={rbAssignor} onChange={setRbAssignor} placeholder={issuerName}
+                    hint="The party assigning interests in this bond, exactly as it appears on the assignments. Leave blank to use the issuer's legal name." />
                   <Field label="Face amount" value={rbUnits} onChange={(v) => { setRbUnits(v); setRbErr(""); }}
                     placeholder="10,000,000" mono
                     hint={(rbUnits ? (parseUnits(rbUnits).error || usd(parseUnits(rbUnits).units)) + " · " : "") +
@@ -894,6 +922,14 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             <div className="mt-3 mb-5">
               <Rows data={[
+                ["Assignor", asEdit === null
+                  ? <span>{bond.assignor || issuerName}{" · "}<TextBtn onClick={() => setAsEdit(bond.assignor || issuerName)}>Change</TextBtn></span>
+                  : <span className="flex gap-2 items-center justify-end">
+                      <input value={asEdit} onChange={(e) => setAsEdit(e.target.value)} aria-label="Assignor"
+                        style={{ fontFamily: sans, fontSize: 14, border: "1px solid " + T.rule, borderRadius: 2, padding: "4px 8px", minWidth: 0, width: 220 }} />
+                      <TextBtn onClick={saveAssignor}>Save</TextBtn>
+                      <TextBtn onClick={() => setAsEdit(null)}>Cancel</TextBtn>
+                    </span>],
                 ["Bond total", usd(bond.total)],
                 ["Prior instruments", usd(priorUnits(bond))],
                 ["Assigned in live records", usd(liveUnits(activeBond))],
@@ -1105,7 +1141,12 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               a.issuedUnits !== a.units && ["Issued at", usd(a.issuedUnits)],
               pending.length > 0 && ["Pending transfers", pending.length + " · " + usd(pending.reduce((t, c) => t + c.units, 0))],
               ["Created", a.created],
-              ["Accepted", a.accepted || "—"],
+              a.status === "Issued" && ["Takes effect", effectiveDate(a, responseDays)
+                ? effectiveDate(a, responseDays) + " unless the holder rejects it"
+                : responseDays + " days after the mailing is recorded, unless rejected"],
+              a.status === "Rejected" && ["Rejected", (a.rejectedOn ? a.rejectedOn + ": " : "") + (a.rejectionReason || "")],
+              a.status !== "Issued" && a.status !== "Rejected" && ["In effect since", a.effectiveOn || a.accepted || "—"],
+              a.effective === "deemed" && ["How", "No rejection within " + responseDays + " days"],
               ["Document hash", (a.docFile ? a.docFile + " · " : "") + shortHash(a.docHash)],
               ["UCC-3 filing", a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "") : a.filingRef ? shortHash(a.filingRef) : "Not yet filed"],
               ["Delivery ref", a.deliveryRef ? shortHash(a.deliveryRef) : "—"],
@@ -1212,7 +1253,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     <Field label="Reason, if rejecting" value={reason} onChange={setReason}
                       placeholder="Paperwork incomplete" hint="A hash of the reason memo goes on-chain." />
                     <Button variant="quiet" disabled={!reason.trim()} onClick={() => rejectRedemption(a)}>
-                      Reject — return to Accepted
+                      Decline — back in effect
                     </Button>
                   </div>
                 </div>
@@ -1308,7 +1349,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 {pending.length > 0 ? (
                   <Note>
                     This record has {pending.length} pending {pending.length === 1 ? "transfer" : "transfers"}.
-                    They must be accepted or cancelled before it can be replaced.
+                    Each must take effect, be rejected or be cancelled before it can be replaced.
                   </Note>
                 ) : (
                   <div>
@@ -1347,7 +1388,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             {TERMINAL.includes(a.status) && (
               <div className="mt-5">
                 <Note>
-                  This record is terminal. No function accepts it as input — it stays on the
+                  This record is terminal. No action can change it — it stays on the
                   register as history and as the parent of anything that came after it.
                 </Note>
               </div>

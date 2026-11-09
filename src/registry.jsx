@@ -58,7 +58,7 @@ export function useRegistry({ onNotice, issuer } = {}) {
   const [events, setEvents] = useState([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
-  const [info, setInfo] = useState({ issuer: null, issuers: [], chain: null });
+  const [info, setInfo] = useState({ issuer: null, issuers: [], chain: null, responseDays: 30 });
   const scope = issuer ? "issuer=" + encodeURIComponent(issuer) : "";
   const stateUrl = (since) => "/api/state?" + [scope, since != null ? "since=" + since : ""].filter(Boolean).join("&");
 
@@ -78,7 +78,7 @@ export function useRegistry({ onNotice, issuer } = {}) {
     };
     latest.current = { reg: s.reg, bonds: s.bonds, events: s.events };
     setReg(s.reg); setBonds(s.bonds); setEvents(s.events);
-    setInfo({ issuer: s.issuer || null, issuers: s.issuers || [], chain: s.chain || null });
+    setInfo({ issuer: s.issuer || null, issuers: s.issuers || [], chain: s.chain || null, responseDays: s.responseDays || 30 });
   }, []);
 
   const reload = useCallback(async () => {
@@ -154,7 +154,14 @@ export function useRegistry({ onNotice, issuer } = {}) {
   }, [reload, adopt, scope]);
 
   return { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload,
-    issuerInfo: info.issuer, issuers: info.issuers, chainInfo: info.chain };
+    issuerInfo: info.issuer, issuers: info.issuers, chainInfo: info.chain, responseDays: info.responseDays };
+}
+
+// The date an issued assignment takes effect if the holder doesn't reject it, or null before mailing.
+export function effectiveDate(rec, days) {
+  if (!rec?.deliveredAt) return null;
+  const d = new Date(new Date(rec.deliveredAt).getTime() + days * 86400000);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 // How a bond or record stands on-chain, in words, with an explorer link when there is one.

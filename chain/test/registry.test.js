@@ -5,7 +5,7 @@ const id = (s) => ethers.keccak256(ethers.toUtf8Bytes(s));
 const h = (s) => ethers.sha256(ethers.toUtf8Bytes(s)); // stands in for a document's SHA-256
 const Z = ethers.ZeroHash;
 const S = { None: 0, AwaitingCredential: 1, CredentialRequested: 2, Issued: 3, Accepted: 4, Locked: 5,
-  PendingRedemption: 6, Redeemed: 7, Superseded: 8, Cancelled: 9 };
+  PendingRedemption: 6, Redeemed: 7, Superseded: 8, Cancelled: 9, Rejected: 10 };
 const O = { Issuer: 0, AssignOut: 1, Replacement: 2 };
 
 const ISS = id("KPII"), OTHER = id("ACME");
@@ -308,6 +308,44 @@ describe("BondInterestRegistry", () => {
     });
   });
 
+  describe("rejection", () => {
+    it("a holder can refuse an issued assignment; its units go back to unassigned", async () => {
+      const { reg, I, RL } = await setup();
+      await I.issueAssignment(BOND, A1, 1000000, h("doc"));
+      await expect(RL.rejectAssignment(BOND, A1, h("not my agreement")))
+        .to.emit(reg, "AssignmentRejected").withArgs(BOND, A1, 1000000, h("not my agreement"), await RL.runner.getAddress());
+      expect(await status(reg, A1)).to.equal(S.Rejected);
+      const t = await totals(reg);
+      expect([t.live, t.unassigned, t.reconciled]).to.deep.equal([0n, TOTAL, true]);
+      expect((await reg.assignments(A1)).units).to.equal(1000000n); // kept as history
+    });
+
+    it("a refused assign-out goes back to the assignor's record", async () => {
+      const { reg, I, RL } = await setup();
+      await accepted(I, RL, A1, 1000);
+      await RL.assignOut(BOND, A1, C1, 400, h("d"));
+      await RL.requestCredential(BOND, C1, h("r"));
+      await I.setFilingRef(BOND, C1, h("f"));
+      await I.issueCredential(BOND, C1, h("c"));
+      await RL.rejectAssignment(BOND, C1, h("refused"));
+      const p = await reg.assignments(A1);
+      expect([p.units, p.pendingChildren, Number(p.status)]).to.deep.equal([1000n, 0n, S.Accepted]);
+      expect((await totals(reg)).live).to.equal(1000n);
+    });
+
+    it("only from Issued, only by the relayer, never twice, and a reason is required", async () => {
+      const { reg, I, RL } = await setup();
+      await accepted(I, RL, A1, 100);
+      await expect(RL.rejectAssignment(BOND, A1, h("late"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+      await I.issueAssignment(BOND, A2, 100, h("d"));
+      await expect(I.rejectAssignment(BOND, A2, h("x"))).to.be.revertedWithCustomError(reg, "AccessControlUnauthorizedAccount");
+      await expect(RL.rejectAssignment(BOND, A2, Z)).to.be.revertedWithCustomError(reg, "ZeroHash");
+      await RL.rejectAssignment(BOND, A2, h("no"));
+      await expect(RL.rejectAssignment(BOND, A2, h("again"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+      await expect(RL.accept(BOND, A2, h("a"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+    });
+  });
+
   describe("lock and unlock", () => {
     it("the relayer locks; only the issuer unlocks or records a rotation", async () => {
       const { reg, I, RL } = await setup();
@@ -482,6 +520,7 @@ describe("BondInterestRegistry", () => {
       const actions = [
         () => I.issueAssignment(BOND, fresh(), amount(), h("d")),
         () => RL.accept(BOND, anyId(), h("a")),
+        () => RL.rejectAssignment(BOND, anyId(), h("refused")),
         () => RL.assignOut(BOND, anyId(), fresh(), amount(), h("o")),
         () => RL.cancelAssignOut(BOND, anyId(), h("c")),
         () => I.issuerCancelAssignOut(BOND, anyId(), h("c")),
@@ -493,6 +532,9 @@ describe("BondInterestRegistry", () => {
         () => RL.requestRedemption(BOND, anyId(), h("q")),
         () => I.approveRedemption(BOND, anyId(), h("ok")),
         async () => { const x = anyId(); await RL.requestRedemption(BOND, x, h("q")); return I.approveRedemption(BOND, x, h("ok")); },
+        // A fresh record carried all the way to redemption, so every run retires something.
+        async () => { const x = fresh(); await I.issueAssignment(BOND, x, amount(), h("d")); await RL.accept(BOND, x, h("a"));
+          await RL.requestRedemption(BOND, x, h("q")); return I.approveRedemption(BOND, x, h("ok")); },
         () => I.rejectRedemption(BOND, anyId(), h("no")),
         () => I.replaceAssignment(BOND, anyId(), fresh(), h("rp")),
         () => I.recordPriorInstrument(BOND, id("PN-" + priors++), amount(), h("p")),
@@ -507,7 +549,7 @@ describe("BondInterestRegistry", () => {
       let live = 0n;
       for (const x of ids) {
         const a = await reg.assignments(x);
-        if (Number(a.status) !== S.None && ![S.Redeemed, S.Superseded, S.Cancelled].includes(Number(a.status))) live += a.units;
+        if (Number(a.status) !== S.None && ![S.Redeemed, S.Superseded, S.Cancelled, S.Rejected].includes(Number(a.status))) live += a.units;
         if (Number(a.status) === S.Superseded) expect(a.pendingChildren).to.equal(0n);
       }
       const t = await totals(reg);
