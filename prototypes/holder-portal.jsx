@@ -811,8 +811,10 @@ export default function HolderPortal() {
                   <Button disabled={qBusy} onClick={signInWithPasskey}>{qBusy ? "Confirm on your device…" : "Sign in with your passkey"}</Button>
                 </div>
                 <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
-                  Use the device, password manager or security key you set it up with. Lost it? The issuer can verify
-                  you, reset it, and mail you a new transfer code.
+                  Use the device, password manager or security key you set it up with. If you used a YubiKey or a
+                  Trezor and Bitwarden or your browser offers a saved passkey, choose “Use another device” or
+                  “Security key” instead, then confirm on the key. Lost it? The issuer can verify you, reset it,
+                  and mail you a new transfer code.
                 </div>
               </div>
             )}
@@ -843,6 +845,7 @@ export default function HolderPortal() {
               ["You'll be asked", "Twice: once to make the key, once to sign its registration"],
               ["Then", "The transfer code from your mailing stops working. Your passkey opens this assignment from then on."],
               ["What you can use", "This phone or computer, a password manager such as Bitwarden, or a security key such as a YubiKey or a Trezor."],
+              ["Using a security key", "If Bitwarden or your browser offers to save the passkey, choose \u201cUse another device\u201d or \u201cSecurity key\u201d instead (in Bitwarden, close its window first). Then plug in or connect the key and confirm on it with its PIN. Use that same key every time."],
               ["Use", "The device you'll use to manage this assignment. Passkeys saved to your Apple, Google or Microsoft account work on your other devices too."],
             ]} />
             {!passkeysAvailable() && <div className="mt-4"><Note kind="warn">This browser can't use passkeys. Open this page on an up-to-date phone or computer.</Note></div>}
