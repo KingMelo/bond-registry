@@ -37,6 +37,8 @@ const ARGS = {
   assignOut: (a) => enc(["bytes32", "bytes32", "bytes32", "uint128", "bytes32"], a),
   registerHolderKey: (a) => enc(["bytes32", "bytes32", "uint256", "uint256", "bytes32"], a),
   recordFiling: (a) => enc(["bytes32", "bytes32", "bytes32", "bytes32"], a),
+  recordMailing: (a) => enc(["bytes32", "bytes32", "bytes32", "uint64"], a),
+  recordReceipt: (a) => enc(["bytes32", "bytes32", "bytes32", "uint64"], a),
   rotateHolderKey: (a) => enc(["bytes32", "bytes32", "uint256", "uint256", "bytes32"], a),
 };
 

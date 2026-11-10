@@ -293,11 +293,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const pendingOf = (id) =>
     reg.filter((c) => c.parent === id && c.origin === "AssignOut" && PENDING.includes(c.status));
 
-  // One certified mailing carries the instrument and the passkey document together. Children get
-  // their instrument from the assignor, so their mailing carries the passkey alone.
+  // One certified mailing carries the instrument and the transfer code together. An assign-out's is
+  // sent and recorded by its assignor at Holder access, so it's never the issuer's to record.
   const mailingMissing = (a) =>
-    !TERMINAL.includes(a.status) && !["AwaitingCredential", "CredentialRequested"].includes(a.status) &&
-    (!a.passkeyMail || (a.origin !== "AssignOut" && !a.instrumentMail));
+    a.origin !== "AssignOut" && !TERMINAL.includes(a.status) && !["AwaitingCredential", "CredentialRequested"].includes(a.status) &&
+    (!a.passkeyMail || !a.instrumentMail);
 
   const queueItems = (a) => {
     const out = [];
@@ -1379,6 +1379,17 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <Button variant="quiet" disabled={!iMail.trim()} onClick={() => recordMailing(a)}>
                   Record mailing{signNote}
                 </Button>
+              </div>
+            )}
+
+            {isChild && !a.deliveryRef && a.status === "Issued" && (
+              <div className="mt-5">
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Certified mailing</div>
+                <Note>
+                  Not recorded yet. {a.assignor} mails the instrument and the transfer code to {a.party} and records the
+                  mail number and date at Holder access, signed with their passkey. The 30 days run from that date.
+                  Nothing for you to do here.
+                </Note>
               </div>
             )}
 

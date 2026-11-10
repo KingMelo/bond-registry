@@ -265,8 +265,11 @@ const REJECTION_MIN = 255;
 // What a holder may change on their own record: its status (checked by relayerAllows) and the
 // notes that go with each move. Everything else on a record is the issuer's.
 const FILING_FIELDS = ["filingNumber", "filedBy", "filedOn", "filingDoc", "filingFile", "filingRef"];
+// An assign-out's certified mailing, recorded by its assignor; the assignee's delivery receipt, by the assignee.
+const MAILING_FIELDS = ["instrumentMail", "mailedOn", "deliveryRef"];
+const RECEIPT_FIELDS = ["receivedOn", "receiptDoc", "receiptFile", "receiptRef"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
-  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...FILING_FIELDS];
+  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...FILING_FIELDS, ...RECEIPT_FIELDS];
 const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -599,6 +602,11 @@ if (APP === "holder") {
       // the fields out isn't asking to change it. A different number still is, and is refused below.
       if (before?.filingNumber && (a.filingNumber == null || a.filingNumber === before.filingNumber))
         for (const k of FILING_FIELDS) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
+      // Likewise a recorded mailing or receipt: a page that hasn't caught up isn't asking to change it.
+      if (before?.deliveryRef && !("instrumentMail" in raw) && (a.mailedOn == null || a.mailedOn === before.mailedOn))
+        for (const k of ["deliveryRef", "mailedOn"]) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
+      if (before?.receiptRef && (a.receivedOn == null || a.receivedOn === before.receivedOn))
+        for (const k of RECEIPT_FIELDS) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
       const changed = before ? changedFields(before, a) : [];
       {
         if (!session) throw new Reject(401, "Sign in with your assignment ID and access code first.");
@@ -607,7 +615,27 @@ if (APP === "holder") {
           : (before?.origin || a.origin) === "AssignOut" && (before ? before.parent : a.parent) === session.id ? "assignor"
           : before && me?.origin === "AssignOut" && me.parent === a.id ? "parent" : null;
         if (!role) throw new Reject(403, "You're signed in to " + session.id + "; " + a.id + " isn't yours to change.");
-        const may = role === "holder" ? HOLDER_FIELDS : role === "assignor" ? ["status", "units", ...FILING_FIELDS] : ["status", "units"];
+        const may = role === "holder" ? HOLDER_FIELDS : role === "assignor" ? ["status", "units", ...FILING_FIELDS, ...MAILING_FIELDS] : ["status", "units"];
+        // The mailing of an assign-out: by its assignor, once, before the assignee answers. Its date starts the 30 days.
+        const mailing = before && (("instrumentMail" in raw && raw.instrumentMail !== before.instrumentMail) || (a.mailedOn && a.mailedOn !== before.mailedOn));
+        if (mailing) {
+          if (role !== "assignor") throw new Reject(403, "The mailing of " + a.id + " is recorded by whoever sent it.");
+          if (before.deliveryRef) throw new Reject(409, "The mailing of " + a.id + " is already recorded.");
+          if (before.status !== "Issued") throw new Reject(409, a.id + " has already been answered.");
+          if (!String(a.instrumentMail || "").trim()) throw new Reject(400, "Enter the certified mail number.");
+          const t = Date.parse(a.mailedOn || "");
+          if (!t || t > Date.now()) throw new Reject(400, "Enter the date it was mailed (not a future date).");
+          a.instrumentMail = String(a.instrumentMail).trim();
+          a.deliveredAt = new Date(t).toISOString(); // the response period runs from here
+          changed.push("deliveryRef");
+        }
+        // The assignee's delivery receipt: once, with the receipt attached (only its hash is kept).
+        if (before && changed.some((k) => RECEIPT_FIELDS.includes(k))) {
+          if (before.receiptRef) throw new Reject(409, "A delivery receipt is already recorded for " + a.id + ".");
+          const t = Date.parse(a.receivedOn || "");
+          if (!t || t > Date.now()) throw new Reject(400, "Enter the date you received it (not a future date).");
+          if (!chain.isHash(a.receiptDoc)) throw new Reject(400, "Attach the delivery receipt. Only its SHA-256 is kept.");
+        }
         // The holder's UCC-3: once, with the filed copy attached (only its hash is kept).
         if (before && changed.some((k) => FILING_FIELDS.includes(k))) {
           if (before.filingRef || before.filingNumber) throw new Reject(409, "A UCC-3 is already recorded for " + a.id + ".");

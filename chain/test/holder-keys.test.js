@@ -237,3 +237,54 @@ describe("register changes logged on-chain", () => {
     await expect(RL.logChange(id("NOPE-0001-BD"), A1, id("details"), h("x"))).to.be.revertedWithCustomError(reg, "UnknownBond");
   });
 });
+
+describe("holder-recorded mailing and delivery receipt", () => {
+  async function assignedOut() {
+    const ctx = await setup();
+    const { reg, I, RL } = ctx;
+    await I.issueAssignment(BOND, A1, 1000, h("d"));
+    const pk = await enroll(reg, RL, A1);
+    await RL.accept(BOND, A1, h("a"), await sign(reg, pk, A1, "accept", [BOND, A1, h("a")]));
+    const out = [BOND, A1, C1, 40n, h("o")];
+    await RL.assignOut(...out, await sign(reg, pk, A1, "assignOut", out));
+    return { ...ctx, pk };
+  }
+
+  it("the assignor records the mailing of their assign-out, once; it starts the assignee's 30 days", async () => {
+    const { reg, I, RL, pk } = await assignedOut();
+    const t = BigInt(await now()) - 3600n;
+    const args = [BOND, C1, h("9407 1000 ..."), t];
+    await expect(RL.recordMailing(...args, await sign(reg, newKey(), A1, "recordMailing", args))).to.be.revertedWithCustomError(reg, "BadHolderSignature");
+    const future = [BOND, C1, h("x"), t + 86400n * 2n];
+    await expect(RL.recordMailing(...future, await sign(reg, pk, A1, "recordMailing", future))).to.be.revertedWithCustomError(reg, "BadMailingDate");
+    await expect(RL.recordMailing(...args, await sign(reg, pk, A1, "recordMailing", args)))
+      .to.emit(reg, "DeliveryRecorded").withArgs(BOND, C1, h("9407 1000 ..."), t, await RL.runner.getAddress());
+    expect((await reg.assignments(C1)).deliveryRef).to.equal(h("9407 1000 ..."));
+    expect(await reg.mailedAt(C1)).to.equal(t);
+    const again = [BOND, C1, h("other"), t];
+    await expect(RL.recordMailing(...again, await sign(reg, pk, A1, "recordMailing", again))).to.be.revertedWithCustomError(reg, "AlreadyRecorded");
+    // Not for an issuer-originated record: the issuer records its own mailings.
+    const own = [BOND, A1, h("m"), t];
+    await expect(RL.recordMailing(...own, await sign(reg, pk, A1, "recordMailing", own))).to.be.revertedWithCustomError(reg, "WrongOrigin");
+    // The response period runs from that date: unsigned acceptance only after 30 days.
+    await expect(RL.accept(BOND, C1, h("deemed"), NOAUTH)).to.be.revertedWithCustomError(reg, "ResponsePeriodOpen");
+    await later(31 * DAY);
+    await expect(RL.accept(BOND, C1, h("deemed"), NOAUTH)).to.emit(reg, "Accepted");
+  });
+
+  it("the assignee records their delivery receipt with their own key, once; it doesn't move the clock", async () => {
+    const { reg, RL, pk } = await assignedOut();
+    const t = BigInt(await now()) - 7200n;
+    const m = [BOND, C1, h("mail"), t];
+    await RL.recordMailing(...m, await sign(reg, pk, A1, "recordMailing", m));
+    const ck = await enroll(reg, RL, C1);
+    const r = [BOND, C1, h("receipt: received Nov 12 + green card"), t + 3600n];
+    await expect(RL.recordReceipt(...r, await sign(reg, pk, A1, "recordReceipt", r))).to.be.revertedWithCustomError(reg, "BadHolderSignature");
+    await expect(RL.recordReceipt(...r, await sign(reg, ck, C1, "recordReceipt", r)))
+      .to.emit(reg, "ReceiptRecorded").withArgs(BOND, C1, h("receipt: received Nov 12 + green card"), t + 3600n, await RL.runner.getAddress());
+    const rc = await reg.receipts(C1);
+    expect(rc.ref).to.equal(h("receipt: received Nov 12 + green card")); expect(rc.receivedAt).to.equal(t + 3600n);
+    expect(await reg.mailedAt(C1)).to.equal(t);
+    await expect(RL.recordReceipt(...r, await sign(reg, ck, C1, "recordReceipt", r))).to.be.revertedWithCustomError(reg, "AlreadyRecorded");
+  });
+});

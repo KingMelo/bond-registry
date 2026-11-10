@@ -24,6 +24,8 @@ export const SIGNED = {
   assignOut: { types: ["bytes32", "bytes32", "bytes32", "uint128", "bytes32"] },
   registerHolderKey: { types: ["bytes32", "bytes32", "uint256", "uint256", "bytes32"] },
   recordFiling: { types: ["bytes32", "bytes32", "bytes32", "bytes32"] },
+  recordMailing: { types: ["bytes32", "bytes32", "bytes32", "uint64"] },
+  recordReceipt: { types: ["bytes32", "bytes32", "bytes32", "uint64"] },
   rotateHolderKey: { types: ["bytes32", "bytes32", "uint256", "uint256", "bytes32"] },
 };
 

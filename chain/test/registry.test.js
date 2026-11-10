@@ -355,12 +355,11 @@ describe("BondInterestRegistry", () => {
   });
 
   describe("lock and unlock", () => {
-    it("the relayer locks; only the issuer unlocks or records a rotation", async () => {
+    it("the relayer locks; only the issuer unlocks", async () => {
       const { reg, I, RL } = await setup();
       await accepted(I, RL, A1, 100);
       await expect(RL.lock(BOND, A1, h("notice"))).to.emit(reg, "Locked");
       await expect(RL.unlock(BOND, A1, h("release"))).to.be.revertedWithCustomError(reg, "NotIssuer");
-      await expect(I.recordRotation(BOND, A1, h("id check"))).to.emit(reg, "PasskeyRotated");
       expect(await status(reg, A1)).to.equal(S.Locked);
       await expect(I.unlock(BOND, A1, h("release"))).to.emit(reg, "Unlocked");
       expect(await status(reg, A1)).to.equal(S.Accepted);

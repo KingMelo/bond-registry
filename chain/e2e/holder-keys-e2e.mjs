@@ -304,6 +304,50 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
   ok(other?.status === 403, "another holder can't see it (" + other?.status + ")");
   const gc = (await call(H, "POST", "/api/holder/assignee-code", { token: s3b.token, id: g.id })).code;
   ok(gc && gc !== CODE2, "its assignor gets it, a different code");
+
+  // The assignor mails it and records the mailing: the mail number and date, signed with their passkey.
+  let gr = await hrec(g.id);
+  e = await hsave(s1.token, phone, { reg: [{ ...gr, instrumentMail: "9407 1111", mailedOn: "2026-11-09" }] }).then(() => null, (x) => x);
+  ok(e?.status === 403, "only its assignor records the mailing (" + e?.status + ")");
+  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 1111", mailedOn: "2999-01-01" }] }).then(() => null, (x) => x);
+  ok(e?.status === 400, "not with a future date (" + e?.status + ")");
+  await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 2222 3333", mailedOn: "2026-11-09" }],
+    events: [ev(g.bond, g.id, "DeliveryRecorded", "mailed 2026-11-09")] });
+  await settle();
+  const C = await import(ROOT + "/server/chain.js");
+  const onc = await regC.assignments(id32(g.id));
+  ok(onc.deliveryRef === C.deliveryRef(g.id, "9407 2222 3333", undefined) && (await regC.mailedAt(id32(g.id))) === BigInt(Date.parse("2026-11-09") / 1000),
+    "the assignor's mailing is on-chain, and its date starts the assignee's 30 days");
+  const db = new pg.Client({ connectionString: DB }); await db.connect();
+  const fns = (await db.query("select fn, role from chain_ops where ref = $1", [g.id])).rows; await db.end();
+  ok(fns.some((r) => r.fn === "recordMailing" && r.role === "relayer") && !fns.some((r) => r.fn === "setDeliveryRef"), "nothing went to the issuer's Safe for it");
+  gr = await hrec(g.id);
+  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 9999", mailedOn: "2026-11-09" }] }).then(() => null, (x) => x);
+  ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
+  // A page that hasn't caught up (no deliveryRef, no mail number) isn't a second mailing.
+  gr = await hrec(g.id);
+  await hsave(s3b.token, fresh, { reg: [{ ...gr, deliveryRef: null, mailedOn: undefined }] });
+  ok((await hrec(g.id)).deliveryRef === onc.deliveryRef, "a page that hasn't caught up doesn't undo or repeat the mailing");
+}
+
+// 8c. The assignee records their own delivery receipt (the issuer mailed A00003): once, with their passkey.
+{
+  let a3 = await hrec("PENS-0001-BD-A00003");
+  e = await hsave(s3b.token, fresh, { reg: [{ ...a3, receivedOn: "2026-11-10" }] }).then(() => null, (x) => x);
+  ok(e?.status === 400, "a receipt needs the receipt attached (" + e?.status + ")");
+  const doc = H32();
+  await hsave(s3b.token, fresh, { reg: [{ ...a3, receivedOn: "2026-11-10", receiptDoc: doc, receiptFile: "green-card.pdf" }],
+    events: [ev(a3.bond, a3.id, "ReceiptRecorded", "received 2026-11-10")] });
+  await settle();
+  const C = await import(ROOT + "/server/chain.js");
+  const rc = await regC.receipts(id32(a3.id));
+  ok(rc.ref === C.receiptRef(a3.id, "2026-11-10", doc) && rc.receivedAt === BigInt(Date.parse("2026-11-10") / 1000),
+    "the assignee's delivery receipt is on-chain, signed with their passkey");
+  a3 = await hrec(a3.id);
+  e = await hsave(s3b.token, fresh, { reg: [{ ...a3, receivedOn: "2026-11-11", receiptDoc: H32() }] }).then(() => null, (x) => x);
+  ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
+  e = await hsave(s1.token, phone, { reg: [{ ...a3, receivedOn: "2026-11-10", receiptDoc: H32() }] }).then(() => null, (x) => x);
+  ok(e && e.status >= 400, "nobody else can record it (" + e?.status + ")");
 }
 
 // 9. Everything confirmed, and the chain matches the register.

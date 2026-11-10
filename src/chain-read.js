@@ -46,6 +46,9 @@ export async function readRecord(info, displayId) {
   // The record's bond, by its own hash: only accept the display ID if it hashes to the same thing.
   const bondDisplay = bondOf(displayId);
   const bond = a.bondId === id32(bondDisplay) ? await readBond(info, bondDisplay) : null;
+  // The assignee's delivery receipt and the mailing date (contracts before v5 have no receipts).
+  const rc = await reg.receipts(id).catch(() => null);
+  const mailed = await reg.mailedAt(id).catch(() => 0n);
   return {
     id: String(displayId).trim().toUpperCase(), recordId: id, bondId: a.bondId, bond,
     parentId: a.parentId === ZeroHash ? null : a.parentId,
@@ -53,6 +56,8 @@ export async function readRecord(info, displayId) {
     origin: ORIGIN[Number(a.origin)], status: STATUS[Number(a.status)], updatedAt: Number(a.updatedAt),
     docHash: a.docHash, filingRef: a.filingRef === ZeroHash ? null : a.filingRef,
     deliveryRef: a.deliveryRef === ZeroHash ? null : a.deliveryRef,
+    mailedAt: Number(mailed || 0),
+    receiptRef: rc && rc.ref !== ZeroHash ? rc.ref : null, receivedAt: rc ? Number(rc.receivedAt) : 0,
   };
 }
 
@@ -64,6 +69,7 @@ const tagged = (kind, values) => keccak256(AbiCoder.defaultAbiCoder().encode(
 export const filingRefOf = (recordId, filingNumber, filingDoc) =>
   filingDoc ? tagged("filing", [recordId, filingNumber, filingDoc]) : tagged("filing", [recordId, filingNumber]);
 export const deliveryRefOf = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
+export const receiptRefOf = (recordId, receivedOn, receiptDoc) => tagged("receipt", [recordId, receivedOn, receiptDoc]);
 
 export const nameFor = (hash, candidates) => candidates.find((c) => id32(c) === hash) || null;
 
@@ -72,7 +78,7 @@ export const nameFor = (hash, candidates) => candidates.find((c) => id32(c) === 
 const CHANGE_SAY = Object.fromEntries([["details", "Name, contact or address corrected"], ["bond", "Bond details changed"],
   ["removed", "Removed from the register"]].map(([k, v]) => [keccak256(toUtf8Bytes(k)), v]));
 const SAY = {
-  RegisterChanged: "Register entry changed",
+  RegisterChanged: "Register entry changed", ReceiptRecorded: "Delivery receipt recorded by the assignee",
   AssignmentIssued: "Issued by the issuer", Accepted: "Took effect", AssignedOut: "Assigned out",
   AssignOutCancelled: "Assign-out cancelled", CredentialRequested: "New holder requested access",
   CredentialRequestRejected: "Access request rejected", CredentialIssued: "New holder activated by the issuer",

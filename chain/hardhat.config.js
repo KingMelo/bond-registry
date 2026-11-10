@@ -17,7 +17,7 @@ subtask(TASK_COMPILE_SOLIDITY_GET_SOLC_BUILD, async ({ solcVersion }, hre, runSu
 const key = process.env.DEPLOYER_KEY ? [process.env.DEPLOYER_KEY] : [];
 
 module.exports = {
-  solidity: { version: SOLC, settings: { optimizer: { enabled: true, runs: 200 }, evmVersion: "paris" } },
+  solidity: { version: SOLC, settings: { optimizer: { enabled: true, runs: 50 }, evmVersion: "paris" } },
   networks: {
     // Polygon verifies P-256 (passkey) signatures with the RIP-7212 precompile; the local chain matches.
     hardhat: { enableRip7212: true },

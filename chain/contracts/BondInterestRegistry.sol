@@ -152,6 +152,9 @@ contract BondInterestRegistry is AccessControl, Pausable {
     mapping(bytes32 => HolderKey) public holderKeys;
     /// assignmentId => when the issuer says it was mailed (unix seconds); starts the response period
     mapping(bytes32 => uint64) public mailedAt;
+    /// The assignee's delivery receipt: the hash of the receipt (date received and the receipt's copy) and the date received.
+    struct Receipt { bytes32 ref; uint64 receivedAt; }
+    mapping(bytes32 => Receipt) public receipts;
 
     // ---------------------------------------------------------------- events
     // Every event names the bond, the record (zero when the change is to the
@@ -171,7 +174,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
     event AssignOutCancelled(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event Locked(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event Unlocked(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
-    event PasskeyRotated(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event Redeemed(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 units, bytes32 docHash, address actor);
     event AssignmentReplaced(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 indexed newId, bytes32 docHash, address actor);
     event Superseded(bytes32 indexed bondId, bytes32 indexed assignmentId);
@@ -181,6 +183,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
     /// assignor, a removed record), logged as the hash of what changed so the register can be checked against it.
     event RegisterChanged(bytes32 indexed bondId, bytes32 indexed subjectId, bytes32 indexed kind, bytes32 docHash, address actor);
     event DeliveryRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 deliveryRef, uint64 mailedAt, address actor);
+    event ReceiptRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 receiptRef, uint64 receivedAt, address actor);
     event HolderKeyRegistered(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 x, uint256 y, bytes32 docHash, address actor);
     /// `what` is "issuer", "bond", "prior" or "record"; `id` the issuer, bond or record; `sub` the prior's refHash.
     event Imported(string what, bytes32 indexed id, bytes32 indexed sub);
@@ -216,6 +219,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
     error ResponsePeriodOpen(bytes32 assignmentId, uint256 until);
     error BadMailingDate(uint256 mailedAt);
     error FilingAlreadyRecorded(bytes32 assignmentId);
+    error AlreadyRecorded(bytes32 assignmentId);
     error Migrating();
     error NotMigrating();
     error PredecessorNotPaused();
@@ -544,18 +548,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit Unlocked(bondId, assignmentId, docHash, msg.sender);
     }
 
-    /// Records that a locked record's passkey was reissued. The status doesn't change.
-    function recordRotation(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
-        external
-        whenNotPaused
-        onlyIssuerOf(bondId)
-        nonZero(docHash)
-    {
-        Assignment storage a = _inStatus(bondId, assignmentId, Status.Locked);
-        a.updatedAt = uint64(block.timestamp);
-        emit PasskeyRotated(bondId, assignmentId, docHash, msg.sender);
-    }
-
     /// Records that a holding was paid out and retires its units for good. Redemption is the
     /// issuer's act: the bond's holder pays under the fiduciary paperwork, and the holder of the
     /// record doesn't ask for it here. Only a record in effect, unlocked, with nothing pending.
@@ -634,6 +626,36 @@ contract BondInterestRegistry is AccessControl, Pausable {
         external whenNotPaused onlyRelayerOn(bondId) nonZero(subjectId) nonZero(kind) nonZero(docHash)
     {
         emit RegisterChanged(bondId, subjectId, kind, docHash, msg.sender);
+    }
+
+    /// The assignor records the certified mailing of an assign-out they made, signed with their device
+    /// key: the hash of the mail number, and the date mailed, which starts the assignee's response period.
+    function recordMailing(bytes32 bondId, bytes32 assignmentId, bytes32 deliveryRef, uint64 mailedOn, HolderAuth calldata auth)
+        external whenNotPaused onlyRelayerOn(bondId) nonZero(deliveryRef)
+    {
+        Assignment storage a = _liveRecord(bondId, assignmentId);
+        if (a.origin != Origin.AssignOut) revert WrongOrigin(assignmentId);
+        if (a.status != Status.Issued) revert WrongStatus(assignmentId, a.status);
+        if (a.deliveryRef != bytes32(0)) revert AlreadyRecorded(assignmentId);
+        if (mailedOn == 0 || mailedOn > block.timestamp) revert BadMailingDate(mailedOn);
+        _byHolder(a.parentId, this.recordMailing.selector, keccak256(abi.encode(bondId, assignmentId, deliveryRef, mailedOn)), auth);
+        a.deliveryRef = deliveryRef;
+        a.updatedAt = uint64(block.timestamp);
+        mailedAt[assignmentId] = mailedOn;
+        emit DeliveryRecorded(bondId, assignmentId, deliveryRef, mailedOn, msg.sender);
+    }
+
+    /// The assignee records their delivery receipt, once, signed with their device key. It doesn't move
+    /// the response period, which runs from the date mailed.
+    function recordReceipt(bytes32 bondId, bytes32 assignmentId, bytes32 receiptRef, uint64 receivedOn, HolderAuth calldata auth)
+        external whenNotPaused onlyRelayerOn(bondId) nonZero(receiptRef)
+    {
+        _liveRecord(bondId, assignmentId);
+        if (receipts[assignmentId].ref != bytes32(0)) revert AlreadyRecorded(assignmentId);
+        if (receivedOn == 0 || receivedOn > block.timestamp) revert BadMailingDate(receivedOn);
+        _byHolder(assignmentId, this.recordReceipt.selector, keccak256(abi.encode(bondId, assignmentId, receiptRef, receivedOn)), auth);
+        receipts[assignmentId] = Receipt(receiptRef, receivedOn);
+        emit ReceiptRecorded(bondId, assignmentId, receiptRef, receivedOn, msg.sender);
     }
 
     /// The holder records the UCC-3 they filed for a record: their own (signerId = the record), or
@@ -727,7 +749,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         if (a.pendingChildren != 0) revert PendingChildren(assignmentId, a.pendingChildren);
         if (a.origin == Origin.AssignOut) {
             Assignment storage p = assignments[a.parentId];
-            if (isTerminal(p.status) || p.status == Status.PendingRedemption) revert WrongStatus(a.parentId, p.status);
+            if (_isTerminal(p.status) || p.status == Status.PendingRedemption) revert WrongStatus(a.parentId, p.status);
             p.units += a.units;
             p.pendingChildren -= 1;
             p.updatedAt = uint64(block.timestamp);
@@ -793,7 +815,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         return keccak256(abi.encode(HOLDER_TAG, block.chainid, address(this), signerId, holderKeys[signerId].nonce, selector, argsHash));
     }
 
-    function isTerminal(Status s) public pure returns (bool) {
+    function _isTerminal(Status s) internal pure returns (bool) {
         return s == Status.Redeemed || s == Status.Superseded || s == Status.Cancelled || s == Status.Rejected;
     }
 
@@ -818,7 +840,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
 
     function _liveRecord(bytes32 bondId, bytes32 id) internal view returns (Assignment storage a) {
         a = _record(bondId, id);
-        if (isTerminal(a.status)) revert WrongStatus(id, a.status);
+        if (_isTerminal(a.status)) revert WrongStatus(id, a.status);
     }
 
     function _inStatus(bytes32 bondId, bytes32 id, Status s) internal view returns (Assignment storage a) {
@@ -857,7 +879,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         Assignment storage p = assignments[c.parentId];
         // A parent with pending children can't be redeemed, replaced or superseded,
         // so it is always live here; checked anyway so units never reach a terminal record.
-        if (isTerminal(p.status) || p.status == Status.PendingRedemption) revert WrongStatus(c.parentId, p.status);
+        if (_isTerminal(p.status) || p.status == Status.PendingRedemption) revert WrongStatus(c.parentId, p.status);
         p.units += c.units;
         p.pendingChildren -= 1;
         p.updatedAt = uint64(block.timestamp);

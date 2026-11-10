@@ -105,7 +105,7 @@ ok(signCount >= 2, "the device signed the key registration and the confirmation 
 await page.getByText("Signed with your device key").waitFor({ timeout: 10000 }).catch(() => {});
 // The holder records their own UCC-3: the number and the filed copy, signed with the passkey.
 await page.getByLabel("Filing number").fill("UCC3-2026-0417");
-await page.locator('input[type="file"]').first().setInputFiles({ name: "ucc3-ack.pdf", mimeType: "application/pdf", buffer: Buffer.from("filed ucc-3") });
+await page.locator("div.mt-3", { has: page.getByText("Record your UCC-3", { exact: true }) }).locator('input[type="file"]').setInputFiles({ name: "ucc3-ack.pdf", mimeType: "application/pdf", buffer: Buffer.from("filed ucc-3") });
 await page.getByRole("button", { name: /^Record UCC-3: confirm with your passkey/ }).click();
 let filed = null;
 for (let i = 0; i < 30 && !filed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1); if (r.filingNumber) filed = r; }
@@ -140,6 +140,13 @@ await page.getByRole("button", { name: "Back to my record" }).click().catch(() =
 const again = page.getByRole("button", { name: /transfer code/ });
 if (await again.count()) { await again.first().click(); await page.waitForTimeout(800); }
 ok(await page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/).count() > 0, "the assignor can show the transfer code again from their record, until it's used");
+// The assignor records the certified mailing of the assign-out, from their list.
+await page.getByRole("button", { name: "Record the certified mailing" }).click();
+await page.getByLabel("Certified mail number").fill("9407 1000 0000 0000 0000 77");
+await page.getByRole("button", { name: /^Record mailing: confirm with your passkey/ }).click();
+let mailed = null;
+for (let i = 0; i < 30 && !mailed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.deliveryRef) mailed = r; }
+ok(!!mailed && !!mailed.mailedOn, "the assignor's certified mailing is recorded, with its date (" + mailed?.mailedOn + ")");
 const signs2 = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signs2 > signCount, "the device signed the assign-out (" + signs2 + " signatures)");
 
@@ -148,7 +155,7 @@ const t0 = Date.now(); let s;
 while (Date.now() - t0 < 90000) { s = await call(P, "GET", "/api/platform/chain"); if (!(s.counts.queued || s.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
 const id32 = (x) => ethers.keccak256(ethers.toUtf8Bytes(x));
 const k = await regC.holderKeys(id32(A1));
-ok(k.x !== 0n && k.nonce === 4n, "the chain holds the device key and counted 4 signatures from it (" + k.nonce + ")");
+ok(k.x !== 0n && k.nonce === 5n, "the chain holds the device key and counted 5 signatures from it: key, accept, UCC-3, assign-out, mailing (" + k.nonce + ")");
 ok((await regC.assignments(id32(A1))).filingRef === filed.filingRef, "the chain holds the holder's UCC-3 reference");
 ok(Number((await regC.assignments(id32(A1))).status) === 4, "the chain shows A00001 in effect, by the holder's own signature");
 ok(!s.counts.failed, "no write failed (" + JSON.stringify(s.counts) + ")");
@@ -193,6 +200,13 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   ok(true, "the assignee opens the assign-out with the transfer code and is asked for a passkey");
   await p3.getByRole("button", { name: "Set up device key" }).click();
   await p3.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
+  // The assignee records their delivery receipt from the review screen.
+  await p3.getByText("Record your delivery receipt", { exact: true }).waitFor({ timeout: 10000 });
+  await p3.locator('input[type="file"]').first().setInputFiles({ name: "usps-delivered.pdf", mimeType: "application/pdf", buffer: Buffer.from("delivered") });
+  await p3.getByRole("button", { name: /^Record receipt: confirm with your passkey/ }).click();
+  let got = null;
+  for (let i = 0; i < 30 && !got; i++) { await p3.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.receiptRef) got = r; }
+  ok(!!got, "the assignee's delivery receipt is recorded, signed with their passkey");
   await p3.getByRole("button", { name: "Reject this assignment" }).click();
   const why = p3.getByLabel(/Reason for rejecting/);
   await why.fill("Not the amount we agreed.");
