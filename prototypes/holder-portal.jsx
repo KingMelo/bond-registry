@@ -216,7 +216,7 @@ function VerifyChain(props) {
 }
 
 function VerifyChainReady({ info, reg, issuerOf, lib }) {
-  const { readRecord, readBond, history, nameFor, looksLikeRecord, when } = lib;
+  const { readRecord, readBond, history, nameFor, looksLikeRecord, when, filingRefOf } = lib;
   const start = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") || "" : "";
   const [q, setQ] = useState(start);
   const [busy, setBusy] = useState(false);
@@ -298,8 +298,10 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
             ["How it began", ORIGIN_SAY[r.origin]],
             r.parentId && ["From record", parentName || shortHash(r.parentId)],
             r.pendingChildren > 0 && ["Pending transfers", String(r.pendingChildren)],
-            ["UCC-3 filing", r.filingRef ? "Recorded on-chain" : "Not recorded"],
-            ["Certified mailing", r.deliveryRef ? "Recorded on-chain" : "Not recorded"],
+            ["UCC-3 filing", !r.filingRef ? "Not recorded"
+              : mine?.filingNumber ? mine.filingNumber + (filingRefOf(mine.id, mine.filingNumber) === r.filingRef ? " · matches the chain ✓" : " · doesn't match the chain")
+              : "Recorded on-chain"],
+            ["Certified mailing", r.deliveryRef ? "Recorded on-chain (the tracking number is shown only to the holder)" : "Not recorded"],
             ["Last changed", when(r.updatedAt)],
             ["Document fingerprint", shortHash(r.docHash)],
           ]} />
@@ -383,6 +385,18 @@ export default function HolderPortal() {
   // server says what to sign (what the contract will check), the device signs, the save carries it.
   const session = useRef(null);
   const [device, setDevice] = useState(null); // { fingerprint } once this record has a device key
+  const [myMail, setMyMail] = useState(null); // the signed-in record's certified mail number(s)
+  // The readable numbers behind the chain's hashes: the UCC-3 filing number is public; the
+  // certified mail number only for the record's own signed-in holder.
+  const filingSay = (a) => a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "")
+    : a.filingRef ? "Filed (number not on the register)" : "Not yet filed";
+  const mailSay = (a) => {
+    const m = myMail && myMail.id === a.id ? myMail : null;
+    if (!a.deliveryRef) return "Not yet mailed";
+    if (!m) return "Recorded";
+    const nums = [...new Set([m.instrumentMail, m.passkeyMail].filter(Boolean))];
+    return nums.length ? nums.join(" · ") + (nums.length === 1 && a.origin !== "AssignOut" ? " (instrument and access code)" : "") : "Recorded";
+  };
   const [signing, setSigning] = useState(false);
   const beforeCommit = async (body) => {
     const s = session.current;
@@ -504,6 +518,7 @@ export default function HolderPortal() {
     }
     setQErr(""); setQKey("");
     session.current = { id: fresh.id, token: res.token, rpId: res.rpId, enroll: res.enroll };
+    api.holderMine(res.token).then(setMyMail).catch(() => setMyMail(null));
     setDevice(res.device);
     setOpenId(fresh.id);
     setView(res.device ? (fresh.status === "Issued" ? "claim" : "position") : "device");
@@ -803,7 +818,9 @@ export default function HolderPortal() {
               ["Parent", open.parent || "Issuer-originated"],
               ["Dated", open.created],
               ["Document hash", open.docHash],
+              ["UCC-3 filing", filingSay(open)],
               open.filingRef && ["UCC-3 filing ref", open.filingRef],
+              ["Certified mailing", mailSay(open)],
               open.deliveryRef && ["Delivery ref", open.deliveryRef],
             ]} />
 
@@ -935,7 +952,9 @@ export default function HolderPortal() {
                 ["Parent", open.parent || "Issuer-originated"],
                 ["In effect since", open.effectiveOn || open.accepted || "—"],
                 ["Document hash", shortHash(open.docHash)],
-                ["UCC-3 filing", open.filingRef ? "Filed · " + shortHash(open.filingRef) : "Not yet filed"],
+                ["UCC-3 filing", filingSay(open)],
+                open.filingRef && ["UCC-3 filing ref", shortHash(open.filingRef)],
+                ["Certified mailing", mailSay(open)],
                 ["Delivery ref", open.deliveryRef ? shortHash(open.deliveryRef) : "—"],
                 chainInfo && ["On-chain", <OnChain rec={open} info={chainInfo} />],
               ]} />

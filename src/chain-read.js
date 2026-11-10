@@ -1,7 +1,7 @@
 // Reads the registry contract straight from the blockchain, in the visitor's browser.
 // Nothing here goes through the platform's own server or database: the page is given the
 // contract address and a public RPC endpoint, and everything else comes from the chain.
-import { JsonRpcProvider, Contract, Interface, keccak256, toUtf8Bytes, ZeroHash } from "ethers";
+import { JsonRpcProvider, Contract, Interface, keccak256, toUtf8Bytes, ZeroHash, AbiCoder } from "ethers";
 import ABI from "../server/registry-abi.json";
 
 export const id32 = (s) => keccak256(toUtf8Bytes(String(s).trim().toUpperCase()));
@@ -57,6 +57,13 @@ export async function readRecord(info, displayId) {
 }
 
 /** Finds which of the given display IDs hashes to `hash`, so a parent can be named. */
+// The chain keeps hashes of the filing and mailing numbers; these rebuild them from the numbers
+// (same rule as the server), so a reader can check a number against the chain themselves.
+const tagged = (kind, values) => keccak256(AbiCoder.defaultAbiCoder().encode(
+  ["string", ...values.map(() => "string")], ["BondInterestRegistry/" + kind + "/v1", ...values.map((v) => String(v ?? ""))]));
+export const filingRefOf = (recordId, filingNumber) => tagged("filing", [recordId, filingNumber]);
+export const deliveryRefOf = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
+
 export const nameFor = (hash, candidates) => candidates.find((c) => id32(c) === hash) || null;
 
 // Plain-language names for the contract's events.

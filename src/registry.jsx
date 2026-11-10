@@ -26,6 +26,7 @@ async function call(method, url, body) {
 export const api = {
   signIn: (id, passkey) => call("POST", "/api/holder/signin", { id, passkey }),
   holderPrepare: (body) => call("POST", "/api/holder/prepare", body),
+  holderMine: (token) => call("POST", "/api/holder/mine", { token }),
   holderKeyPrepare: (body) => call("POST", "/api/holder/key/prepare", body),
   holderKey: (body) => call("POST", "/api/holder/key", body),
   clearDeviceKey: (issuer, id, reason) => call("POST", "/api/issuer/holder-key/clear", { issuer, id, reason }),

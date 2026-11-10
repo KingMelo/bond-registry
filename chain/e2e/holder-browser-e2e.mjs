@@ -66,6 +66,7 @@ await icommit({ bonds: [{ ...(await st()).bonds[0], unassigned: TOTAL - 1_000_00
   status: "Issued", created: "Nov 9, 2026", accepted: null, filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null,
   id: A1, bond: "PENS-0001-BD", units: 1_000_000, issuedUnits: 1_000_000, docHash: H32() }] });
 await icommit({ reg: [{ ...(await st()).reg[0], instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01" }] });
+await icommit({ reg: [{ ...(await st()).reg[0], filingNumber: "UCC3-2026-0417", filedBy: "Penson Trust", filingRef: "pending" }] });
 
 // ---- the browser, with a virtual passkey device (platform authenticator, face/fingerprint passes)
 const browser = await chromium.launch();
@@ -100,6 +101,10 @@ ok(saved?.effective === "holder", "the holder's confirmation, signed on the devi
 const signCount = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signCount >= 2, "the device signed the key registration and the confirmation (" + signCount + " signatures)");
 await page.getByText("Signed with your device key").waitFor({ timeout: 10000 }).catch(() => {});
+ok(await page.getByText("UCC3-2026-0417 · filed by Penson Trust").count() > 0, "the holder sees the UCC-3 filing number");
+ok(await page.getByText(/9407 1000 0000 0000 0000 01/).count() > 0, "the signed-in holder sees their certified mail number");
+const publicState = await call(H, "GET", "/api/state");
+ok(!JSON.stringify(publicState).includes("9407 1000"), "the public record list never carries the mail number");
 await shot("4-in-effect");
 
 // ---- on-chain

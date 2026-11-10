@@ -677,6 +677,14 @@ if (APP === "holder") {
     res.json(out);
   }));
 
+  // The signed-in holder's own record details the public portal hides: the certified mail number.
+  app.post("/api/holder/mine", wrap(async (req, res) => {
+    const session = needSession(req.body?.token);
+    const d = (await pool.query("select data from assignments where id = $1", [session.id])).rows[0]?.data;
+    if (!d) throw new Reject(404, "No such record.");
+    res.json({ id: d.id, instrumentMail: d.instrumentMail || null, passkeyMail: d.passkeyMail || null });
+  }));
+
   // ---- registering the holder's device key: create a passkey, then sign its registration with it.
   async function keyPlan(c, body, req) {
     const session = needSession(body?.token);
