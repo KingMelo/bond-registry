@@ -249,11 +249,11 @@ describe("BondInterestRegistry", () => {
       return ctx;
     }
 
-    it("moves units to a locked child and counts it as pending", async () => {
+    it("moves units to a child that's open to its assignee at once, and counts it as pending", async () => {
       const { reg } = await withChild();
       const p = await reg.assignments(A1), c = await reg.assignments(C1);
       expect([p.units, p.pendingChildren, Number(p.status)]).to.deep.equal([170000n, 1n, S.Accepted]);
-      expect([c.units, Number(c.status), Number(c.origin), c.parentId]).to.deep.equal([30000n, S.AwaitingCredential, O.AssignOut, A1]);
+      expect([c.units, Number(c.status), Number(c.origin), c.parentId]).to.deep.equal([30000n, S.Issued, O.AssignOut, A1]);
       expect((await totals(reg)).live).to.equal(200000n);
     });
 
@@ -266,29 +266,17 @@ describe("BondInterestRegistry", () => {
       await expect(RL.assignOut(BOND, A2, C2, 1, h("d"))).to.be.revertedWithCustomError(reg, "WrongStatus");
     });
 
-    it("new holder: request, issuer activates once the UCC-3 is on record, then accepts", async () => {
-      const { reg, I, RL } = await withChild();
-      await expect(RL.requestCredential(BOND, C1, h("request"))).to.emit(reg, "CredentialRequested");
-      await expect(I.issueCredential(BOND, C1, h("cred"))).to.be.revertedWithCustomError(reg, "FilingNotRecorded");
-      await I.setFilingRef(BOND, C1, h("ucc3"));
-      await expect(I.issueCredential(BOND, C1, h("cred"))).to.emit(reg, "CredentialIssued");
-      expect(await status(reg, C1)).to.equal(S.Issued);
-      await RL.accept(BOND, C1, h("acc"));
+    it("the new holder claims it and accepts, with no issuer step in between", async () => {
+      const { reg, RL } = await withChild();
+      await RL.accept(BOND, C1, h("acc")); // the helper sets up the assignee's device, then signs
+      expect(await status(reg, C1)).to.equal(S.Accepted);
       expect((await reg.assignments(A1)).pendingChildren).to.equal(0n);
       expect(await status(reg, A1)).to.equal(S.Accepted); // still holds 170,000
     });
 
-    it("the relayer can't activate the new holder", async () => {
-      const { reg, RL } = await withChild();
-      await RL.requestCredential(BOND, C1, h("r"));
-      await expect(RL.issueCredential(BOND, C1, h("c"))).to.be.revertedWithCustomError(reg, "NotIssuer");
-    });
-
-    it("the issuer can reject a request; it goes back to waiting", async () => {
-      const { reg, I, RL } = await withChild();
-      await RL.requestCredential(BOND, C1, h("r"));
-      await expect(I.rejectCredentialRequest(BOND, C1, h("why"))).to.emit(reg, "CredentialRequestRejected");
-      expect(await status(reg, C1)).to.equal(S.AwaitingCredential);
+    it("the old credential steps are gone", async () => {
+      const { reg } = await withChild();
+      for (const fn of ["requestCredential", "issueCredential", "rejectCredentialRequest"]) expect(reg.interface.getFunction(fn)).to.equal(null);
     });
 
     it("a parent that assigns everything out closes as Superseded when the child is accepted", async () => {
@@ -296,42 +284,38 @@ describe("BondInterestRegistry", () => {
       await accepted(I, RL, A1, 30000);
       await RL.assignOut(BOND, A1, C1, 30000, h("all of it"));
       expect(await status(reg, A1)).to.equal(S.Accepted);
-      await RL.requestCredential(BOND, C1, h("r"));
-      await I.setFilingRef(BOND, C1, h("ucc3"));
-      await I.issueCredential(BOND, C1, h("c"));
       await expect(RL.accept(BOND, C1, h("a"))).to.emit(reg, "Superseded").withArgs(BOND, A1);
       expect(await status(reg, A1)).to.equal(S.Superseded);
       expect((await totals(reg)).live).to.equal(30000n);
     });
 
-    it("the assignor can cancel only before the assignee comes forward", async () => {
+    it("the assignor can cancel only until the assignee claims it", async () => {
       const { reg, RL } = await withChild();
       await expect(RL.cancelAssignOut(BOND, C1, h("cancel"))).to.emit(reg, "AssignOutCancelled");
       const p = await reg.assignments(A1);
       expect([p.units, p.pendingChildren]).to.deep.equal([200000n, 0n]);
       expect(await status(reg, C1)).to.equal(S.Cancelled);
+      // Once the assignee has set up their device on it, it's theirs to accept or reject.
       await RL.assignOut(BOND, A1, C2, 1000, h("d"));
-      await RL.requestCredential(BOND, C2, h("r"));
-      await expect(RL.cancelAssignOut(BOND, C2, h("cancel"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+      const { newKey, signFor } = require("./webauthn");
+      const k = newKey(), args = [BOND, C2, k.x, k.y, h("assignee device")];
+      await RL.registerHolderKey(...args, await signFor(reg, k, C2, "registerHolderKey", args));
+      await expect(RL.cancelAssignOut(BOND, C2, h("cancel"))).to.be.revertedWithCustomError(reg, "HolderKeyExists");
     });
 
-    it("the issuer can cancel a disputed child after it was requested, not after activation", async () => {
+    it("the issuer can cancel a disputed child before it takes effect, not after", async () => {
       const { reg, I, RL } = await withChild();
-      await RL.requestCredential(BOND, C1, h("r"));
       await expect(I.issuerCancelAssignOut(BOND, C1, h("dispute"))).to.emit(reg, "AssignOutCancelled");
       expect((await reg.assignments(A1)).units).to.equal(200000n);
       await RL.assignOut(BOND, A1, C2, 1000, h("d"));
-      await RL.requestCredential(BOND, C2, h("r"));
-      await I.setFilingRef(BOND, C2, h("f"));
-      await I.issueCredential(BOND, C2, h("c"));
+      await RL.accept(BOND, C2, h("a"));
       await expect(I.issuerCancelAssignOut(BOND, C2, h("late"))).to.be.revertedWithCustomError(reg, "WrongStatus");
     });
 
     it("an issuer-originated record can't be cancelled as an assign-out", async () => {
       const { reg, I } = await setup();
       await I.issueAssignment(BOND, A1, 100, h("d"));
-      // Issued is not a cancellable status, and a direct record has no parent to return to.
-      await expect(I.issuerCancelAssignOut(BOND, A1, h("r"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+      await expect(I.issuerCancelAssignOut(BOND, A1, h("r"))).to.be.revertedWithCustomError(reg, "WrongOrigin");
     });
   });
 
@@ -351,9 +335,6 @@ describe("BondInterestRegistry", () => {
       const { reg, I, RL } = await setup();
       await accepted(I, RL, A1, 1000);
       await RL.assignOut(BOND, A1, C1, 400, h("d"));
-      await RL.requestCredential(BOND, C1, h("r"));
-      await I.setFilingRef(BOND, C1, h("f"));
-      await I.issueCredential(BOND, C1, h("c"));
       await RL.rejectAssignment(BOND, C1, h("refused"));
       const p = await reg.assignments(A1);
       expect([p.units, p.pendingChildren, Number(p.status)]).to.deep.equal([1000n, 0n, S.Accepted]);
@@ -463,9 +444,6 @@ describe("BondInterestRegistry", () => {
       const { reg, I, RL } = await setup();
       await accepted(I, RL, A1, 100);
       await RL.assignOut(BOND, A1, C1, 100, h("all"));
-      await RL.requestCredential(BOND, C1, h("r"));
-      await I.setFilingRef(BOND, C1, h("f"));
-      await I.issueCredential(BOND, C1, h("c"));
       await I.replaceAssignment(BOND, C1, C2, h("reissue"));
       expect((await reg.assignments(A1)).pendingChildren).to.equal(0n);
       expect(await status(reg, A1)).to.equal(S.Superseded); // nothing left, nothing pending
@@ -549,9 +527,7 @@ describe("BondInterestRegistry", () => {
         () => RL.assignOut(BOND, anyId(), fresh(), amount(), h("o")),
         () => RL.cancelAssignOut(BOND, anyId(), h("c")),
         () => I.issuerCancelAssignOut(BOND, anyId(), h("c")),
-        () => RL.requestCredential(BOND, anyId(), h("r")),
-        () => I.rejectCredentialRequest(BOND, anyId(), h("r")),
-        async () => { const x = anyId(); await I.setFilingRef(BOND, x, h("f")); return I.issueCredential(BOND, x, h("c")); },
+        () => I.setFilingRef(BOND, anyId(), h("f")),
         () => RL.lock(BOND, anyId(), h("l")),
         () => I.unlock(BOND, anyId(), h("u")),
         () => I.redeem(BOND, anyId(), h("paid")),

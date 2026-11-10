@@ -83,10 +83,16 @@ describe("migration to a new contract", () => {
     await same(o.old, reg, "bondTotals", BOND);
     for (const p of [P1, P2]) await same(o.old, reg, "priorInstruments", BOND, p);
     for (const r of [A1, A2, A3, C1]) {
-      await same(o.old, reg, "assignments", r);
+      if (r !== C1) await same(o.old, reg, "assignments", r);
       await same(o.old, reg, "holderKeys", r);
       expect(await reg.mailedAt(r)).to.equal(await o.old.mailedAt(r));
     }
+    // v4's assign-out waiting for the issuer arrives open to its assignee; everything else identical.
+    const [c4, c5] = [(await o.old.assignments(C1)).toArray(), (await reg.assignments(C1)).toArray()];
+    expect(Number(c4[5])).to.equal(S.AwaitingCredential);
+    expect(Number(c5[5])).to.equal(S.Issued);
+    c4[5] = c5[5];
+    expect(c5).to.deep.equal(c4);
     expect((await reg.holderKeys(A1)).nonce).to.equal(3n); // registration, acknowledgement, assign-out
     expect((await reg.bondTotals(BOND)).reconciled).to.equal(true);
   });

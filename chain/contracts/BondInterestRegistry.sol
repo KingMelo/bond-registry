@@ -60,8 +60,8 @@ contract BondInterestRegistry is AccessControl, Pausable {
 
     enum Status {
         None, // no such record
-        AwaitingCredential,
-        CredentialRequested,
+        AwaitingCredential, // v4 and earlier only: an assign-out waiting for the issuer (v5 opens it at once)
+        CredentialRequested, // v4 and earlier only
         Issued,
         Accepted,
         Locked,
@@ -169,9 +169,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
     event Accepted(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event AssignedOut(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 indexed childId, uint256 units, bytes32 docHash, address actor);
     event AssignOutCancelled(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
-    event CredentialRequested(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
-    event CredentialRequestRejected(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
-    event CredentialIssued(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event Locked(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event Unlocked(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event PasskeyRotated(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
@@ -206,7 +203,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
     error WrongOrigin(bytes32 assignmentId);
     error NotEnoughUnits(uint256 available, uint256 requested);
     error PendingChildren(bytes32 assignmentId, uint32 pending);
-    error FilingNotRecorded(bytes32 assignmentId);
     error PriorExists(bytes32 bondId, bytes32 refHash);
     error UnknownPrior(bytes32 bondId, bytes32 refHash);
     error PriorAlreadyReversed(bytes32 bondId, bytes32 refHash);
@@ -305,6 +301,9 @@ contract BondInterestRegistry is AccessControl, Pausable {
         if (a.status == Status.None) revert NotOnPredecessor(assignmentId);
         if (assignments[assignmentId].status != Status.None) revert AlreadyImported(assignmentId);
         if (bonds[a.bondId].issuerId == bytes32(0)) revert UnknownBond(a.bondId);
+        // v4 kept a new assign-out waiting for the issuer to activate it; from v5 it's open to the
+        // assignee at once, so one still waiting arrives open.
+        if (a.origin == Origin.AssignOut && (a.status == Status.AwaitingCredential || a.status == Status.CredentialRequested)) a.status = Status.Issued;
         assignments[assignmentId] = a;
         IPredecessorRegistry p = IPredecessorRegistry(predecessor);
         (uint256 x, uint256 y, uint64 nonce) = p.holderKeys(assignmentId);
@@ -513,7 +512,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit FilingRecorded(bondId, assignmentId, filingRef, msg.sender);
     }
 
-    /// The issuer cancels a disputed assign-out, before or after the assignee has come forward.
+    /// The issuer cancels a disputed assign-out, any time before it takes effect.
     function issuerCancelAssignOut(bytes32 bondId, bytes32 childId, bytes32 reasonHash)
         external
         whenNotPaused
@@ -521,34 +520,12 @@ contract BondInterestRegistry is AccessControl, Pausable {
         nonZero(reasonHash)
         balanced(bondId)
     {
-        Assignment storage c = _record(bondId, childId);
-        if (c.status != Status.AwaitingCredential && c.status != Status.CredentialRequested) revert WrongStatus(childId, c.status);
+        // A disputed transfer, before it takes effect.
+        Assignment storage c = _inStatus(bondId, childId, Status.Issued);
         _cancelChild(bondId, childId, c, reasonHash);
     }
 
-    function rejectCredentialRequest(bytes32 bondId, bytes32 assignmentId, bytes32 reasonHash)
-        external
-        whenNotPaused
-        onlyIssuerOf(bondId)
-        nonZero(reasonHash)
-    {
-        Assignment storage a = _inStatus(bondId, assignmentId, Status.CredentialRequested);
-        _set(a, Status.AwaitingCredential);
-        emit CredentialRequestRejected(bondId, assignmentId, reasonHash, msg.sender);
-    }
 
-    /// Activates the new holder of an assign-out. The UCC-3 must be on record first.
-    function issueCredential(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
-        external
-        whenNotPaused
-        onlyIssuerOf(bondId)
-        nonZero(docHash)
-    {
-        Assignment storage a = _inStatus(bondId, assignmentId, Status.CredentialRequested);
-        if (a.filingRef == bytes32(0)) revert FilingNotRecorded(assignmentId);
-        _set(a, Status.Issued);
-        emit CredentialIssued(bondId, assignmentId, docHash, msg.sender);
-    }
 
     /// `docHash` is the pledgee's release for a pledge, or the identity verification memo otherwise.
     function unlock(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
@@ -621,8 +598,8 @@ contract BondInterestRegistry is AccessControl, Pausable {
     }
 
     // =============================================================== relayer
-    // Holder-initiated transitions. The relayer can never redeem, unlock, activate a
-    // new holder, or cancel a child once its assignee has come forward.
+    // Holder-initiated transitions, each signed by the holder's device. The relayer can never
+    // redeem, unlock, or cancel a child once its assignee has claimed it.
 
     /// Registers the holder's device key for a record, the first time they sign in. The
     /// assertion must come from that same key (signed over this call), proving the device
@@ -681,8 +658,8 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit Accepted(bondId, assignmentId, docHash, msg.sender);
     }
 
-    /// The holder assigns part or all of their units to a new party. The child waits,
-    /// locked, until the new party comes forward and the issuer activates them.
+    /// The holder assigns part or all of their units to a new party. The child is open at once:
+    /// the new party claims it with the transfer code, then accepts or rejects it.
     function assignOut(bytes32 bondId, bytes32 parentId, bytes32 childId, uint128 units, bytes32 docHash, HolderAuth calldata auth)
         external
         whenNotPaused
@@ -697,7 +674,8 @@ contract BondInterestRegistry is AccessControl, Pausable {
         p.units -= units;
         p.pendingChildren += 1;
         p.updatedAt = uint64(block.timestamp);
-        _create(bondId, childId, parentId, units, Origin.AssignOut, Status.AwaitingCredential, docHash);
+        // Open to the assignee at once: they claim it with the transfer code, then accept or reject.
+        _create(bondId, childId, parentId, units, Origin.AssignOut, Status.Issued, docHash);
         emit AssignedOut(bondId, parentId, childId, units, docHash, msg.sender);
     }
 
@@ -730,7 +708,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit AssignmentRejected(bondId, assignmentId, a.units, reasonHash, msg.sender);
     }
 
-    /// The assignor cancels an assign-out nobody has claimed yet, signed with the assignor's key.
+    /// The assignor cancels an assign-out the assignee hasn't claimed yet, signed with the assignor's key.
     function cancelAssignOut(bytes32 bondId, bytes32 childId, bytes32 docHash, HolderAuth calldata auth)
         external
         whenNotPaused
@@ -738,21 +716,13 @@ contract BondInterestRegistry is AccessControl, Pausable {
         nonZero(docHash)
         balanced(bondId)
     {
-        Assignment storage c = _inStatus(bondId, childId, Status.AwaitingCredential);
+        Assignment storage c = _inStatus(bondId, childId, Status.Issued);
+        // Only until the assignee has claimed it (set up their device).
+        if (holderKeys[childId].x != 0 || holderKeys[childId].y != 0) revert HolderKeyExists(childId);
         _byHolder(c.parentId, this.cancelAssignOut.selector, keccak256(abi.encode(bondId, childId, docHash)), auth);
         _cancelChild(bondId, childId, c, docHash);
     }
 
-    function requestCredential(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
-        external
-        whenNotPaused
-        onlyRelayerOn(bondId)
-        nonZero(docHash)
-    {
-        Assignment storage a = _inStatus(bondId, assignmentId, Status.AwaitingCredential);
-        _set(a, Status.CredentialRequested);
-        emit CredentialRequested(bondId, assignmentId, docHash, msg.sender);
-    }
 
     /// `docHash` is the hash of the holder's lock notice.
     function lock(bytes32 bondId, bytes32 assignmentId, bytes32 docHash, HolderAuth calldata auth)

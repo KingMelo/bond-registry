@@ -48,7 +48,7 @@ describe("holder device keys", () => {
         .to.be.revertedWithCustomError(reg, "HolderKeyExists");
     });
 
-    it("only the relayer submits it, and not before the new holder is activated", async () => {
+    it("only the relayer submits it; a new assignee can set up their device right away", async () => {
       const { reg, I, RL, stranger } = await setup();
       await I.issueAssignment(BOND, A1, 1000, h("d"));
       const key = newKey(), args = [BOND, A1, key.x, key.y, h("dev")];
@@ -62,7 +62,7 @@ describe("holder device keys", () => {
       await RL.assignOut(...out, await sign(reg, pk, A1, "assignOut", out));
       const ck = newKey(), cargs = [BOND, C1, ck.x, ck.y, h("dev c")];
       await expect(RL.registerHolderKey(...cargs, await sign(reg, ck, C1, "registerHolderKey", cargs)))
-        .to.be.revertedWithCustomError(reg, "WrongStatus");
+        .to.emit(reg, "HolderKeyRegistered");
     });
   });
 
