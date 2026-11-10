@@ -3,6 +3,7 @@
 //
 //   BOND_CODE     e.g. KJPII-0001-BD
 //   RECORD_CODE   e.g. KJPII-0001-BD-A00001
+//   EXPECT_LIVE, EXPECT_PRIOR  optional: the bond's live and prior lines must equal these (cents)
 //   EXPECT        optional: "delivery" (the mailing reference must be set) or "filing"
 const fs = require("fs");
 const path = require("path");
@@ -15,7 +16,10 @@ async function main() {
   const id = (s) => ethers.keccak256(ethers.toUtf8Bytes(s));
   const t = await reg.bondTotals(id(process.env.BOND_CODE));
   console.log(`BOND ${process.env.BOND_CODE} total ${t[0]} prior ${t[1]} live ${t[2]} unassigned ${t[3]} redeemed ${t[4]}`);
-  if (!process.env.RECORD_CODE) return;
+  // EXPECT_LIVE / EXPECT_PRIOR: the bond's lines must be exactly these (in cents).
+  for (const [k, i] of [["EXPECT_LIVE", 2], ["EXPECT_PRIOR", 1]])
+    if (process.env[k] != null && t[i] !== BigInt(process.env[k])) throw new Error(k + " " + process.env[k] + " but the chain has " + t[i] + ".");
+  if (!process.env.RECORD_CODE) { if (process.env.EXPECT_LIVE != null || process.env.EXPECT_PRIOR != null) console.log("CHECK-OK"); return; }
   const a = await reg.assignments(id(process.env.RECORD_CODE));
   console.log(`RECORD ${process.env.RECORD_CODE} ${S[Number(a.status)]} units ${a.units} filing ${a.filingRef} delivery ${a.deliveryRef}`);
   const want = process.env.EXPECT;
