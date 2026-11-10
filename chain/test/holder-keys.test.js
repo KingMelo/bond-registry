@@ -219,3 +219,21 @@ describe("holder-recorded UCC-3", () => {
     await expect(RL.recordFiling(...args, await sign(reg, pk, A1, "recordFiling", args))).to.emit(reg, "FilingRecorded");
   });
 });
+
+describe("register changes logged on-chain", () => {
+  it("the relayer logs a change with no state of its own; nobody else can, and it changes nothing", async () => {
+    const { reg, I, RL, issuer, stranger } = await setup();
+    await I.issueAssignment(BOND, A1, 1000, h("d"));
+    const before = await reg.assignments(A1), totals = await reg.bondTotals(BOND);
+    await expect(RL.logChange(BOND, A1, id("details"), h("party, contact, address")))
+      .to.emit(reg, "RegisterChanged").withArgs(BOND, A1, id("details"), h("party, contact, address"), await RL.runner.getAddress());
+    await expect(RL.logChange(BOND, BOND, id("bond"), h("assignor")))
+      .to.emit(reg, "RegisterChanged").withArgs(BOND, BOND, id("bond"), h("assignor"), await RL.runner.getAddress());
+    expect((await reg.assignments(A1)).toArray().map(String)).to.deep.equal(before.toArray().map(String));
+    expect((await reg.bondTotals(BOND)).toArray().map(String)).to.deep.equal(totals.toArray().map(String));
+    for (const who of [issuer, stranger])
+      await expect(reg.connect(who).logChange(BOND, A1, id("details"), h("x"))).to.be.revertedWithCustomError(reg, "AccessControlUnauthorizedAccount");
+    await expect(RL.logChange(BOND, A1, id("details"), ethers.ZeroHash)).to.be.revertedWithCustomError(reg, "ZeroHash");
+    await expect(RL.logChange(id("NOPE-0001-BD"), A1, id("details"), h("x"))).to.be.revertedWithCustomError(reg, "UnknownBond");
+  });
+});

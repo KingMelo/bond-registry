@@ -280,6 +280,18 @@ let deemed = null;
 for (let i = 0; i < 30 && !deemed; i++) { await new Promise((r) => setTimeout(r, 1000)); const x = await rec("PENS-0001-BD-A00004"); if (x.status === "Accepted") deemed = x; }
 ok(deemed?.effective === "deemed", "after 30 days without a rejection it took effect");
 
+// 8a. Every other register change is logged on-chain too: the issuer corrects A00004's contact and address.
+{
+  const r4 = await rec("PENS-0001-BD-A00004");
+  await icommit({ reg: [{ ...r4, contact: "J. Doe, Treasurer", address: "Company A\n2 New St\nDover, DE 19901" }] });
+  await settle();
+  const C = await import(ROOT + "/server/chain.js");
+  const want = C.changeDoc(r4.id, "details", C.RECORD_DETAILS, await rec(r4.id));
+  const logs = await regC.queryFilter(regC.filters.RegisterChanged(id32("PENS-0001-BD"), id32(r4.id)));
+  ok(logs.length === 1 && logs[0].args.kind === ethers.id("details") && logs[0].args.docHash === want,
+    "the corrected contact and address are logged on-chain as a hash of the new values, written automatically");
+}
+
 // 8b. It repeats: the holder of A00003 (in effect, on their new phone) assigns out in turn.
 {
   const a3 = await hrec("PENS-0001-BD-A00003");

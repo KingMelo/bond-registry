@@ -7,7 +7,14 @@
 //   DATABASE_URL   the register
 //   BOND_CODE      e.g. KJPII-0001-BD, or ALL for every bond
 //   DRY_RUN=1      show what would go, change nothing
+//   CHAIN_CONTRACT the current contract: removals of records it holds are logged on it (logChange)
 const { Client } = require("pg");
+const { ethers } = require("ethers");
+// Same hashing as server/chain.js: the removal is logged on-chain (logChange) for records the
+// current contract already holds, so the chain shows they left the register.
+const id32 = (s) => ethers.keccak256(ethers.toUtf8Bytes(String(s)));
+const tagged = (kind, values) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+  ["string", ...values.map(() => "string")], ["BondInterestRegistry/" + kind + "/v1", ...values.map((v) => String(v ?? ""))]));
 const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
 
 async function main() {
@@ -53,7 +60,16 @@ async function removeFrom(db, bond, dry) {
           ref: (process.env.REASON || "Removed at the owner's request") + "; " + (Number(r.data.units) / 100).toFixed(2) + " returned to unassigned" }]);
     await db.query("delete from credentials where id = any($1)", [ids]);
     await db.query("delete from sealed_codes where id = any($1)", [ids]);
+    // Which records the current contract holds (a confirmed write on it), before their writes go.
+    const onChain = (await db.query(`select distinct ref, contract from chain_ops where ref = any($1) and status = 'confirmed' and contract = $2`,
+      [ids, process.env.CHAIN_CONTRACT || ""])).rows;
     await db.query("delete from chain_ops where ref = any($1)", [ids]);
+    for (const o of onChain) {
+      const why = (process.env.REASON || "Removed at the owner's request") + " " + when;
+      await db.query("insert into chain_ops (bond, ref, fn, args, role, status, contract) values ($1, $2, 'logChange', $3, 'relayer', 'queued', $4)",
+        [bond, o.ref, JSON.stringify([id32(bond), id32(o.ref), ethers.id("removed"), tagged("change", [o.ref, "removed", why])]), o.contract]);
+      console.log("  logging the removal of " + o.ref + " on " + o.contract);
+    }
     await db.query("delete from assignments where id = any($1)", [ids]);
     await db.query("update bonds set data = jsonb_set(data, '{unassigned}', to_jsonb($2::bigint)), rev = rev + 1 where id = $1", [bond, unassigned]);
     await db.query("update meta set version = version + 1 where k = 'v'");

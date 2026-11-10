@@ -68,7 +68,11 @@ export const deliveryRefOf = (recordId, instrumentMail, passkeyMail) => tagged("
 export const nameFor = (hash, candidates) => candidates.find((c) => id32(c) === hash) || null;
 
 // Plain-language names for the contract's events.
+// What a logged register change was (RegisterChanged's kind is keccak256 of one of these).
+const CHANGE_SAY = Object.fromEntries([["details", "Name, contact or address corrected"], ["bond", "Bond details changed"],
+  ["removed", "Removed from the register"]].map(([k, v]) => [keccak256(toUtf8Bytes(k)), v]));
 const SAY = {
+  RegisterChanged: "Register entry changed",
   AssignmentIssued: "Issued by the issuer", Accepted: "Took effect", AssignedOut: "Assigned out",
   AssignOutCancelled: "Assign-out cancelled", CredentialRequested: "New holder requested access",
   CredentialRequestRejected: "Access request rejected", CredentialIssued: "New holder activated by the issuer",
@@ -112,7 +116,7 @@ export async function history(info, recordId, { step = 49_999, maxRanges = 60 } 
     if (!parsed) continue;
     const childSide = parsed.name === "AssignedOut" && parsed.args[2] === recordId;
     out.push({
-      name: parsed.name, label: childSide ? "Created by an assign-out" : SAY[parsed.name] || parsed.name,
+      name: parsed.name, label: childSide ? "Created by an assign-out" : parsed.name === "RegisterChanged" ? (CHANGE_SAY[parsed.args.kind] || SAY.RegisterChanged) : SAY[parsed.name] || parsed.name,
       block: l.blockNumber, tx: l.transactionHash,
       docHash: parsed.fragment.inputs.some((i) => i.name === "docHash") ? parsed.args.docHash : null,
     });

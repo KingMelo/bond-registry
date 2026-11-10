@@ -63,6 +63,17 @@ export const priorDoc = (bondDisplay, p) => ethers.keccak256(coder.encode(
 export const filingRef = (recordId, filingNumber, filingDoc) =>
   filingDoc ? tagged("filing", [recordId, filingNumber, filingDoc]) : tagged("filing", [recordId, filingNumber]);
 export const deliveryRef = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
+// Register changes the contract keeps no state for are logged with logChange: the kind of change,
+// and a hash of the new values (in a fixed order) so the register can be checked against the chain.
+export const RECORD_DETAILS = ["party", "contact", "position", "address", "assignor"];
+export const BOND_DETAILS = ["title", "assignor", "face", "registered"];
+export const changeKind = (kind) => ethers.id(kind);
+export const changeDoc = (subjectId, kind, fields, data) =>
+  tagged("change", [subjectId, kind, ...fields.map((k) => JSON.stringify(data?.[k] ?? null))]);
+const detailsChanged = (fields, o, a) => !!o && fields.some((k) => JSON.stringify(o[k] ?? null) !== JSON.stringify(a[k] ?? null));
+const logChangeOp = (bond, subjectId, kind, doc) =>
+  ({ bond, ref: subjectId, fn: "logChange", args: [id32(bond), id32(subjectId), changeKind(kind), doc], role: "relayer" });
+
 const actionDoc = (recordId, fn, ev) => (ev && isHash(ev.ref) ? ev.ref : tagged("action", [recordId, fn, ev?.eid, ev?.ref]));
 
 /** The register keeps readable filing and mailing numbers; the chain gets their hashes. */
@@ -161,6 +172,8 @@ export async function queuePriorChanges(c, bondId, before, after) {
   if (!(await c.query("select 1 from chain_ops where fn in ('anchorBond', 'importBond') and ref = $1 and contract = $2", [bondId, CONTRACT])).rows.length) return;
   const was = new Map(((before && before.prior) || []).map((p) => [p.id, p]));
   const ops = [];
+  // The bond's own details (title, assignor, face, date): logged when they change.
+  if (detailsChanged(BOND_DETAILS, before, after)) ops.push(logChangeOp(bondId, bondId, "bond", changeDoc(bondId, "bond", BOND_DETAILS, after)));
   for (const p of after.prior || []) {
     const o = was.get(p.id);
     if (!o && !p.reversed)
@@ -216,6 +229,8 @@ export async function queueRecordChanges(c, { app, before, after, events, authFo
         // The holder's own UCC-3, signed with the device of whoever is signed in (the record's holder, or its assignor).
         ? { bond: a.bond, ref: a.id, fn: "recordFiling", args: [B, A, "$SIGNER_ID", a.filingRef], role: "relayer", signer: "$SESSION" }
         : { bond: a.bond, ref: a.id, fn: "setFilingRef", args: [B, A, a.filingRef], role: "issuer" });
+    // Corrected names, contacts and addresses: no state on-chain, so they're logged as a hash.
+    if (detailsChanged(RECORD_DETAILS, o, a)) refs.push(logChangeOp(a.bond, a.id, "details", changeDoc(a.id, "details", RECORD_DETAILS, a)));
     if (a.deliveryRef && a.deliveryRef !== o?.deliveryRef)
       refs.push({ bond: a.bond, ref: a.id, fn: "setDeliveryRef", args: [B, A, a.deliveryRef, mailedOn(a)], role: "issuer" });
     if (o && o.status !== a.status && !IMPLIED.has(a.status)) {

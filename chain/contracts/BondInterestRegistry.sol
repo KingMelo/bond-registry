@@ -177,6 +177,9 @@ contract BondInterestRegistry is AccessControl, Pausable {
     event Superseded(bytes32 indexed bondId, bytes32 indexed assignmentId);
     event AssignmentRejected(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 units, bytes32 reasonHash, address actor);
     event FilingRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 filingRef, address actor);
+    /// A register change with no state of its own here (a corrected name or address, a bond's
+    /// assignor, a removed record), logged as the hash of what changed so the register can be checked against it.
+    event RegisterChanged(bytes32 indexed bondId, bytes32 indexed subjectId, bytes32 indexed kind, bytes32 docHash, address actor);
     event DeliveryRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 deliveryRef, uint64 mailedAt, address actor);
     event HolderKeyRegistered(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 x, uint256 y, bytes32 docHash, address actor);
     /// `what` is "issuer", "bond", "prior" or "record"; `id` the issuer, bond or record; `sub` the prior's refHash.
@@ -622,6 +625,15 @@ contract BondInterestRegistry is AccessControl, Pausable {
         k.x = x;
         k.y = y;
         emit HolderKeyRegistered(bondId, assignmentId, x, y, docHash, msg.sender);
+    }
+
+    /// Logs a register change that this contract keeps no state for. The relayer writes it as the
+    /// register saves the change; it moves no units and changes no status. `subjectId` is the
+    /// record or bond changed; `kind` names the change (e.g. keccak256("details")).
+    function logChange(bytes32 bondId, bytes32 subjectId, bytes32 kind, bytes32 docHash)
+        external whenNotPaused onlyRelayerOn(bondId) nonZero(subjectId) nonZero(kind) nonZero(docHash)
+    {
+        emit RegisterChanged(bondId, subjectId, kind, docHash, msg.sender);
     }
 
     /// The holder records the UCC-3 they filed for a record: their own (signerId = the record), or
