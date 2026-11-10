@@ -3,30 +3,17 @@
   "chainId": 80002,
   "contract": "BondInterestRegistry",
   "version": 4,
-  "address": "0x79481267B07714758c5C31Fd90B44828Fb4A1745",
-  "deployTx": "0x56c9a87caf308f66b25cf10f42022f8afcae40e37985301403a1d8594d6b7032",
-  "block": 52458403,
+  "address": "0x912Ad9a2d0C005Dfd661366DD8799DD9Dd3fBAe1",
+  "deployTx": "0xef265db264ea5e4f3dae9d36bc977ad890825da46da8e0a37431df9e2600065b",
+  "block": 52460146,
   "gasUsed": 4350047,
-  "deployedAt": "2026-11-10T03:23:42Z",
-  "changes": "v4: holder actions need the holder's own passkey (P-256, RIP-7212) signature; issuer-attested mailing date starts an on-chain 30-day response period; issuers reset lost device keys.",
+  "deployedAt": "2026-11-10T03:52:46Z",
+  "changes": "v4 code, redeployed for a clean start: the bond and its 20 prior instruments, no assignments.",
   "roles": {
     "admin": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "platform": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "guardian": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4"
   },
-  "explorer": "https://amoy.polygonscan.com/address/0x79481267B07714758c5C31Fd90B44828Fb4A1745",
-  "roleHolders": {
-    "admin": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "platform": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "guardian": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
-    "issuerKJPII": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "movedAt": "2026-11-10T03:33:40Z",
-    "note": "roles (above) are the constructor arguments. After the register was replayed, governing roles and KJPII moved to the Amoy Safe (owner: the Trezor); the deployer keeps only RELAYER, which can no longer act for a holder without their device signature.",
-    "txs": {
-      "setIssuerAccount": "0xd84035a30efcc00cb3b12d2eda120504fe497e9cb145a01e80f53bbb09d205fa",
-      "renounceAdmin": "0x2b309ffd0807c0c7b9375eb726a119603758cb9b63e8e30ad38b3ae5fe146134"
-    }
-  }
+  "explorer": "https://amoy.polygonscan.com/address/0x912Ad9a2d0C005Dfd661366DD8799DD9Dd3fBAe1"
 }
