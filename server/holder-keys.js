@@ -23,6 +23,7 @@ export const SIGNED = {
   cancelAssignOut: { types: B3 },
   assignOut: { types: ["bytes32", "bytes32", "bytes32", "uint128", "bytes32"] },
   registerHolderKey: { types: ["bytes32", "bytes32", "uint256", "uint256", "bytes32"] },
+  recordFiling: { types: ["bytes32", "bytes32", "bytes32", "bytes32"] },
   rotateHolderKey: { types: ["bytes32", "bytes32", "uint256", "uint256", "bytes32"] },
 };
 

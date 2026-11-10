@@ -212,6 +212,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
     error BadHolderSignature(bytes32 assignmentId);
     error ResponsePeriodOpen(bytes32 assignmentId, uint256 until);
     error BadMailingDate(uint256 mailedAt);
+    error FilingAlreadyRecorded(bytes32 assignmentId);
     error Migrating();
     error NotMigrating();
     error PredecessorNotPaused();
@@ -500,6 +501,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit HolderKeyCleared(bondId, assignmentId, docHash, msg.sender);
     }
 
+    /// An issuer correction of a record's UCC-3 reference. Holders record their own with recordFiling.
     function setFilingRef(bytes32 bondId, bytes32 assignmentId, bytes32 filingRef)
         external
         whenNotPaused
@@ -620,6 +622,24 @@ contract BondInterestRegistry is AccessControl, Pausable {
         k.x = x;
         k.y = y;
         emit HolderKeyRegistered(bondId, assignmentId, x, y, docHash, msg.sender);
+    }
+
+    /// The holder records the UCC-3 they filed for a record: their own (signerId = the record), or
+    /// an assign-out they made (signerId = its parent). `filingRef` is the hash of the filing number
+    /// and the filed copy. Once only; a correction is the issuer's (setFilingRef).
+    function recordFiling(bytes32 bondId, bytes32 assignmentId, bytes32 signerId, bytes32 filingRef, HolderAuth calldata auth)
+        external
+        whenNotPaused
+        onlyRelayerOn(bondId)
+        nonZero(filingRef)
+    {
+        Assignment storage a = _liveRecord(bondId, assignmentId);
+        if (signerId != assignmentId && signerId != a.parentId) revert NoHolderKey(signerId);
+        if (a.filingRef != bytes32(0)) revert FilingAlreadyRecorded(assignmentId);
+        _byHolder(signerId, this.recordFiling.selector, keccak256(abi.encode(bondId, assignmentId, signerId, filingRef)), auth);
+        a.filingRef = filingRef;
+        a.updatedAt = uint64(block.timestamp);
+        emit FilingRecorded(bondId, assignmentId, filingRef, msg.sender);
     }
 
     /// The holder moves to a new device: signed by the current key.

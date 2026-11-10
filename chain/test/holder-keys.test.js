@@ -192,3 +192,30 @@ describe("holder device keys", () => {
     });
   });
 });
+
+describe("holder-recorded UCC-3", () => {
+  it("the holder records their own filing, once, with their device; a stranger's key or the relayer alone can't", async () => {
+    const { reg, I, RL } = await setup();
+    await I.issueAssignment(BOND, A1, 1000, h("d"));
+    const k = await enroll(reg, RL, A1);
+    const args = [BOND, A1, A1, h("UCC3-2026-0417 + filed copy")];
+    await expect(RL.recordFiling(...args, await sign(reg, newKey(), A1, "recordFiling", args))).to.be.revertedWithCustomError(reg, "BadHolderSignature");
+    await expect(RL.recordFiling(...args, await sign(reg, k, A1, "recordFiling", args))).to.emit(reg, "FilingRecorded");
+    expect((await reg.assignments(A1)).filingRef).to.equal(h("UCC3-2026-0417 + filed copy"));
+    const again = [BOND, A1, A1, h("another")];
+    await expect(RL.recordFiling(...again, await sign(reg, k, A1, "recordFiling", again))).to.be.revertedWithCustomError(reg, "FilingAlreadyRecorded");
+  });
+
+  it("the assignor records it for an assign-out they made; nobody else's key counts", async () => {
+    const { reg, I, RL } = await setup();
+    await I.issueAssignment(BOND, A1, 1000, h("d"));
+    const pk = await enroll(reg, RL, A1);
+    await RL.accept(BOND, A1, h("a"), await sign(reg, pk, A1, "accept", [BOND, A1, h("a")]));
+    const out = [BOND, A1, C1, 40n, h("o")];
+    await RL.assignOut(...out, await sign(reg, pk, A1, "assignOut", out));
+    const bad = [BOND, C1, A2, h("f")];
+    await expect(RL.recordFiling(...bad, await sign(reg, newKey(), A2, "recordFiling", bad))).to.be.revertedWithCustomError(reg, "NoHolderKey");
+    const args = [BOND, C1, A1, h("ucc3 for C1")];
+    await expect(RL.recordFiling(...args, await sign(reg, pk, A1, "recordFiling", args))).to.emit(reg, "FilingRecorded");
+  });
+});
