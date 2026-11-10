@@ -120,6 +120,10 @@ await page.getByRole("button", { name: "Create the assignment" }).click();
 let child = null;
 for (let i = 0; i < 30 && !child; i++) { await page.waitForTimeout(500); child = (await call(H, "GET", "/api/state")).reg.find((a) => a.parent === A1 && a.origin === "AssignOut"); }
 ok(child?.units === 1040 && child.status === "AwaitingCredential", "the $10.40 assign-out is saved (" + (child?.id || "none") + ")");
+const codeBox = page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+await codeBox.waitFor({ timeout: 20000 }).catch(() => {});
+ok(await codeBox.count() === 1, "the assignor's screen shows the new assignee's access code, once");
+await shot("6-assignee-code");
 const signs2 = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signs2 > signCount, "the device signed the assign-out (" + signs2 + " signatures)");
 

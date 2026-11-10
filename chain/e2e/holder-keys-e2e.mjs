@@ -161,19 +161,24 @@ const child = { id: "PENS-0001-BD-A00002", bond: "PENS-0001-BD", parent: a1.id, 
   contact: "M", position: "", address: "addr", units: 1040, issuedUnits: 1040, status: "AwaitingCredential", created: "Nov 9, 2026",
   accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
 await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, child], events: [ev(a1.bond, child.id, "AssignedOut")] });
-ok((await rec(child.id)).accessCode === "sealed", "the assign-out made the assignee's access code, sealed for the issuer");
-ok(!JSON.stringify(await call(H, "GET", "/api/state")).includes("accessCode"), "the holder side never sees it");
+ok((await rec(child.id)).accessCode === "sealed", "the assign-out made the assignee's access code");
+ok(!JSON.stringify(await call(H, "GET", "/api/state")).includes("accessCode"), "the public record list never carries it");
+// The assignor sees it once, on the screen after the assign-out, to send with the instrument.
+const CODE2 = (await call(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: child.id })).code;
+ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(CODE2), "the assignor gets the new assignee's code: " + CODE2.slice(0, 4) + "-…");
+e = await tryCall(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: child.id });
+ok(e?.status === 409, "only once (" + e?.status + ")");
+ok((await rec(child.id)).accessCode === "assignor", "the issuer console shows the assignor has it");
 let c2 = await hrec(child.id);
-e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
-ok(e?.status === 409, "the issuer can't open it before the assignee has come forward (" + e?.status + ")");
 await call(H, "POST", "/api/commit", { reg: [{ ...c2, status: "CredentialRequested", requestedParty: "Company D", requestedBy: "M", requestedOn: "now" }], events: [] });
 ok((await hrec(child.id)).status === "CredentialRequested", "a new assignee asks for access without a key");
+{
+  const r = await call(H, "POST", "/api/holder/signin", { id: child.id, passkey: CODE2 });
+  ok(!r.ok && r.code === "inactive", "the code doesn't open the record before the issuer activates it (" + r.code + ")");
+}
 await icommit({ reg: [{ ...(await rec(child.id)), filingNumber: "UCC3-555", filedBy: "Company A", filingRef: "pending" }] });
-const CODE2 = (await call(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id })).code;
-ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(CODE2), "the issuer opens the sealed code at activation: " + CODE2.slice(0, 4) + "-…");
 e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
-ok(e?.status === 409, "and only once (" + e?.status + ")");
-ok((await rec(child.id)).accessCode === "shown", "the register shows it was opened");
+ok(e?.status === 409, "the issuer doesn't get a second copy (" + e?.status + ")");
 await icommit({ reg: [{ ...(await rec(child.id)), status: "Issued", passkeyMail: "9407 2", deliveryRef: "pending" }] });
 
 // 5. The new holder signs in on their own phone and rejects it, with a reason: the $10.40 goes back.
@@ -251,7 +256,11 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
     contact: "N", position: "", address: "addr", units: 2500, issuedUnits: 2500, status: "AwaitingCredential", created: "Nov 10, 2026",
     accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
   await hsave(s3b.token, fresh, { reg: [{ ...a3, units: a3.units - 2500 }, g], events: [ev(a3.bond, g.id, "AssignedOut")] });
-  ok((await rec(g.id)).accessCode === "sealed", "the next assignee's access code is made and sealed the same way");
+  ok((await rec(g.id)).accessCode === "sealed", "the next assignee's access code is made the same way");
+  const other = await tryCall(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: g.id });
+  ok(other?.status === 403, "another holder can't see it (" + other?.status + ")");
+  const gc = (await call(H, "POST", "/api/holder/assignee-code", { token: s3b.token, id: g.id })).code;
+  ok(gc && gc !== CODE2, "its assignor gets it, a different code");
 }
 
 // 9. Everything confirmed, and the chain matches the register.

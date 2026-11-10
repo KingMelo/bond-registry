@@ -339,8 +339,9 @@ async function readState(bondFilter, params) {
   ]);
   const cred = new Map(creds.rows.map((r) => [r.id, r]));
   const sealedRows = APP === "holder" ? [] : (await pool.query(
-    `select s.id, s.revealed_at from sealed_codes s join assignments a on a.id = s.id join bonds b on b.id = a.bond where ${bondFilter}`, params)).rows;
-  const sealed = new Map(sealedRows.map((r) => [r.id, r.revealed_at ? "shown" : "sealed"]));
+    `select s.id, s.revealed_at, s.revealed_by from sealed_codes s join assignments a on a.id = s.id join bonds b on b.id = a.bond where ${bondFilter}`, params)).rows;
+  // sealed: nobody has seen it yet · assignor: given to the assignor to deliver · shown: opened by the issuer
+  const sealed = new Map(sealedRows.map((r) => [r.id, !r.revealed_at ? "sealed" : r.revealed_by === "assignor" ? "assignor" : "shown"]));
   const onChain = await chain.statusFor(pool, bonds.rows.map((r) => r.data.id), regs.rows.map((r) => r.data.id));
   return {
     bonds: bonds.rows.map((r) => {
@@ -723,6 +724,25 @@ if (APP === "holder") {
     const d = (await pool.query("select data from assignments where id = $1", [session.id])).rows[0]?.data;
     if (!d) throw new Reject(404, "No such record.");
     res.json({ id: d.id, instrumentMail: d.instrumentMail || null, passkeyMail: d.passkeyMail || null });
+  }));
+
+  // The assignor sees their new assignee's access code once, right after the assign-out is
+  // saved, to seal it in with the signed instrument they deliver.
+  app.post("/api/holder/assignee-code", wrap(async (req, res) => {
+    const session = needSession(req.body?.token);
+    const id = String(req.body?.id || "");
+    const out = await tx(async (c) => {
+      const d = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+      if (!d) throw new Reject(404, "Not saved yet.");
+      if (d.origin !== "AssignOut" || d.parent !== session.id) throw new Reject(403, "That isn't one of your assign-outs.");
+      const row = (await c.query("select * from sealed_codes where id = $1 for update", [id])).rows[0];
+      if (!row) throw new Reject(404, "Not saved yet.");
+      if (row.revealed_at) throw new Reject(409, "This access code was already shown. If it's lost, the issuer issues a new one.");
+      const code = unseal(row.sealed);
+      await c.query("update sealed_codes set sealed = '', revealed_at = now(), revealed_by = 'assignor' where id = $1", [id]);
+      return { code };
+    });
+    res.json(out);
   }));
 
   // ---- registering the holder's device key: create a passkey, then sign its registration with it.

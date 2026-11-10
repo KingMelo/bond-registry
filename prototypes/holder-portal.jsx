@@ -461,6 +461,23 @@ export default function HolderPortal() {
   const [aDoc, setADoc] = useState(null); // the signed assignment to the new party
   const [aErr, setAErr] = useState("");
   const [childIssued, setChildIssued] = useState(null);
+  // The new assignee's access code, shown once on this screen once the assign-out is saved.
+  const [childCode, setChildCode] = useState(null); // { code } | { error } | null while waiting
+  useEffect(() => {
+    if (view !== "childIssued" || !childIssued || childCode) return;
+    let stop = false, tries = 0;
+    const tick = async () => {
+      if (stop) return;
+      try { const r = await api.assigneeCode(session.current?.token, childIssued.id); if (!stop) setChildCode({ code: r.code }); }
+      catch (e) {
+        // Not saved yet while the device is still signing: try again shortly.
+        if (e.status === 404 && tries++ < 60) return setTimeout(tick, 1000);
+        if (!stop) setChildCode({ error: e.message });
+      }
+    };
+    tick();
+    return () => { stop = true; };
+  }, [view, childIssued, childCode]);
 
   // request access
   const [rId, setRId] = useState("");
@@ -610,7 +627,7 @@ export default function HolderPortal() {
       child,
     ]);
     emit(child.bond, child.id, "AssignedOut", "RELAYER", child.docHash);
-    setChildIssued(child);
+    setChildIssued(child); setChildCode(null);
     setAUnits(""); setAParty(""); setAContact(""); setAPosition(""); setAAddress(""); setADoc(null);
     setView("childIssued");
   }
@@ -1051,8 +1068,9 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Assignment created</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              Recorded on-chain and locked awaiting a credential. These are the values the
-              register generated — carry them onto whatever instrument you draft.
+              Signed with your device and being recorded on-chain; it waits for the issuer to
+              activate the assignee. These are the values the register generated; carry them onto
+              the instrument you sign.
             </p>
 
             <Rows data={[
@@ -1069,20 +1087,34 @@ export default function HolderPortal() {
               ["Document hash", shortHash(childIssued.docHash)],
             ]} />
 
-            <div className="mt-4">
-              <Note>
-                <strong style={{ fontWeight: 600 }}>Their access code was made just now, and sealed.</strong> Only
-                the issuer can open it, once they've verified {childIssued.party}; they mail it to them. You
-                never see it, which is what keeps the portion you transferred out of your hands. Deliver your
-                signed instrument to {childIssued.party}; they request access with the assignment ID.
-              </Note>
+            <div className="mt-5">
+              <Label>{childIssued.party}'s access code</Label>
+              {!childCode ? (
+                <div style={{ fontSize: 14, color: T.inkSoft, padding: "14px 0" }}>Saving the assignment and confirming your device's signature…</div>
+              ) : childCode.error ? (
+                <Note kind="warn">{childCode.error}</Note>
+              ) : (
+                <>
+                  <div className="px-3 py-4 mb-3 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
+                    fontSize: 24, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>
+                    {childCode.code}
+                  </div>
+                  <Note kind="warn">
+                    <strong style={{ fontWeight: 600 }}>Shown once.</strong> Write it on the access code page, seal it in its
+                    own envelope, and send it with your signed instrument to {childIssued.party} in one certified
+                    mailing. Keep the tracking number: the issuer records it when they activate the assignee.
+                    {" "}{childIssued.party} can't use the code until the issuer has verified them and recorded the
+                    UCC-3; then they sign in with it and set up their own device. Don't keep a copy.
+                  </Note>
+                </>
+              )}
             </div>
 
             <div className="mt-4">
               <Note kind="caution">
                 You can cancel this yourself and take the {usd(childIssued.units)} back only
                 until {childIssued.party} requests access. After that only the issuer can cancel
-                it, and once their access code is mailed it can't be cancelled at all.
+                it, and once the issuer activates them it can't be cancelled at all.
               </Note>
             </div>
 

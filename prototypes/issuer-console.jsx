@@ -357,15 +357,20 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!mail.trim() || !a.filingRef) return;
     // The code was made when the assignor's device signed the assign-out, sealed for the issuer.
     // Older assign-outs have none, so one is made now.
-    let passkey;
-    try { passkey = a.accessCode === "sealed" ? (await api.revealAccessCode(issuerId, a.id)).code : await newPasskey(a.id); }
-    catch (e) { return flash(e.message); }
+    // The assignor normally received the code at assign-out and delivered it with the instrument;
+    // then activation only records that mailing. If they never opened it, the issuer opens it now;
+    // assign-outs from before codes were made at assign-out get one made here.
+    let passkey = null;
+    try {
+      if (a.accessCode === "sealed") passkey = (await api.revealAccessCode(issuerId, a.id)).code;
+      else if (a.accessCode !== "assignor") passkey = await newPasskey(a.id);
+    } catch (e) { return flash(e.message); }
     const deliveryRef = "pending"; // the server sets the real hash from the mailing numbers
     patch(a.id, { status: "Issued", passkeyMail: mail.trim(), deliveryRef });
     emit(a.bond, a.id, "CredentialIssued", "ISSUER", deliveryRef);
     emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", deliveryRef);
     done("Credential issued and mailing recorded." + signDone);
-    showPasskey(a.id, passkey, "Credential issued to " + a.party + ".");
+    if (passkey) showPasskey(a.id, passkey, "Credential issued to " + a.party + ".");
   }
 
   function rejectCredentialRequest(a) {
@@ -1235,8 +1240,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   </div>
                 )}
                 <div className="mt-4">
-                  <Field label="Certified mail number for the passkey" value={mail} onChange={setMail}
-                    placeholder="9407 1000 0000 0000 0000 00" mono />
+                  <Field label={a.accessCode === "assignor" ? "Tracking number of the assignor's mailing (instrument and access code)" : "Certified mail number for the access code"}
+                    value={mail} onChange={setMail} placeholder="9407 1000 0000 0000 0000 00" mono
+                    hint={a.accessCode === "assignor" ? a.assignor + " received this assignee's access code at assign-out and mailed it with the instrument. Ask them for the tracking number." : undefined} />
                   <Button disabled={!mail.trim() || !a.filingRef} onClick={() => issueCredential(a)}>
                     Issue credential{signNote}
                   </Button>
