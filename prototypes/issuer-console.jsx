@@ -407,6 +407,16 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   }
 
   // The credential is off-chain; clearing a lockout touches the credential store only.
+  // A holder who lost their device: after verifying them, clear the key so they can set up a new
+  // one. Signed through the issuer's Safe like any other issuer action.
+  const [keyNote, setKeyNote] = useState("");
+  async function resetDeviceKey(a) {
+    if (!keyNote.trim()) return;
+    try { await api.clearDeviceKey(issuerId, a.id, keyNote.trim()); await reload(); } catch (e) { return flash(e.message); }
+    setKeyNote("");
+    done("Device key reset. The holder sets up a new device at their next sign-in" + (issuerInfo?.safe ? "; approve the reset in Approvals." : "."));
+  }
+
   async function unlockCredential(a) {
     try { await api.clearLockout(issuerId, a.id); await reload(); } catch (e) { return flash(e.message); }
     done("Credential lockout cleared.");
@@ -1156,6 +1166,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               ["Document hash", (a.docFile ? a.docFile + " · " : "") + shortHash(a.docHash)],
               ["UCC-3 filing", a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "") : a.filingRef ? shortHash(a.filingRef) : "Not yet filed"],
               ["Delivery ref", a.deliveryRef ? shortHash(a.deliveryRef) : "—"],
+              ["Holder's device key", a.deviceKey?.fingerprint ? a.deviceKey.fingerprint + (a.deviceKey.since ? " · since " + a.deviceKey.since : "")
+                : a.deviceKey?.cleared ? "Reset " + a.deviceKey.cleared + " · waiting for the holder's new device" : "Not set up yet"],
               chainInfo && ["On-chain", <ChainLink s={chainStatus(a, chainInfo)} />],
               ...(a.instrumentMail && a.passkeyMail && a.instrumentMail !== a.passkeyMail
                 ? [["Instrument mail", a.instrumentMail], ["Passkey mail", a.passkeyMail]]
@@ -1174,6 +1186,24 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <div className="mt-3">
                   <Button variant="quiet" danger onClick={() => unlockCredential(a)}>
                     Clear lockout — identity verified
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {a.deviceKey?.fingerprint && !TERMINAL.includes(a.status) && (
+              <div className="mt-5">
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Holder lost their device?</div>
+                <Note kind="caution">
+                  Only after verifying the holder's identity. Resetting clears their device key on-chain;
+                  they set up a new device at their next sign-in, usually with a new access code you mail
+                  them. Nothing their old device signed can be used again.
+                </Note>
+                <div className="mt-3">
+                  <Field label="How you verified the holder" value={keyNote} onChange={setKeyNote}
+                    placeholder="e.g. photo ID and callback to the number on file" />
+                  <Button variant="quiet" danger disabled={!keyNote.trim()} onClick={() => resetDeviceKey(a)}>
+                    Reset the holder's device key{signNote}
                   </Button>
                 </div>
               </div>

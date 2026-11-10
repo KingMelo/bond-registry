@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -36,7 +37,7 @@ const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
 const LOCK_KINDS = [
   ["pledge", "Pledged to a lender"],
   ["sale", "Pending sale"],
-  ["compromise", "Passkey may be compromised"],
+  ["compromise", "Access code or device may be compromised"],
   ["other", "Other"],
 ];
 
@@ -110,7 +111,7 @@ function Button({ children, onClick, variant = "solid", disabled, danger }) {
 
 function Field({ label, value, onChange, placeholder, mono, hint, type }) {
   return (
-    <div className="mb-4">
+    <label className="mb-4" style={{ display: "block" }}>
       <Label>{label}</Label>
       <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} type={type || "text"}
         style={{ width: "100%", fontFamily: sans, fontSize: 16,
@@ -118,19 +119,19 @@ function Field({ label, value, onChange, placeholder, mono, hint, type }) {
           color: T.ink, background: T.white, border: "1px solid " + T.rule, borderRadius: 2,
           padding: "10px 12px", outline: "none" }} />
       {hint && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
-    </div>
+    </label>
   );
 }
 
 function Area({ label, value, onChange, placeholder, rows = 4 }) {
   return (
-    <div className="mb-4">
+    <label className="mb-4" style={{ display: "block" }}>
       <Label>{label}</Label>
       <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows}
         style={{ width: "100%", fontFamily: sans, fontSize: 16, color: T.ink, background: T.white,
           border: "1px solid " + T.rule, borderRadius: 2, padding: "10px 12px", outline: "none",
           resize: "vertical", lineHeight: 1.5 }} />
-    </div>
+    </label>
   );
 }
 
@@ -378,8 +379,25 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
 /* ---------------- app ---------------- */
 
 export default function HolderPortal() {
+  // The signed-in record's session and device key. Every save is signed on the device first: the
+  // server says what to sign (what the contract will check), the device signs, the save carries it.
+  const session = useRef(null);
+  const [device, setDevice] = useState(null); // { fingerprint } once this record has a device key
+  const [signing, setSigning] = useState(false);
+  const beforeCommit = async (body) => {
+    const s = session.current;
+    if (!s) return null; // only an access request goes without a session
+    const { sign } = await api.holderPrepare({ ...body, token: s.token });
+    if (!sign.length) return { token: s.token };
+    setSigning(true);
+    try {
+      const assertions = [];
+      for (const x of sign) assertions.push(await signWithDevice({ challenge: x.challenge, credId: x.credId, rpId: s.rpId }));
+      return { token: s.token, assertions };
+    } finally { setSigning(false); }
+  };
   const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, chainInfo, responseDays } =
-    useRegistry({ onNotice: (m) => flash(m) });
+    useRegistry({ onNotice: (m) => flash(m), beforeCommit });
   // Every approved issuer shares this registry; each record names its issuer.
   const issuerOf = (rec) => {
     const b = bonds.find((x) => x.id === rec?.bond);
@@ -471,9 +489,9 @@ export default function HolderPortal() {
         await reload().catch(() => {});
         setQErr("This credential is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
       } else if (res.code === "nokey") {
-        setQErr("No passkey has been issued for this assignment yet. If you are the named assignee, use Request access.");
+        setQErr("No access code has been issued for this assignment yet. If you are the named assignee, use Request access.");
       } else if (res.code === "mismatch") {
-        setQErr("That passkey doesn't match. " + res.left + (res.left === 1 ? " attempt" : " attempts") + " remaining before the credential locks.");
+        setQErr("That access code doesn't match. " + res.left + (res.left === 1 ? " attempt" : " attempts") + " remaining before the credential locks.");
       } else {
         setQErr(res.error || "Sign-in failed.");
       }
@@ -485,8 +503,29 @@ export default function HolderPortal() {
       return;
     }
     setQErr(""); setQKey("");
+    session.current = { id: fresh.id, token: res.token, rpId: res.rpId, enroll: res.enroll };
+    setDevice(res.device);
     setOpenId(fresh.id);
-    setView(fresh.status === "Issued" ? "claim" : "position");
+    setView(res.device ? (fresh.status === "Issued" ? "claim" : "position") : "device");
+  }
+
+  // First sign-in on this record: the device makes a key, then signs its registration with it.
+  const [devErr, setDevErr] = useState("");
+  const [devBusy, setDevBusy] = useState(false);
+  async function setUpDevice() {
+    const s = session.current;
+    if (!s?.enroll) return;
+    setDevErr(""); setDevBusy(true);
+    try {
+      const made = await createDeviceKey(s.enroll);
+      const { challenge } = await api.holderKeyPrepare({ token: s.token, ...made });
+      const assertion = await signWithDevice({ challenge, credId: made.credId, rpId: s.rpId });
+      const r = await api.holderKey({ token: s.token, ...made, assertion });
+      setDevice({ fingerprint: r.fingerprint, credId: r.credId });
+      await reload().catch(() => {});
+      flash("Device key set up. Its registration is being recorded on-chain.");
+      setView(open?.status === "Issued" ? "claim" : "position");
+    } catch (e) { setDevErr(e.message); } finally { setDevBusy(false); }
   }
 
   // The holder confirms the assignment now instead of waiting out the response period.
@@ -597,7 +636,7 @@ export default function HolderPortal() {
     setLockKind("pledge"); setLockRotate(false);
     setView("position");
     flash(lockRotate
-      ? "Locked, and a new passkey requested. Only the issuer can unlock it."
+      ? "Locked, and a new access code requested. Only the issuer can unlock it."
       : "Locked. Only the issuer can unlock it.");
   }
 
@@ -611,7 +650,7 @@ export default function HolderPortal() {
 
   function requestRotation() {
     setReg((r) => r.map((a) => (a.id === open.id ? { ...a, rotationRequested: true } : a)));
-    flash("New passkey requested. The issuer will verify your identity and mail it.");
+    flash("New access code requested. The issuer will verify your identity and mail it.");
   }
 
   function requestRedemption() {
@@ -681,12 +720,13 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Open your assignment</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-              Enter the assignment ID from your instrument and the passkey from the separate
-              certified mailing.
+              Enter the assignment ID from your instrument and the access code from the sealed
+              envelope in the same mailing. The first time, your phone or computer then sets up a
+              device key: every action you take here is signed with it.
             </p>
 
             <Field label="Assignment ID" value={qId} onChange={setQId} placeholder="KPII-0001-BD-A00001" mono />
-            <Field label="Passkey" value={qKey} onChange={setQKey} placeholder="XXXX-XXXX-XXXX-XXXX" mono />
+            <Field label="Access code" value={qKey} onChange={setQKey} placeholder="XXXX-XXXX-XXXX-XXXX" mono />
 
             {qErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{qErr}</p>}
 
@@ -694,13 +734,37 @@ export default function HolderPortal() {
 
             <div className="mt-6">
               <Note>
-                Your passkey comes in a sealed envelope inside the certified mailing with your
+                Your access code comes in a sealed envelope inside the certified mailing with your
                 instrument. Nothing from the registry will ever email you one or ask for it.
                 <div style={{ marginTop: 8, color: T.ink, fontVariantNumeric: "tabular-nums" }}>
                   Demo · accepted: …A00001 / 7KQM-R4XW-9TPH-C2NV
                   <br />Demo · awaiting claim: …A00004 / N4VP-K9TC-X3HW-R7MJ
                 </div>
               </Note>
+            </div>
+          </div>
+        )}
+
+        {/* ============ device key setup ============ */}
+        {inHolder && view === "device" && open && (
+          <div>
+            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Set up this device</h1>
+            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 18px", maxWidth: "62ch" }}>
+              Your phone or computer makes a key that never leaves it, unlocked with your face,
+              fingerprint or device PIN. Every action you take on {open.id} is signed with it, and the
+              chain refuses anything that isn't. Nobody else can act for you: not the issuer, not the
+              registry.
+            </p>
+            <Rows data={[
+              ["Assignment", open.id],
+              ["You'll be asked", "Twice: once to make the key, once to sign its registration"],
+              ["Use", "The device you'll use to manage this assignment. Passkeys saved to your Apple, Google or Microsoft account work on your other devices too."],
+            ]} />
+            {!passkeysAvailable() && <div className="mt-4"><Note kind="warn">This browser can't use passkeys. Open this page on an up-to-date phone or computer.</Note></div>}
+            {devErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, margin: "14px 0 0" }}>{devErr}</p>}
+            <div className="mt-5 space-y-3">
+              <Button disabled={devBusy || !passkeysAvailable()} onClick={setUpDevice}>{devBusy ? "Follow your device's prompts…" : "Set up device key"}</Button>
+              <Button variant="quiet" onClick={() => { session.current = null; setView(null); setOpenId(null); }}>Not now</Button>
             </div>
           </div>
         )}
@@ -794,6 +858,11 @@ export default function HolderPortal() {
               {pct(open.units, open.bond)} of {open.bond}
               {open.issuedUnits !== open.units ? " · issued at " + usd(open.issuedUnits) : ""}
             </div>
+            {device && (
+              <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>
+                Signed with your device key <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums" }}>{device.fingerprint}</span>
+              </div>
+            )}
 
             {open.status === "Locked" && (
               <div className="mt-4">
@@ -807,7 +876,7 @@ export default function HolderPortal() {
                     {open.unlockRequested ? "Unlock requested — with the issuer" : "Request unlock"}
                   </Button>
                   <Button variant="quiet" disabled={open.rotationRequested} onClick={requestRotation}>
-                    {open.rotationRequested ? "New passkey requested — with the issuer" : "Request a new passkey"}
+                    {open.rotationRequested ? "New access code requested — with the issuer" : "Request a new access code"}
                   </Button>
                 </div>
               </div>
@@ -901,7 +970,7 @@ export default function HolderPortal() {
               <div className="px-3 py-4" style={{ border: "1px solid " + T.rule, borderRadius: 2,
                 fontSize: 14, color: T.inkSoft, lineHeight: 1.6 }}>
                 None yet. A new assignment stays locked and awaiting a credential until the
-                issuer verifies the assignee and mails their passkey.
+                issuer verifies the assignee and mails their access code.
               </div>
             )}
             {liveChildren.map((c) => (
@@ -934,7 +1003,7 @@ export default function HolderPortal() {
                 )}
                 {c.status === "Issued" && (
                   <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8, lineHeight: 1.5 }}>
-                    The passkey has been mailed. This transfer can no longer be cancelled.
+                    The access code has been mailed. This transfer can no longer be cancelled.
                   </div>
                 )}
               </div>
@@ -955,7 +1024,7 @@ export default function HolderPortal() {
             </p>
 
             <Note kind="caution">
-              You will never see the assignee's passkey. The issuer verifies them and mails it
+              You will never see the assignee's access code. The issuer verifies them and mails it
               directly, so the portion you transfer leaves your control entirely.
             </Note>
 
@@ -1012,9 +1081,9 @@ export default function HolderPortal() {
 
             <div className="mt-4">
               <Note>
-                <strong style={{ fontWeight: 600 }}>No passkey appears here, by design.</strong> Deliver
+                <strong style={{ fontWeight: 600 }}>No access code appears here, by design.</strong> Deliver
                 your signed instrument to {childIssued.party}. They request access with the
-                assignment ID; the issuer verifies them and mails their passkey.
+                assignment ID; the issuer verifies them and mails their access code.
               </Note>
             </div>
 
@@ -1022,7 +1091,7 @@ export default function HolderPortal() {
               <Note kind="caution">
                 You can cancel this yourself and take the {usd(childIssued.units)} back only
                 until {childIssued.party} requests access. After that only the issuer can cancel
-                it, and once their passkey is mailed it can't be cancelled at all.
+                it, and once their access code is mailed it can't be cancelled at all.
               </Note>
             </div>
 
@@ -1053,7 +1122,7 @@ export default function HolderPortal() {
             </div>
             <label className="flex items-center gap-3 mb-4" style={{ fontSize: 14, color: T.ink, cursor: "pointer" }}>
               <input type="checkbox" checked={lockRotate} onChange={(e) => setLockRotate(e.target.checked)} />
-              Also request a new passkey
+              Also request a new access code
             </label>
 
             <Note kind="caution">
@@ -1061,7 +1130,7 @@ export default function HolderPortal() {
               {lockKind === "pledge"
                 ? "For a pledge, they will need your lender's signed release first."
                 : "They will verify your identity first."}{" "}
-              If the passkey may be compromised, request a new one — it is mailed to you and the
+              If the access code may be compromised, request a new one — it is mailed to you and the
               old one stops working.
             </Note>
             <div className="mt-5 space-y-3">
@@ -1102,7 +1171,7 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Request access</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-              If an assignment has been made to you but no passkey has arrived, request one
+              If an assignment has been made to you but no access code has arrived, request one
               here. The issuer verifies that you are the named assignee, then mails it by
               certified post.
             </p>
@@ -1139,7 +1208,7 @@ export default function HolderPortal() {
               {[
                 ["Request recorded", true],
                 ["Issuer verifies you are the named assignee", false],
-                ["Passkey generated and mailed by certified post", false],
+                ["Access code generated and mailed by certified post", false],
                 ["Status moves to Issued", false],
                 ["It takes effect, unless you reject it within " + responseDays + " days", false],
               ].map(([step, done], i) => (
@@ -1161,6 +1230,14 @@ export default function HolderPortal() {
         {tab === "verify" && <VerifyChain info={chainInfo} reg={reg} issuerOf={issuerOf} />}
       </div>
 
+      {signing && (
+        <div className="fixed left-0 right-0 flex justify-center px-4" style={{ top: 18, zIndex: 61 }}>
+          <div className="px-4 py-3" style={{ background: T.white, color: T.ink, border: "1px solid " + T.ink, borderRadius: 2,
+            fontSize: 14, maxWidth: 520, fontFamily: sans, lineHeight: 1.5 }}>
+            Confirm on your device to sign this change. It isn't saved until you do.
+          </div>
+        </div>
+      )}
       {toast && (
         <div className="fixed left-0 right-0 flex justify-center px-4" style={{ bottom: 18, zIndex: 60 }}>
           <div className="px-4 py-3" style={{ background: T.ink, color: T.paper, borderRadius: 2,

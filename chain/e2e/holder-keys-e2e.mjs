@@ -35,6 +35,7 @@ console.log("registry v4", CONTRACT);
 
 execSync(`psql -h 127.0.0.1 -p 54329 -U postgres -q -c "drop database if exists hke" -c "create database hke"`, { stdio: "ignore" });
 const procs = [];
+process.on("exit", () => procs.forEach((c) => c.kill())); // stop the servers even when a step throws
 const start = (app, port, extra = {}) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
     ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CHAIN_CONTRACT: CONTRACT, CHAIN_ID: "31337", CHAIN_RPC_URL: RPC,

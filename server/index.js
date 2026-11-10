@@ -664,7 +664,7 @@ if (APP === "holder") {
         if (cred.attempts > 0) await c.query("update credentials set attempts = 0 where id = $1", [id]);
         const data = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
         const key = activeKey(data);
-        return { ok: true, token: signToken(id), device: key ? { credId: key.credId, fingerprint: holderKeys.fingerprint(key.x) } : null,
+        return { ok: true, token: signToken(id), rpId: site(req).rpId, device: key ? { credId: key.credId, fingerprint: holderKeys.fingerprint(key.x) } : null,
           // A new passkey for this record: the browser makes it with these.
           enroll: key ? null : { userId: crypto.createHash("sha256").update("holder:" + id).digest("base64url"), name: id,
             displayName: data?.party || id, challenge: crypto.randomBytes(32).toString("base64url"), rpId: site(req).rpId } };
