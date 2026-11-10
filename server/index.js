@@ -250,19 +250,22 @@ async function setPasskey(c, id, key) {
    holder-initiated transitions in the spec. Everything else is the issuer's. */
 
 const RELAYER_MOVES = {
-  Issued: ["Accepted", "Rejected"], // acknowledged, or refused with a reason
-  AwaitingCredential: ["CredentialRequested", "Cancelled"],
+  // Acknowledged, or refused with a reason; an assign-out can also be cancelled by its assignor
+  // until the assignee claims it.
+  Issued: ["Accepted", "Rejected", "Cancelled"],
   // Redemption isn't requested through the registry: the fiduciary paperwork tells holders where
   // to get paid, and the issuer records the outcome.
   Accepted: ["Locked", "Superseded"],
   Locked: ["Superseded"],
 };
 
+// A rejection explains itself: the issuer and the assignor read it.
+const REJECTION_MIN = 255;
+
 // What a holder may change on their own record: its status (checked by relayerAllows) and the
 // notes that go with each move. Everything else on a record is the issuer's.
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
   "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested"];
-const REQUEST_FIELDS = ["requestedParty", "requestedBy", "requestedContact", "requestedOn", "requestHash"];
 const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -271,7 +274,7 @@ function changedFields(before, after) {
 }
 
 function relayerAllows(before, after) {
-  if (!before) return after.origin === "AssignOut" && after.status === "AwaitingCredential";
+  if (!before) return after.origin === "AssignOut" && after.status === "Issued";
   if (before.status === after.status) return true;
   return (RELAYER_MOVES[before.status] || []).includes(after.status);
 }
@@ -343,8 +346,8 @@ async function readState(bondFilter, params) {
   const cred = new Map(creds.rows.map((r) => [r.id, r]));
   const sealedRows = APP === "holder" ? [] : (await pool.query(
     `select s.id, s.revealed_at, s.revealed_by from sealed_codes s join assignments a on a.id = s.id join bonds b on b.id = a.bond where ${bondFilter}`, params)).rows;
-  // sealed: nobody has seen it yet · assignor: given to the assignor to deliver · shown: opened by the issuer
-  const sealed = new Map(sealedRows.map((r) => [r.id, !r.revealed_at ? "sealed" : r.revealed_by === "assignor" ? "assignor" : "shown"]));
+  // "unused": the assignee hasn't used their transfer code yet; it can be viewed until they do.
+  const sealed = new Map(sealedRows.map((r) => [r.id, "unused"]));
   const onChain = await chain.statusFor(pool, bonds.rows.map((r) => r.data.id), regs.rows.map((r) => r.data.id));
   return {
     bonds: bonds.rows.map((r) => {
@@ -592,10 +595,7 @@ if (APP === "holder") {
       // session; everything else needs the session of the record's holder, or of the assignor for
       // their own assign-outs. Amounts are checked against the save as a whole, below.
       const changed = before ? changedFields(before, a) : [];
-      const accessRequest = before?.status === "AwaitingCredential" && a.status === "CredentialRequested";
-      if (accessRequest) {
-        if (changed.some((k) => !["status", ...REQUEST_FIELDS].includes(k))) throw new Reject(403, "An access request can't change the record.");
-      } else {
+      {
         if (!session) throw new Reject(401, "Sign in with your assignment ID and access code first.");
         const me = (await c.query("select data->>'parent' as parent, data->>'origin' as origin from assignments where id = $1", [session.id])).rows[0];
         const role = a.id === session.id ? "holder"
@@ -606,13 +606,18 @@ if (APP === "holder") {
         if (before && changed.some((k) => !may.includes(k))) throw new Reject(403, "You can't change " + changed.filter((k) => !may.includes(k)).join(", ") + " on " + a.id + ".");
         // The assignor can only cancel an assign-out; the parent of a new holder only closes when emptied.
         if (role === "assignor" && before && a.status !== before.status && a.status !== "Cancelled") throw new Reject(403, "Only the new holder can do that.");
+        if (role === "assignor" && before && a.status === "Cancelled" && activeKey(before))
+          throw new Reject(409, a.party + " has already claimed " + a.id + "; only they can accept or reject it now.");
+        if (role === "holder" && before?.origin === "AssignOut" && a.status === "Cancelled") throw new Reject(403, "The assignee can reject it, not cancel it.");
         if (role === "parent" && a.status !== before.status && !(a.status === "Superseded" && Number(a.units) === 0)) throw new Reject(403, "You can't change " + a.id + ".");
         if (role === "holder" && a.status === "Accepted" && before?.status === "Issued") Object.assign(a, { effective: "holder" });
       }
       units.push({ a, before });
       needsDocument(before, a);
       if (before?.status === "Issued" && a.status === "Rejected") {
-        if (!String(a.rejectionReason || "").trim()) throw new Reject(400, "Give a reason for rejecting " + a.id + ".");
+        const why = String(a.rejectionReason || "").trim();
+        if (why.length < REJECTION_MIN)
+          throw new Reject(400, "Explain the rejection in at least " + REJECTION_MIN + " characters (this one has " + why.length + ").");
         // The amount goes back where it came from: the assignor's record for an assign-out (sent
         // with this save), otherwise the bond's unassigned balance, which only the server changes.
         if (before.origin !== "AssignOut") {
@@ -729,8 +734,8 @@ if (APP === "holder") {
     res.json({ id: d.id, instrumentMail: d.instrumentMail || null, passkeyMail: d.passkeyMail || null });
   }));
 
-  // The assignor sees their new assignee's access code once, right after the assign-out is
-  // saved, to seal it in with the signed instrument they deliver.
+  // The assignor's view of their new assignee's transfer code, to deliver with the signed
+  // instrument: available until the assignee uses it.
   app.post("/api/holder/assignee-code", wrap(async (req, res) => {
     const session = needSession(req.body?.token);
     const id = String(req.body?.id || "");
@@ -739,10 +744,9 @@ if (APP === "holder") {
       if (!d) throw new Reject(404, "Not saved yet.");
       if (d.origin !== "AssignOut" || d.parent !== session.id) throw new Reject(403, "That isn't one of your assign-outs.");
       const row = (await c.query("select * from sealed_codes where id = $1 for update", [id])).rows[0];
-      if (!row) throw new Reject(404, "Not saved yet.");
-      if (row.revealed_at) throw new Reject(409, "This access code was already shown. If it's lost, the issuer issues a new one.");
+      if (!row) throw new Reject(activeKey(d) ? 409 : 404, activeKey(d) ? d.party + " has used their transfer code; it no longer exists." : "Not saved yet.");
       const code = unseal(row.sealed);
-      await c.query("update sealed_codes set sealed = '', revealed_at = now(), revealed_by = 'assignor' where id = $1", [id]);
+      await c.query("update sealed_codes set revealed_at = coalesce(revealed_at, now()), revealed_by = coalesce(revealed_by, 'assignor') where id = $1", [id]);
       return { code };
     });
     res.json(out);
@@ -1143,18 +1147,16 @@ if (APP === "issuer") {
     res.json({ ok: true });
   }));
 
-  // Opens a new assignee's sealed access code, once, so the issuer can mail it at activation.
+  // A new assignee's transfer code, for the issuer to review: any number of times, until it's used.
   app.post("/api/issuer/access-code/reveal", wrap(async (req, res) => {
     await recordAccess(req);
     const { id } = req.body || {};
     const out = await tx(async (c) => {
       const row = (await c.query("select * from sealed_codes where id = $1 for update", [id])).rows[0];
-      if (!row) throw new Reject(404, "No sealed access code for " + id + ".");
-      if (row.revealed_at) throw new Reject(409, "This access code was already shown (" + row.revealed_at.toISOString().slice(0, 10) + "). If it's lost, issue a new one.");
-      const d = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
-      if (d?.status !== "CredentialRequested") throw new Reject(409, "Open the access code when you activate the assignee, after verifying them.");
+      if (!row) throw new Reject(404, "There's no unused transfer code for " + id + ": the assignee has already used it.");
       const code = unseal(row.sealed);
-      await c.query("update sealed_codes set sealed = '', revealed_at = now(), revealed_by = $2 where id = $1", [id, (await currentUser(req))?.email || "issuer"]);
+      await c.query("update sealed_codes set revealed_at = coalesce(revealed_at, now()), revealed_by = coalesce(revealed_by, $2) where id = $1",
+        [id, (await currentUser(req))?.email || "issuer"]);
       return { code };
     });
     res.json(out);

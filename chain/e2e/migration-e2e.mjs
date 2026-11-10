@@ -120,7 +120,7 @@ let a1 = await hrec(A1);
 await holderSave(call, H, s1.token, phone, { reg: [{ ...a1, status: "Accepted", accepted: "now" }], events: [ev(a1.bond, A1, "Acknowledged")] });
 a1 = await hrec(A1);
 await holderSave(call, H, s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, { id: C1, bond: "KJPII-0001-BD", parent: A1, origin: "AssignOut",
-  assignor: "Company A", party: "Company D", contact: "M", position: "", address: "addr", units: 1040, issuedUnits: 1040, status: "AwaitingCredential",
+  assignor: "Company A", party: "Company D", contact: "M", position: "", address: "addr", units: 1040, issuedUnits: 1040, status: "Issued",
   created: "Nov 10, 2026", accepted: null, docHash: H32(), filingRef: null, deliveryRef: null }], events: [ev(a1.bond, C1, "AssignedOut")] });
 ok(await approveAll(), "v4: the holder's device key, acknowledgement and $10.40 assign-out went through");
 const id32 = (s) => ethers.keccak256(ethers.toUtf8Bytes(s));
@@ -148,8 +148,10 @@ ok(!(await v5.migrating()), "v5 is open for business");
 
 // ---- v5 holds exactly what v4 did
 for (const r of [A1, C1]) {
-  const [x, y] = [await v4.assignments(id32(r)), await v5.assignments(id32(r))];
-  ok(JSON.stringify(x.toArray().map(String)) === JSON.stringify(y.toArray().map(String)), r + " copied exactly");
+  const [x, y] = [(await v4.assignments(id32(r))).toArray().map(String), (await v5.assignments(id32(r))).toArray().map(String)];
+  // v4's assign-out was waiting for the issuer (1); from v5 it's open to its assignee (3). The rest is identical.
+  if (r === C1) { ok(x[5] === "1" && y[5] === "3", C1 + " arrives open to its assignee"); x[5] = y[5]; }
+  ok(JSON.stringify(x) === JSON.stringify(y), r + " copied exactly");
 }
 const k5 = await v5.holderKeys(id32(A1));
 ok(k5.x === v4Key.x && k5.nonce === 3n, "the holder's device key and its counter came across");

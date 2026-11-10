@@ -124,16 +124,17 @@ await shot("5-assign-out");
 await page.getByRole("button", { name: "Create the assignment" }).click();
 let child = null;
 for (let i = 0; i < 30 && !child; i++) { await page.waitForTimeout(500); child = (await call(H, "GET", "/api/state")).reg.find((a) => a.parent === A1 && a.origin === "AssignOut"); }
-ok(child?.units === 1040 && child.status === "AwaitingCredential", "the $10.40 assign-out is saved (" + (child?.id || "none") + ")");
+ok(child?.units === 1040 && child.status === "Issued", "the $10.40 assign-out is saved, open to its assignee (" + (child?.id || "none") + ")");
 const codeBox = page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
 await codeBox.waitFor({ timeout: 20000 }).catch(() => {});
 ok(await codeBox.count() === 1, "the assignor's screen shows the new assignee's access code, once");
 await shot("6-assignee-code");
+const TRANSFER = (await codeBox.first().textContent()).trim();
 // Back on the record, the list offers it again; it was already shown, so it says so.
 await page.getByRole("button", { name: "Back to my record" }).click().catch(() => {});
 const again = page.getByRole("button", { name: /transfer code/ });
 if (await again.count()) { await again.first().click(); await page.waitForTimeout(800); }
-ok(await page.getByText(/already shown/).count() > 0, "the transfer code can't be shown a second time from the list");
+ok(await page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/).count() > 0, "the assignor can show the transfer code again from their record, until it's used");
 const signs2 = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signs2 > signCount, "the device signed the assign-out (" + signs2 + " signatures)");
 
@@ -165,6 +166,39 @@ if (await lockBtn.count()) { await lockBtn.click(); await p2.waitForTimeout(500)
 await p2.waitForTimeout(3000);
 const after = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1);
 ok(after.status === "Accepted", "without the device key, nothing changes (" + after.status + ")");
+
+// ---- the new assignee, on their own device: transfer code -> passkey -> their own code -> reject with a reason
+{
+  const ctx3 = await browser.newContext({ viewport: { width: 430, height: 900 }, deviceScaleFactor: 2 });
+  const p3 = await ctx3.newPage();
+  const cdp3 = await ctx3.newCDPSession(p3);
+  await cdp3.send("WebAuthn.enable");
+  await cdp3.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
+  await p3.goto(H + "/holder");
+  ok(!(await p3.getByRole("button", { name: "Request access" }).count()), "there's no Request access tab");
+  await p3.getByLabel("Assignment ID").fill(child.id);
+  await p3.getByLabel("Access code").fill(TRANSFER);
+  await p3.getByRole("button", { name: "Continue" }).click();
+  await p3.getByRole("heading", { name: "Set up this device" }).waitFor({ timeout: 15000 });
+  ok(true, "the assignee opens the assign-out with the transfer code and is asked for a passkey");
+  await p3.getByRole("button", { name: "Set up device key" }).click();
+  await p3.getByRole("heading", { name: "Your access code" }).waitFor({ timeout: 20000 });
+  await p3.getByRole("button", { name: "I've written it down" }).click();
+  await p3.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
+  await p3.getByRole("button", { name: "Reject this assignment" }).click();
+  const why = p3.getByLabel(/Reason for rejecting/);
+  await why.fill("Not the amount we agreed.");
+  ok(await p3.getByRole("button", { name: /^Reject: confirm with your passkey/ }).isDisabled(), "a short reason can't be submitted");
+  await why.fill("The amount on the instrument I received does not match what the register shows, and I did not agree to take this portion " +
+    "from the assignor. I have not signed anything about it and would like the issuer to review how this assignment was created. Please return it.");
+  await shot("7-assignee-reject");
+  await p3.getByRole("button", { name: /^Reject: confirm with your passkey/ }).click();
+  let rj = null;
+  for (let i = 0; i < 30 && !rj; i++) { await p3.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r.status === "Rejected") rj = r; }
+  ok(!!rj && rj.rejectionReason.length >= 255, "the assignee's rejection, signed with their passkey, is saved with its reason");
+  ok((await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1).units === 1_000_000, "the $10.40 is back on the assignor's record");
+  await ctx3.close();
+}
 
 await browser.close();
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");

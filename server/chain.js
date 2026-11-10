@@ -176,11 +176,8 @@ const IMPLIED = new Set(["Superseded"]);
 // from → to → [function, role]; the role decides who signs on mainnet.
 const TRANSITIONS = {
   "Issued>Accepted": ["accept", "relayer"],
-  "AwaitingCredential>CredentialRequested": ["requestCredential", "relayer"],
-  "CredentialRequested>AwaitingCredential": ["rejectCredentialRequest", "issuer"],
-  "CredentialRequested>Issued": ["issueCredential", "issuer"],
-  "AwaitingCredential>Cancelled": [null, null], // depends on who cancelled
-  "CredentialRequested>Cancelled": ["issuerCancelAssignOut", "issuer"],
+  // An assign-out, before it takes effect: the assignor (until it's claimed) or the issuer cancels.
+  "Issued>Cancelled": [null, null], // depends on who cancelled
   "Accepted>Locked": ["lock", "relayer"],
   "Locked>Accepted": ["unlock", "issuer"],
   // Redemption is the issuer's act: the bond's holder pays under the paperwork, then records it.
@@ -714,6 +711,9 @@ async function queueImports(c) {
   for (const r of recs) ops.push({ bond: null, ref: r.ref, fn: "importRecord", args: [recId(r)], role: "relayer" });
   ops.push({ bond: null, ref: "registry", fn: "finishImport", args: [], role: "relayer" });
   await queue(c, ops);
+  // From v5 an assign-out is open to its assignee at once; one still waiting arrives open.
+  await c.query(`update assignments set data = data || '{"status":"Issued"}'::jsonb, rev = rev + 1
+    where data->>'origin' = 'AssignOut' and data->>'status' in ('AwaitingCredential', 'CredentialRequested')`);
   // The register's device keys now belong to this contract (the import copies them, counter included).
   await c.query(`update assignments set data = jsonb_set(data, '{holder,contract}', to_jsonb($1::text))
     where data->'holder'->>'contract' = $2`, [CONTRACT, PREDECESSOR]);

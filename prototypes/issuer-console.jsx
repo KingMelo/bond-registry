@@ -416,6 +416,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   // A holder who lost their device: after verifying them, clear the key so they can set up a new
   // one. Signed through the issuer's Safe like any other issuer action.
   const [keyNote, setKeyNote] = useState("");
+  const [shownCodes, setShownCodes] = useState({}); // transfer codes the issuer opened on this page
   async function resetDeviceKey(a) {
     if (!keyNote.trim()) return;
     try { await api.clearDeviceKey(issuerId, a.id, keyNote.trim()); await reload(); } catch (e) { return flash(e.message); }
@@ -1200,6 +1201,26 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <Button variant="quiet" danger onClick={() => unlockCredential(a)}>
                     Clear lockout — identity verified
                   </Button>
+                </div>
+              </div>
+            )}
+
+            {a.origin === "AssignOut" && a.accessCode === "unused" && !TERMINAL.includes(a.status) && (
+              <div className="mt-5">
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Transfer code</div>
+                <Note>
+                  {a.party} claims this assign-out at Holder access with the assignment ID and this
+                  transfer code, then accepts or rejects it with their passkey. The code works once;
+                  it's available here until they use it.
+                </Note>
+                <div className="mt-3">
+                  {shownCodes[a.id] ? (
+                    <div className="px-3 py-3 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
+                      fontSize: 22, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>{shownCodes[a.id]}</div>
+                  ) : (
+                    <Button variant="quiet" onClick={() => api.revealAccessCode(issuerId, a.id)
+                      .then((r) => setShownCodes((m) => ({ ...m, [a.id]: r.code }))).catch((e) => flash(e.message))}>Show transfer code</Button>
+                  )}
                 </div>
               </div>
             )}

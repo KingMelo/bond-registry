@@ -28,6 +28,7 @@ const sans = "'IBM Plex Sans', system-ui, sans-serif";
 const usd = dollars;
 
 const MAX_ATTEMPTS = 5;
+const REJECTION_MIN = 255; // characters: a rejection explains itself
 
 // Children created by assignOut that are neither Accepted nor Cancelled.
 const PENDING = ["AwaitingCredential", "CredentialRequested", "Issued"];
@@ -425,16 +426,16 @@ export default function HolderPortal() {
     return b ? ((u / b.total) * 100).toFixed(6) + "%" : "—";
   };
   const [tab, setTab] = useState(() => {
-    // The front page links straight to a tab: /holder#request, /holder#verify.
+    // The front page links straight to a tab: /holder#verify.
     const h = typeof window !== "undefined" ? window.location.hash.slice(1) : "";
-    return ["access", "request", "verify"].includes(h) ? h : "access";
+    return h === "verify" ? "verify" : "access";
   });
   const [view, setView] = useState(null);
   const [openId, setOpenId] = useState(null);
   useEffect(() => {
     const onHash = () => {
       const h = window.location.hash.slice(1);
-      if (["access", "request", "verify"].includes(h)) { setTab(h); setView(null); setOpenId(null); }
+      if (["access", "verify"].includes(h)) { setTab(h); setView(null); setOpenId(null); }
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -522,7 +523,7 @@ export default function HolderPortal() {
         await reload().catch(() => {});
         setQErr("This credential is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
       } else if (res.code === "nokey") {
-        setQErr("No access code has been issued for this assignment yet. If you are the named assignee, use Request access.");
+        setQErr("No access code has been issued for this assignment. Your transfer code comes in the certified mailing with your instrument.");
       } else if (res.code === "mismatch") {
         setQErr("That access code doesn't match. " + res.left + (res.left === 1 ? " attempt" : " attempts") + " remaining before the credential locks.");
       } else {
@@ -579,7 +580,7 @@ export default function HolderPortal() {
   // the assignor's record for an assign-out, otherwise to the bond.
   function rejectAssignment() {
     const why = rjReason.trim();
-    if (!why) return setRjErr("Give a reason for rejecting it. The issuer and the assignor will see it.");
+    if (why.length < REJECTION_MIN) return setRjErr("Explain why in at least " + REJECTION_MIN + " characters. The issuer and the assignor will read it.");
     setRjErr("");
     setReg((r) => r.map((a) => {
       if (a.id === open.id) return { ...a, status: "Rejected", rejectionReason: why, rejectedOn: today() };
@@ -616,7 +617,7 @@ export default function HolderPortal() {
       address: aAddress.trim(),
       units: u,
       issuedUnits: u,
-      status: "AwaitingCredential",
+      status: "Issued", // open to the assignee at once: they claim it with the transfer code
       created: today(),
       accepted: null,
       docHash: aDoc.hash, // SHA-256 of the signed child instrument
@@ -640,8 +641,8 @@ export default function HolderPortal() {
   }
 
   function cancelAssignOut(child) {
-    // Once the assignee has requested access, only the issuer can cancel.
-    if (child.status !== "AwaitingCredential") return;
+    // Only until the assignee has claimed it (set up their device on it).
+    if (child.status !== "Issued" || child.deviceKey?.fingerprint) return;
     if (open.status === "PendingRedemption") return;
     // Units go back; the parent's status is never touched, so a lock stays a lock.
     setReg((r) => r.map((a) => {
@@ -682,29 +683,10 @@ export default function HolderPortal() {
 
 
 
-  function requestAccess() {
-    const id = rId.trim().toUpperCase();
-    const rec = reg.find((a) => a.id.toUpperCase() === id);
-    if (!rec) return setRErr("No assignment with that ID is on the register.");
-    if (rec.status === "CredentialRequested")
-      return setRErr("A credential request is already open on this assignment. The issuer is verifying it.");
-    if (rec.status !== "AwaitingCredential")
-      return setRErr("This assignment is " + LABEL[rec.status].toLowerCase() + ". A credential can only be requested while it awaits one.");
-    if (!rParty.trim() || !rContact.trim() || !rPhone.trim())
-      return setRErr("Enter the assignee's legal name, your own name and position, and a contact for verification.");
-    setRErr("");
-    // The details stay in the register; only a hash of the request goes on-chain.
-    const requestHash = null; // the chain gets a hash of this request, computed by the server
-    setReg((r) => r.map((a) => (a.id === rec.id
-      ? { ...a, status: "CredentialRequested", requestedParty: rParty.trim(), requestedBy: rContact.trim(),
-          requestedContact: rPhone.trim(), requestedOn: today(), requestHash }
-      : a)));
-    emit(rec.bond, rec.id, "CredentialRequested", "RELAYER", requestHash);
-    setRDone(rec);
-    setRParty(""); setRContact(""); setRPhone(""); setRId("");
-  }
 
-  const tabs = [["access", "Holder access"], ["request", "Request access"], ["verify", "Verify"]];
+
+  // "Request access" is held back until its use case is defined.
+  const tabs = [["access", "Holder access"], ["verify", "Verify"]];
   const inHolder = view && tab === "access";
 
   if (!ready) return <Loading error={error} />;
@@ -864,7 +846,7 @@ export default function HolderPortal() {
             ]} />
 
             <div className="mt-5 space-y-3">
-              <Button onClick={confirmNow}>Confirm — the figures match</Button>
+              <Button onClick={confirmNow}>Accept: confirm with your passkey</Button>
               <Button variant="quiet" danger onClick={() => { setRjErr(""); setView("mismatch"); }}>
                 Reject this assignment
               </Button>
@@ -889,11 +871,14 @@ export default function HolderPortal() {
               ["Document hash", shortHash(open.docHash)],
             ]} />
             <div className="mt-5">
-              <Area label="Reason for rejecting" value={rjReason} onChange={(v) => { setRjReason(v); setRjErr(""); }}
-                placeholder="For example: the amount on my instrument is different, or I didn't agree to this assignment." />
+              <Area label={"Reason for rejecting (at least " + REJECTION_MIN + " characters)"} value={rjReason} onChange={(v) => { setRjReason(v); setRjErr(""); }}
+                rows={7} placeholder="For example: the amount on my instrument is different from the register, or I didn't agree to this assignment. Say what you expected and what you received." />
+              <div style={{ fontSize: 12, color: rjReason.trim().length >= REJECTION_MIN ? T.inkSoft : T.red, margin: "-8px 0 12px", fontVariantNumeric: "tabular-nums" }}>
+                {rjReason.trim().length} of {REJECTION_MIN} characters{rjReason.trim().length >= REJECTION_MIN ? " · enough" : ""}
+              </div>
               {rjErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{rjErr}</p>}
               <div className="space-y-3">
-                <Button danger disabled={!rjReason.trim()} onClick={rejectAssignment}>Reject — recorded on-chain</Button>
+                <Button danger disabled={rjReason.trim().length < REJECTION_MIN} onClick={rejectAssignment}>Reject: confirm with your passkey</Button>
                 <Button variant="quiet" onClick={() => setView("claim")}>Back to the assignment</Button>
               </div>
             </div>
@@ -1036,11 +1021,11 @@ export default function HolderPortal() {
                   </span>
                   <Chip s={c.status} />
                 </div>
-                {["AwaitingCredential", "CredentialRequested"].includes(c.status) && (
+                {["AwaitingCredential", "CredentialRequested", "Issued"].includes(c.status) && !c.deviceKey?.fingerprint && (
                   <div className="mt-3">
                     {listCodes[c.id]?.code ? (
                       <div>
-                        <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 4 }}>{c.party}'s transfer code, shown once: seal it and send it with your signed instrument</div>
+                        <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 4 }}>{c.party}'s transfer code: seal it and send it with your signed instrument. It works once.</div>
                         <div className="px-3 py-2 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, fontSize: 20, letterSpacing: "0.08em",
                           color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>{listCodes[c.id].code}</div>
                       </div>
@@ -1051,7 +1036,7 @@ export default function HolderPortal() {
                     )}
                   </div>
                 )}
-                {c.status === "AwaitingCredential" && open.status !== "PendingRedemption" && (
+                {c.status === "Issued" && !c.deviceKey?.fingerprint && (
                   <div className="mt-3">
                     <Button variant="quiet" danger onClick={() => cancelAssignOut(c)}>
                       Cancel — return {usd(c.units)}
@@ -1064,9 +1049,9 @@ export default function HolderPortal() {
                     after hearing from both sides.
                   </div>
                 )}
-                {c.status === "Issued" && (
+                {c.status === "Issued" && c.deviceKey?.fingerprint && (
                   <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8, lineHeight: 1.5 }}>
-                    The access code has been mailed. This transfer can no longer be cancelled.
+                    {c.party} has claimed it. Only they can accept or reject it now; you can no longer cancel it.
                   </div>
                 )}
               </div>
@@ -1159,12 +1144,12 @@ export default function HolderPortal() {
                     {childCode.code}
                   </div>
                   <Note kind="warn">
-                    <strong style={{ fontWeight: 600 }}>Shown once.</strong> Write it on the access code page, seal it in its
+                    <strong style={{ fontWeight: 600 }}>Keep it private.</strong> Write it on the access code page, seal it in its
                     own envelope, and send it with your signed instrument to {childIssued.party} in one certified
-                    mailing. Keep the tracking number: the issuer records it when they activate the assignee.
-                    {" "}{childIssued.party} can't use the code until the issuer has verified them and recorded the
-                    UCC-3. It works once: when they sign in and set up their device, it's replaced by their own
-                    access code, and this one stops working.
+                    mailing, and keep the tracking number for the issuer. {childIssued.party} signs in at Holder access with
+                    the assignment ID and this code, sets up their passkey, then accepts or rejects it. It works once:
+                    their own access code replaces it, and this one stops working. Until then you can show it again
+                    from your record.
                   </Note>
                 </>
               )}
@@ -1172,9 +1157,9 @@ export default function HolderPortal() {
 
             <div className="mt-4">
               <Note kind="caution">
-                You can cancel this yourself and take the {usd(childIssued.units)} back only
-                until {childIssued.party} requests access. After that only the issuer can cancel
-                it, and once the issuer activates them it can't be cancelled at all.
+                You can cancel this yourself and take the {usd(childIssued.units)} back only until
+                {childIssued.party} claims it with the transfer code. After that only they can accept or
+                reject it.
               </Note>
             </div>
 
@@ -1219,66 +1204,6 @@ export default function HolderPortal() {
             <div className="mt-5 space-y-3">
               <Button onClick={lock}>Lock it</Button>
               <Button variant="quiet" onClick={() => setView("position")}>Cancel</Button>
-            </div>
-          </div>
-        )}
-
-        {/* ============ request access ============ */}
-        {tab === "request" && !rDone && (
-          <div>
-            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Request access</h1>
-            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-              If an assignment has been made to you but no access code has arrived, request one
-              here. The issuer verifies that you are the named assignee, then mails it by
-              certified post.
-            </p>
-
-            <Field label="Assignment ID" value={rId} onChange={setRId} placeholder="KPII-0001-BD-A00003" mono
-              hint="On the instrument you received, and in its QR code." />
-            <Field label="Assignee legal name" value={rParty} onChange={setRParty} placeholder="Company D" />
-            <Field label="Your name and position" value={rContact} onChange={setRContact} placeholder="M. Osei, Treasurer" />
-            <Field label="Contact for verification" value={rPhone} onChange={setRPhone} placeholder="Phone or email" />
-
-            {rErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{rErr}</p>}
-
-            <Button onClick={requestAccess}>Submit request</Button>
-
-            <div className="mt-6">
-              <Note>
-                The issuer will check your details against the named assignee before issuing
-                anything. Expect an identity check and a call.
-                <div style={{ marginTop: 8, color: T.ink, fontVariantNumeric: "tabular-nums" }}>
-                  Demo · awaiting credential: KPII-0001-BD-A00003, Company D, M. Osei
-                </div>
-              </Note>
-            </div>
-          </div>
-        )}
-
-        {tab === "request" && rDone && (
-          <div>
-            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Request submitted</h1>
-            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              {rDone.id} now shows Credential requested on the register and on-chain.
-            </p>
-            <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
-              {[
-                ["Request recorded", true],
-                ["Issuer verifies you are the named assignee", false],
-                ["Access code generated and mailed by certified post", false],
-                ["Status moves to Issued", false],
-                ["It takes effect, unless you reject it within " + responseDays + " days", false],
-              ].map(([step, done], i) => (
-                <div key={i} className="flex items-center gap-3 px-3 py-3"
-                  style={{ borderTop: i ? "1px solid " + T.rule : "none", fontSize: 14 }}>
-                  <span style={{ width: 16, height: 16, borderRadius: 8, flexShrink: 0,
-                    background: done ? T.ink : "transparent", border: "1px solid " + (done ? T.ink : T.rule) }} />
-                  <span style={{ color: done ? T.ink : T.inkSoft, lineHeight: 1.5 }}>{step}</span>
-                </div>
-              ))}
-            </div>
-            <div className="mt-5">
-              <Button variant="quiet" onClick={() => setRDone(null)}>Submit another</Button>
             </div>
           </div>
         )}

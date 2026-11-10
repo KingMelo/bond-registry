@@ -155,33 +155,28 @@ ok(e?.status === 422, "a signature without the fingerprint/face/PIN check is ref
 await hsave(s1.token, phone, { reg: [{ ...a1, status: "Accepted", accepted: "now", effective: "holder" }], events: [ev(a1.bond, a1.id, "Acknowledged")] });
 ok((await hrec(a1.id)).status === "Accepted", "the holder's signed acknowledgement is saved");
 
-// 4. Assign out $10.40 (signed by the assignor); the new party asks for access without a session.
+// 4. Assign out $10.40 (signed by the assignor). It's open to the assignee at once.
 a1 = await hrec(a1.id);
 const child = { id: "PENS-0001-BD-A00002", bond: "PENS-0001-BD", parent: a1.id, origin: "AssignOut", assignor: "Company A", party: "Company D",
-  contact: "M", position: "", address: "addr", units: 1040, issuedUnits: 1040, status: "AwaitingCredential", created: "Nov 9, 2026",
+  contact: "M", position: "", address: "addr", units: 1040, issuedUnits: 1040, status: "Issued", created: "Nov 9, 2026",
   accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
 await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, child], events: [ev(a1.bond, child.id, "AssignedOut")] });
-ok((await rec(child.id)).accessCode === "sealed", "the assign-out made the assignee's access code");
+ok((await rec(child.id)).accessCode === "unused", "the assign-out made the assignee's transfer code");
 ok(!JSON.stringify(await call(H, "GET", "/api/state")).includes("accessCode"), "the public record list never carries it");
-// The assignor sees it once, on the screen after the assign-out, to send with the instrument.
 const CODE2 = (await call(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: child.id })).code;
-ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(CODE2), "the assignor gets the new assignee's code: " + CODE2.slice(0, 4) + "-…");
-e = await tryCall(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: child.id });
-ok(e?.status === 409, "only once (" + e?.status + ")");
-ok((await rec(child.id)).accessCode === "assignor", "the issuer console shows the assignor has it");
+ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(CODE2), "the assignor gets the new assignee's transfer code: " + CODE2.slice(0, 4) + "-…");
+const again = (await call(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: child.id })).code;
+const byIssuer = (await call(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id })).code;
+const byIssuer2 = (await call(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id })).code;
+ok(again === CODE2 && byIssuer === CODE2 && byIssuer2 === CODE2, "the issuer (and assignor) can review it as many times as needed until it's used");
+e = await tryCall(H, "POST", "/api/commit", { reg: [{ ...(await hrec(child.id)), status: "CredentialRequested" }], events: [] });
+ok([401, 403].includes(e?.status), "there's no unsigned 'request access' path any more (" + e?.status + ")");
 let c2 = await hrec(child.id);
-await call(H, "POST", "/api/commit", { reg: [{ ...c2, status: "CredentialRequested", requestedParty: "Company D", requestedBy: "M", requestedOn: "now" }], events: [] });
-ok((await hrec(child.id)).status === "CredentialRequested", "a new assignee asks for access without a key");
-{
-  const r = await call(H, "POST", "/api/holder/signin", { id: child.id, passkey: CODE2 });
-  ok(!r.ok && r.code === "inactive", "the code doesn't open the record before the issuer activates it (" + r.code + ")");
-}
-await icommit({ reg: [{ ...(await rec(child.id)), filingNumber: "UCC3-555", filedBy: "Company A", filingRef: "pending" }] });
-e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
-ok(e?.status === 409, "the issuer doesn't get a second copy (" + e?.status + ")");
-await icommit({ reg: [{ ...(await rec(child.id)), status: "Issued", passkeyMail: "9407 2", deliveryRef: "pending" }] });
 
 // 5. The new holder signs in on their own phone and rejects it, with a reason: the $10.40 goes back.
+const LONG = "The amount on the instrument I received does not match the register, and I never agreed to take this portion. " +
+  "I have not signed anything with the assignor about it and I would like the issuer to look into how this assignment was created. " +
+  "Please return the amount to the assignor's record.";
 const phone2 = newDevice();
 const s2 = await signIn(child.id, CODE2, phone2);
 ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(s2.accessCode) && s2.accessCode !== CODE2, "setting up the device replaces the transfer code with a personal access code");
@@ -196,13 +191,17 @@ e = await tryCall(H, "POST", "/api/commit", { token: s2.token, reg: [{ ...a1, pa
 ok(e?.status === 403, "the new holder can't edit their assignor's record (" + e?.status + ")");
 e = await hsave(s2.token, phone2, { reg: [{ ...c2, units: c2.units + 500 }, { ...a1, units: a1.units - 500 }] }).then(() => null, (x) => x);
 ok(e?.status === 422, "nor move units from it into their own (" + e?.status + ")");
-e = await hsave(s1.token, phone, { reg: [{ ...c2, status: "Rejected", rejectionReason: "x" }, { ...a1, units: a1.units + 1040 }] }).then(() => null, (x) => x);
+e = await hsave(s1.token, phone, { reg: [{ ...c2, status: "Rejected", rejectionReason: LONG }, { ...a1, units: a1.units + 1040 }] }).then(() => null, (x) => x);
 ok(e?.status === 403, "the assignor can't reject on the new holder's behalf (" + e?.status + ")");
 e = await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units + 1 }] }).then(() => null, (x) => x);
 ok(e?.status === 422, "a holder can't raise their own amount (" + e?.status + ")");
-await hsave(s2.token, phone2, { reg: [{ ...c2, status: "Rejected", rejectionReason: "Unknown assignor" }, { ...a1, units: a1.units + 1040 }],
-  events: [ev(c2.bond, c2.id, "AssignmentRejected", "Unknown assignor")] });
+e = await hsave(s2.token, phone2, { reg: [{ ...c2, status: "Rejected", rejectionReason: "Not the amount we agreed." }, { ...a1, units: a1.units + 1040 }] }).then(() => null, (x) => x);
+ok(e?.status === 400 && /255/.test(e.message), "a rejection needs at least 255 characters of reason (" + e?.status + ")");
+await hsave(s2.token, phone2, { reg: [{ ...c2, status: "Rejected", rejectionReason: LONG }, { ...a1, units: a1.units + 1040 }],
+  events: [ev(c2.bond, c2.id, "AssignmentRejected", "see reason")] });
 ok((await hrec(a1.id)).units === 1_000_000, "the rejected $10.40 is back on A00001");
+e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
+ok(e?.status === 404, "once used, the transfer code is gone for the issuer too (" + e?.status + ")");
 
 // 6. Lock, issuer unlocks. Holders don't request redemption through the registry: refused.
 a1 = await hrec(a1.id);
@@ -234,7 +233,7 @@ await call(I, "POST", "/api/issuer/holder-key/clear", { issuer: issuerId, id: "P
 await settle();
 ok((await regC.holderKeys(id32("PENS-0001-BD-A00003"))).x === 0n, "the issuer's reset cleared the key on-chain");
 let a3 = await hrec("PENS-0001-BD-A00003");
-e = await hsave(s3.token, old, { reg: [{ ...a3, status: "Rejected", rejectionReason: "x" }] }).then(() => null, (x) => x);
+e = await hsave(s3.token, old, { reg: [{ ...a3, status: "Rejected", rejectionReason: LONG }] }).then(() => null, (x) => x);
 ok(e?.status === 409, "the old phone can no longer act (" + e?.status + ")");
 const fresh = newDevice();
 const s3b = await signIn("PENS-0001-BD-A00003", s3.accessCode, fresh); // their personal code still opens it; a new device is set up
@@ -260,10 +259,10 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
 {
   const a3 = await hrec("PENS-0001-BD-A00003");
   const g = { id: "PENS-0001-BD-A00005", bond: "PENS-0001-BD", parent: a3.id, origin: "AssignOut", assignor: "Company A", party: "Company E",
-    contact: "N", position: "", address: "addr", units: 2500, issuedUnits: 2500, status: "AwaitingCredential", created: "Nov 10, 2026",
+    contact: "N", position: "", address: "addr", units: 2500, issuedUnits: 2500, status: "Issued", created: "Nov 10, 2026",
     accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
   await hsave(s3b.token, fresh, { reg: [{ ...a3, units: a3.units - 2500 }, g], events: [ev(a3.bond, g.id, "AssignedOut")] });
-  ok((await rec(g.id)).accessCode === "sealed", "the next assignee's access code is made the same way");
+  ok((await rec(g.id)).accessCode === "unused", "the next assignee's transfer code is made the same way");
   const other = await tryCall(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: g.id });
   ok(other?.status === 403, "another holder can't see it (" + other?.status + ")");
   const gc = (await call(H, "POST", "/api/holder/assignee-code", { token: s3b.token, id: g.id })).code;
