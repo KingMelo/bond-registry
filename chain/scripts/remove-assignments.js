@@ -5,16 +5,24 @@
 // earlier contracts can't be (and isn't) touched.
 //
 //   DATABASE_URL   the register
-//   BOND_CODE      e.g. KJPII-0001-BD
+//   BOND_CODE      e.g. KJPII-0001-BD, or ALL for every bond
 //   DRY_RUN=1      show what would go, change nothing
 const { Client } = require("pg");
 const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
 
 async function main() {
-  const bond = String(process.env.BOND_CODE || "").trim();
-  if (!bond) throw new Error("Set BOND_CODE.");
+  const code = String(process.env.BOND_CODE || "").trim();
+  if (!code) throw new Error("Set BOND_CODE (or ALL).");
   const dry = !!process.env.DRY_RUN;
   const db = new Client({ connectionString: process.env.DATABASE_URL }); await db.connect();
+  try {
+    const bonds = code === "ALL" ? (await db.query("select id from bonds order by id")).rows.map((r) => r.id) : [code];
+    for (const bond of bonds) { console.log("BOND " + bond); await removeFrom(db, bond, dry); }
+    console.log(dry ? "REMOVE-DRY-RUN" : "REMOVED-ALL");
+  } finally { await db.end(); }
+}
+
+async function removeFrom(db, bond, dry) {
   try {
     await db.query("begin");
     const b = (await db.query("select data from bonds where id = $1 for update", [bond])).rows[0];
@@ -27,26 +35,30 @@ async function main() {
       events: (await db.query("select count(*)::int c from events where assignment = any($1)", [ids])).rows[0].c,
       credentials: (await db.query("select count(*)::int c from credentials where id = any($1)", [ids])).rows[0].c,
       chainOps: (await db.query("select count(*)::int c from chain_ops where ref = any($1)", [ids])).rows[0].c,
+      sealed: (await db.query("select count(*)::int c from sealed_codes where id = any($1)", [ids])).rows[0].c,
     };
+    const ops = (await db.query("select seq, fn, ref, status from chain_ops where ref = any($1) and status <> 'confirmed' order by seq", [ids])).rows;
+    for (const o of ops) console.log(`  ${dry ? "would withdraw" : "withdrawing"} chain write ${o.seq} ${o.fn} ${o.ref} (${o.status})`);
     const unassigned = Number(b.data.unassigned) + back;
     const prior = (b.data.prior || []).filter((p) => !p.reversed).reduce((t, p) => t + Number(p.units), 0);
     if (prior + unassigned + Number(b.data.redeemed || 0) !== Number(b.data.total))
       throw new Error(`After removal the bond wouldn't add up: prior ${prior} + unassigned ${unassigned} + redeemed ${b.data.redeemed} ≠ total ${b.data.total}.`);
-    console.log(`  ${ids.length} record(s), ${counts.events} past event(s) kept, ${counts.credentials} access code(s), ${counts.chainOps} queued chain write(s)`);
+    console.log(`  ${ids.length} record(s), ${counts.events} past event(s) kept, ${counts.credentials + counts.sealed} transfer code(s), ${counts.chainOps} queued chain write(s)`);
     console.log(`  unassigned ${(Number(b.data.unassigned) / 100).toFixed(2)} → ${(unassigned / 100).toFixed(2)} · prior ${(prior / 100).toFixed(2)} kept`);
-    if (dry) { await db.query("rollback"); console.log("REMOVE-DRY-RUN"); return; }
+    if (dry) { await db.query("rollback"); return; }
     const when = new Date().toISOString();
     for (const r of recs)
       await db.query("insert into events (eid, bond, assignment, data) values (gen_random_uuid()::text, $1, $2, $3)",
         [bond, r.id, { bond, id: r.id, t: when.slice(0, 16).replace("T", " "), ev: "AssignmentRemoved", actor: "OWNER",
           ref: (process.env.REASON || "Removed at the owner's request") + "; " + (Number(r.data.units) / 100).toFixed(2) + " returned to unassigned" }]);
     await db.query("delete from credentials where id = any($1)", [ids]);
+    await db.query("delete from sealed_codes where id = any($1)", [ids]);
     await db.query("delete from chain_ops where ref = any($1)", [ids]);
     await db.query("delete from assignments where id = any($1)", [ids]);
     await db.query("update bonds set data = jsonb_set(data, '{unassigned}', to_jsonb($2::bigint)), rev = rev + 1 where id = $1", [bond, unassigned]);
     await db.query("update meta set version = version + 1 where k = 'v'");
     await db.query("commit");
     console.log("REMOVED " + ids.length);
-  } catch (e) { await db.query("rollback").catch(() => {}); throw e; } finally { await db.end(); }
+  } catch (e) { await db.query("rollback").catch(() => {}); throw e; }
 }
 main().catch((e) => { console.error("REMOVE-ERROR", e.message); process.exit(1); });
