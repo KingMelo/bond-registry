@@ -12,7 +12,7 @@ const DAY = 86400;
 
 async function setup() {
   const [admin, platform, relayer, guardian, issuer, stranger] = await ethers.getSigners();
-  const reg = await (await ethers.getContractFactory("BondInterestRegistry")).deploy(admin.address, platform.address, relayer.address, guardian.address);
+  const reg = await (await ethers.getContractFactory("BondInterestRegistry")).deploy(admin.address, platform.address, relayer.address, guardian.address, ethers.ZeroAddress);
   await reg.connect(platform).registerIssuer(ISS, issuer.address);
   await reg.connect(issuer).anchorBond(BOND, ISS, 10_000_000_000n, h("instrument"), h("ucc1"));
   const I = reg.connect(issuer), RL = reg.connect(relayer);

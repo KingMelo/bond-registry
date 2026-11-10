@@ -39,8 +39,20 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 /// keccak256("KPII-0001-BD") for a bond and keccak256("KPII-0001-BD-A00001")
 /// for an assignment, and keccak256 of the issuer code for an issuer.
 ///
-/// Non-upgradeable: a new version is deployed and records migrated with a
-/// published mapping, so an upgrade can never rewrite history.
+/// Non-upgradeable: a new version is deployed with its predecessor's address, and copies the
+/// predecessor's state from the chain itself (importIssuer, importBond, importPrior,
+/// importRecord) once the predecessor is paused for good. Nothing is re-signed or re-entered:
+/// records arrive exactly as the predecessor holds them, holder device keys and their counters
+/// included, so an upgrade can never rewrite history. Until finishImport, nothing else writes.
+/// The getters this contract reads from the version it replaces (v4 and later have them all).
+interface IPredecessorRegistry {
+    function paused() external view returns (bool);
+    function issuers(bytes32 issuerId) external view returns (address account, bool suspended);
+    function priorInstruments(bytes32 bondId, bytes32 refHash) external view returns (uint128 units, bool recorded, bool reversed);
+    function holderKeys(bytes32 assignmentId) external view returns (uint256 x, uint256 y, uint64 nonce);
+    function mailedAt(bytes32 assignmentId) external view returns (uint64);
+}
+
 contract BondInterestRegistry is AccessControl, Pausable {
     bytes32 public constant PLATFORM_ROLE = keccak256("PLATFORM_ROLE");
     bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
@@ -127,6 +139,10 @@ contract BondInterestRegistry is AccessControl, Pausable {
     address internal constant P256_VERIFIER = address(0x100); // RIP-7212
     bytes32 internal constant HOLDER_TAG = keccak256("BondInterestRegistry/holder/v1");
 
+    /// The version this one replaces, or zero. While `migrating`, only imports and finishImport write.
+    address public immutable predecessor;
+    bool public migrating;
+
     mapping(bytes32 => Issuer) public issuers;
     mapping(bytes32 => Bond) public bonds;
     mapping(bytes32 => Assignment) public assignments;
@@ -166,6 +182,9 @@ contract BondInterestRegistry is AccessControl, Pausable {
     event FilingRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 filingRef, address actor);
     event DeliveryRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 deliveryRef, uint64 mailedAt, address actor);
     event HolderKeyRegistered(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 x, uint256 y, bytes32 docHash, address actor);
+    /// `what` is "issuer", "bond", "prior" or "record"; `id` the issuer, bond or record; `sub` the prior's refHash.
+    event Imported(string what, bytes32 indexed id, bytes32 indexed sub);
+    event ImportFinished(address actor);
     event HolderKeyCleared(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
 
     // ---------------------------------------------------------------- errors
@@ -197,6 +216,11 @@ contract BondInterestRegistry is AccessControl, Pausable {
     error BadHolderSignature(bytes32 assignmentId);
     error ResponsePeriodOpen(bytes32 assignmentId, uint256 until);
     error BadMailingDate(uint256 mailedAt);
+    error Migrating();
+    error NotMigrating();
+    error PredecessorNotPaused();
+    error AlreadyImported(bytes32 id);
+    error NotOnPredecessor(bytes32 id);
 
     // ------------------------------------------------------------- modifiers
 
@@ -225,7 +249,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         if (uint256(b.prior) + b.live + b.unassigned + b.redeemed != b.total) revert UnitsUnbalanced(bondId);
     }
 
-    constructor(address admin, address platform, address relayer, address guardian) {
+    constructor(address admin, address platform, address relayer, address guardian, address predecessor_) {
         if (admin == address(0) || platform == address(0) || relayer == address(0) || guardian == address(0)) {
             revert ZeroAddress();
         }
@@ -233,6 +257,79 @@ contract BondInterestRegistry is AccessControl, Pausable {
         _grantRole(PLATFORM_ROLE, platform);
         _grantRole(RELAYER_ROLE, relayer);
         _grantRole(GUARDIAN_ROLE, guardian);
+        predecessor = predecessor_;
+        migrating = predecessor_ != address(0);
+    }
+
+    // ============================================================= migration
+    // Copies the predecessor's state, read from the chain. Anyone may call these: the data can
+    // only be what the predecessor holds, and only once it is paused, so it can't change after.
+
+    modifier importing() {
+        if (!migrating) revert NotMigrating();
+        if (!IPredecessorRegistry(predecessor).paused()) revert PredecessorNotPaused();
+        _;
+    }
+
+    function importIssuer(bytes32 issuerId) external importing {
+        (address account, bool suspended) = IPredecessorRegistry(predecessor).issuers(issuerId);
+        if (account == address(0)) revert NotOnPredecessor(issuerId);
+        if (issuers[issuerId].account != address(0)) revert AlreadyImported(issuerId);
+        issuers[issuerId] = Issuer({account: account, suspended: suspended});
+        emit Imported("issuer", issuerId, bytes32(0));
+    }
+
+    /// The bond with its totals as the predecessor holds them; its records follow by importRecord.
+    function importBond(bytes32 bondId) external importing {
+        Bond memory b = abi.decode(_fromPredecessor(abi.encodeWithSignature("bonds(bytes32)", bondId)), (Bond));
+        if (b.issuerId == bytes32(0)) revert NotOnPredecessor(bondId);
+        if (bonds[bondId].issuerId != bytes32(0)) revert AlreadyImported(bondId);
+        if (issuers[b.issuerId].account == address(0)) revert UnknownIssuer(b.issuerId);
+        bonds[bondId] = b;
+        emit Imported("bond", bondId, bytes32(0));
+    }
+
+    function importPrior(bytes32 bondId, bytes32 refHash) external importing {
+        if (bonds[bondId].issuerId == bytes32(0)) revert UnknownBond(bondId);
+        (uint128 units, bool recorded, bool reversed) = IPredecessorRegistry(predecessor).priorInstruments(bondId, refHash);
+        if (!recorded) revert NotOnPredecessor(refHash);
+        if (priorInstruments[bondId][refHash].recorded) revert AlreadyImported(refHash);
+        priorInstruments[bondId][refHash] = PriorInstrument({units: units, recorded: true, reversed: reversed});
+        emit Imported("prior", bondId, refHash);
+    }
+
+    /// One record exactly as the predecessor holds it, with its holder's device key, the key's
+    /// counter and the mailing date. The holder keeps using the same device.
+    function importRecord(bytes32 assignmentId) external importing {
+        Assignment memory a = abi.decode(_fromPredecessor(abi.encodeWithSignature("assignments(bytes32)", assignmentId)), (Assignment));
+        if (a.status == Status.None) revert NotOnPredecessor(assignmentId);
+        if (assignments[assignmentId].status != Status.None) revert AlreadyImported(assignmentId);
+        if (bonds[a.bondId].issuerId == bytes32(0)) revert UnknownBond(a.bondId);
+        assignments[assignmentId] = a;
+        IPredecessorRegistry p = IPredecessorRegistry(predecessor);
+        (uint256 x, uint256 y, uint64 nonce) = p.holderKeys(assignmentId);
+        holderKeys[assignmentId] = HolderKey({x: x, y: y, nonce: nonce});
+        mailedAt[assignmentId] = p.mailedAt(assignmentId);
+        emit Imported("record", assignmentId, a.bondId);
+    }
+
+    /// Ends the migration: from here on the contract works normally and imports are closed.
+    function finishImport() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (!migrating) revert NotMigrating();
+        migrating = false;
+        emit ImportFinished(msg.sender);
+    }
+
+    function _fromPredecessor(bytes memory call) internal view returns (bytes memory out) {
+        bool ok;
+        (ok, out) = predecessor.staticcall(call);
+        if (!ok) revert NotOnPredecessor(bytes32(0));
+    }
+
+    /// Every normal write checks this (whenNotPaused), so nothing but imports runs mid-migration.
+    function _requireNotPaused() internal view override {
+        if (migrating) revert Migrating();
+        super._requireNotPaused();
     }
 
     // ============================================================== platform

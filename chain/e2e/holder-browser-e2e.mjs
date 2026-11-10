@@ -24,7 +24,7 @@ const H32 = () => "0x" + crypto.randomBytes(32).toString("hex");
 const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
 const art = JSON.parse(fs.readFileSync(ROOT + "/chain/artifacts/contracts/BondInterestRegistry.sol/BondInterestRegistry.json", "utf8"));
 const me = new ethers.Wallet(KEY).address;
-const regC = await new ethers.ContractFactory(art.abi, art.bytecode, new ethers.NonceManager(new ethers.Wallet(KEY, provider))).deploy(me, me, me, me);
+const regC = await new ethers.ContractFactory(art.abi, art.bytecode, new ethers.NonceManager(new ethers.Wallet(KEY, provider))).deploy(me, me, me, me, ethers.ZeroAddress);
 await regC.waitForDeployment();
 const CONTRACT = await regC.getAddress();
 

@@ -28,7 +28,7 @@ const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.NonceManager(new ethers.Wallet(KEY, provider));
 const art = JSON.parse(fs.readFileSync(ROOT + "/chain/artifacts/contracts/BondInterestRegistry.sol/BondInterestRegistry.json", "utf8"));
 const me = new ethers.Wallet(KEY).address;
-const regC = await new ethers.ContractFactory(art.abi, art.bytecode, wallet).deploy(me, me, me, me);
+const regC = await new ethers.ContractFactory(art.abi, art.bytecode, wallet).deploy(me, me, me, me, ethers.ZeroAddress);
 await regC.waitForDeployment();
 const CONTRACT = await regC.getAddress();
 console.log("registry v4", CONTRACT);

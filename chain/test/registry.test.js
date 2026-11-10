@@ -18,7 +18,7 @@ const TOTAL = 10_000_000_000n; // the test bond: $100,000,000.00 in cents
 async function setup() {
   const [admin, platform, relayer, guardian, issuer, other, stranger] = await ethers.getSigners();
   const R = await ethers.getContractFactory("BondInterestRegistry");
-  const reg = await R.deploy(admin.address, platform.address, relayer.address, guardian.address);
+  const reg = await R.deploy(admin.address, platform.address, relayer.address, guardian.address, ethers.ZeroAddress);
   await reg.connect(platform).registerIssuer(ISS, issuer.address);
   await reg.connect(platform).registerIssuer(OTHER, other.address);
   await reg.connect(issuer).anchorBond(BOND, ISS, TOTAL, h("instrument"), h("ucc1"));
@@ -51,7 +51,7 @@ describe("BondInterestRegistry", () => {
     it("refuses a zero address in the constructor", async () => {
       const [a] = await ethers.getSigners();
       const R = await ethers.getContractFactory("BondInterestRegistry");
-      await expect(R.deploy(a.address, ethers.ZeroAddress, a.address, a.address)).to.be.revertedWithCustomError(R, "ZeroAddress");
+      await expect(R.deploy(a.address, ethers.ZeroAddress, a.address, a.address, ethers.ZeroAddress)).to.be.revertedWithCustomError(R, "ZeroAddress");
     });
 
     it("only the platform registers issuers, once each", async () => {

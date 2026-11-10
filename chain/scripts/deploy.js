@@ -3,6 +3,7 @@
 //   PLATFORM_ADDRESS  registers issuers (use a Safe)
 //   RELAYER_ADDRESS   the platform's signing key for holder actions
 //   GUARDIAN_ADDRESS  can pause in an emergency
+//   PREDECESSOR       the contract this one replaces (it copies that one's state); unset for none
 // Any that are unset fall back to the deployer, which is only sensible on a testnet.
 const { ethers, network } = require("hardhat");
 
@@ -16,9 +17,10 @@ async function main() {
   const balance = await ethers.provider.getBalance(deployer.address);
   console.log("Deployer balance:", ethers.formatEther(balance), "POL");
   if (balance === 0n) throw new Error("The deployer has no POL for gas. Fund " + deployer.address + " first.");
-  console.log("Roles:", roles);
+  const predecessor = process.env.PREDECESSOR ? ethers.getAddress(process.env.PREDECESSOR) : ethers.ZeroAddress;
+  console.log("Roles:", roles, "Predecessor:", predecessor);
   const R = await ethers.getContractFactory("BondInterestRegistry");
-  const reg = await R.deploy(roles.admin, roles.platform, roles.relayer, roles.guardian);
+  const reg = await R.deploy(roles.admin, roles.platform, roles.relayer, roles.guardian, predecessor);
   await reg.waitForDeployment();
   const addr = await reg.getAddress();
   const receipt = await reg.deploymentTransaction().wait();

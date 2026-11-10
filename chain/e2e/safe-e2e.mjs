@@ -38,7 +38,7 @@ async function makeSafe(ownerKey, salt) {
 const ISSUER_SAFE = await makeSafe(KEYS.owner, 1), PLATFORM_SAFE = await makeSafe(KEYS.platOwner, 2);
 const relayerAddr = new ethers.Wallet(KEYS.relayer).address;
 const regArt = JSON.parse(fs.readFileSync(ROOT + "/chain/artifacts/contracts/BondInterestRegistry.sol/BondInterestRegistry.json", "utf8"));
-const regC = await dep(regArt, relayerAddr, PLATFORM_SAFE, relayerAddr, relayerAddr);  // platform role on the Safe from the start
+const regC = await dep(regArt, relayerAddr, PLATFORM_SAFE, relayerAddr, relayerAddr, ethers.ZeroAddress);  // platform role on the Safe from the start
 const CONTRACT = await regC.getAddress();
 console.log("registry", CONTRACT, "issuer Safe", ISSUER_SAFE, "platform Safe", PLATFORM_SAFE);
 

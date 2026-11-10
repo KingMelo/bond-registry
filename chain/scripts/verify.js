@@ -43,8 +43,10 @@ async function main() {
   // 3. Submit the standard JSON input and the constructor arguments.
   const build = await artifacts.getBuildInfo(NAME);
   const r = dep.roles;
-  const args = ethers.AbiCoder.defaultAbiCoder()
-    .encode(["address", "address", "address", "address"], [r.admin, r.platform, r.relayer, r.guardian]).slice(2);
+  // v5 and later take the predecessor's address too (zero for none).
+  const args = (dep.predecessor !== undefined
+    ? ethers.AbiCoder.defaultAbiCoder().encode(["address", "address", "address", "address", "address"], [r.admin, r.platform, r.relayer, r.guardian, dep.predecessor || ethers.ZeroAddress])
+    : ethers.AbiCoder.defaultAbiCoder().encode(["address", "address", "address", "address"], [r.admin, r.platform, r.relayer, r.guardian])).slice(2);
   const sub = await call({
     module: "contract", action: "verifysourcecode", contractaddress: dep.address,
     sourceCode: JSON.stringify(build.input), codeformat: "solidity-standard-json-input",
