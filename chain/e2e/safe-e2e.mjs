@@ -7,6 +7,7 @@ import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { newDevice, holderSignIn, holderSave, RP_ID, ORIGIN } from "./fake-device.mjs";
 const require = createRequire(new URL("../../package.json", import.meta.url));
 const { ethers } = require("ethers");
 
@@ -46,7 +47,7 @@ const procs = [];
 const start = (app, port, extra = {}) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
     ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CHAIN_CONTRACT: CONTRACT, CHAIN_EXPLORER: "http://explorer.test", CHAIN_RPC_URL: RPC,
-    CHAIN_PLATFORM_SAFE: PLATFORM_SAFE, ...extra } });
+    CHAIN_PLATFORM_SAFE: PLATFORM_SAFE, CHAIN_ID: "31337", HOLDER_RP_ID: RP_ID, HOLDER_ORIGIN: ORIGIN, ...extra } });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; process.env.VERBOSE && process.stdout.write("[" + app + "] " + d); if (out.includes("listening")) res(c); });
   c.stderr.on("data", (d) => process.stdout.write("[" + app + " err] " + d));
@@ -87,6 +88,8 @@ await icommit({ bonds: [{ id: "PENS-0001-BD", title: "Series A", face: TOTAL, to
 const base = { origin: "Issuer", parent: null, assignor: "Penson Trust", party: "Company A", contact: "D", position: "", address: "addr",
   status: "Issued", created: "now", accepted: null, filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null };
 let b = await bondNow();
+const ACCESS_CODE = "7KQM-R4XW-9TPH-C2NV";
+await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: "PENS-0001-BD-A00001", passkey: ACCESS_CODE });
 await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 500000 }], reg: [{ ...base, id: "PENS-0001-BD-A00001", bond: "PENS-0001-BD", units: 500000, issuedUnits: 500000, docHash: H32() }],
   events: [ev("PENS-0001-BD", "PENS-0001-BD-A00001", "AssignmentIssued")] });
 await icommit({ reg: [{ ...(await rec("PENS-0001-BD-A00001")), instrumentMail: "RE 1", passkeyMail: "RE 2", deliveryRef: "pending" }] });
@@ -147,18 +150,20 @@ for (let n = 0; n < 12; n++) {
 console.log("signed through the issuer's Safe:", signedFns.join(", "));
 ok(signedFns.includes("anchorBond") && signedFns.includes("issueAssignment") && signedFns.includes("setDeliveryRef"), "anchor, issue and the mailing each went through the Safe");
 
-// 3. The holder accepts: a relayer action, straight through with no signature.
-const a1 = (await call(H, "GET", "/api/state")).reg?.find((a) => a.id === "PENS-0001-BD-A00001");
-if (a1) await hcommit({ reg: [{ ...a1, status: "Accepted", accepted: "now" }], events: [ev("PENS-0001-BD", a1.id, "Accepted")] });
+// 3. The holder accepts with their own device: no Safe signature, and the relayer only pays gas.
+const phone = newDevice();
+const s1 = await holderSignIn(call, H, "PENS-0001-BD-A00001", ACCESS_CODE, phone);
+const a1 = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === "PENS-0001-BD-A00001");
+await holderSave(call, H, s1.token, phone, { reg: [{ ...a1, status: "Accepted", accepted: "now" }], events: [ev("PENS-0001-BD", a1.id, "Accepted")] });
 const id32 = (s) => ethers.keccak256(ethers.toUtf8Bytes(s));
-ok(!!(await waitFor(async () => Number((await regC.assignments(id32("PENS-0001-BD-A00001"))).status) === 4, 30000)) || !a1,
-  "a holder's acceptance goes through without any Safe signature" + (a1 ? "" : " (skipped: no holder session)"));
+ok(!!(await waitFor(async () => Number((await regC.assignments(id32("PENS-0001-BD-A00001"))).status) === 4, 30000)),
+  "a holder's acceptance, signed on their device, goes through without any Safe signature");
 
 const ops = (await db.query("select fn, status, safe, tx from chain_ops where contract = $1 order by seq", [CONTRACT])).rows;
 console.log(ops.map((o) => `${o.fn}:${o.status}${o.safe ? " via " + o.safe.slice(0, 8) : ""}`).join("\n"));
 ok(ops.every((o) => o.status === "confirmed"), "every write confirmed");
 ok(ops.filter((o) => ["registerIssuer"].includes(o.fn)).every((o) => o.safe === PLATFORM_SAFE)
-  && ops.filter((o) => !["registerIssuer", "accept"].includes(o.fn)).every((o) => o.safe === ISSUER_SAFE), "each write went through the right Safe");
+  && ops.filter((o) => !["registerIssuer", "accept", "registerHolderKey"].includes(o.fn)).every((o) => o.safe === ISSUER_SAFE), "each write went through the right Safe");
 const t = await regC.bondTotals(id32("PENS-0001-BD"));
 ok(Number(t[0]) === TOTAL && Number(t[1]) === 942887 && Number(t[3]) === TOTAL - 942887 - 500000, "bond totals on-chain match the register");
 const sNonce = await new ethers.Contract(ISSUER_SAFE, ["function nonce() view returns (uint256)"], provider).nonce();

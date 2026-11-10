@@ -25,6 +25,10 @@ async function call(method, url, body) {
 
 export const api = {
   signIn: (id, passkey) => call("POST", "/api/holder/signin", { id, passkey }),
+  holderPrepare: (body) => call("POST", "/api/holder/prepare", body),
+  holderKeyPrepare: (body) => call("POST", "/api/holder/key/prepare", body),
+  holderKey: (body) => call("POST", "/api/holder/key", body),
+  clearDeviceKey: (issuer, id, reason) => call("POST", "/api/issuer/holder-key/clear", { issuer, id, reason }),
   setPasskey: (issuer, id, passkey) => call("POST", "/api/issuer/passkey", { issuer, id, passkey }),
   clearLockout: (issuer, id) => call("POST", "/api/issuer/clear-lockout", { issuer, id }),
   me: () => call("GET", "/api/auth/me"),
@@ -56,7 +60,9 @@ export const api = {
 const byId = (list, key = "id") => new Map(list.map((x) => [x[key], x]));
 
 // `issuer` scopes the issuer console to one issuer; the holder portal leaves it out.
-export function useRegistry({ onNotice, issuer } = {}) {
+// `beforeCommit`, when given, adds to each save: the holder portal uses it to get the holder's
+// device signatures for what the save will do on-chain.
+export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
   const [reg, setReg] = useState([]);
   const [bonds, setBonds] = useState([]);
   const [events, setEvents] = useState([]);
@@ -72,6 +78,8 @@ export function useRegistry({ onNotice, issuer } = {}) {
   const busy = useRef(false);
   const notice = useRef(onNotice);
   notice.current = onNotice;
+  const before = useRef(beforeCommit);
+  before.current = beforeCommit;
 
   const adopt = useCallback((s) => {
     synced.current = {
@@ -106,8 +114,9 @@ export function useRegistry({ onNotice, issuer } = {}) {
 
     busy.current = true;
     try {
-      const { version, revs } = await call("POST", "/api/commit",
-        { issuer, base: s.version, reg: changedReg, bonds: changedBonds, events: newEvents });
+      const body = { issuer, base: s.version, reg: changedReg, bonds: changedBonds, events: newEvents };
+      const extra = before.current ? await before.current(body) : null;
+      const { version, revs } = await call("POST", "/api/commit", { ...body, ...(extra || {}) });
       // Carry the server's new revisions forward. A record that was edited again while
       // this save was in flight keeps the newer edit, which then saves with the new revision.
       const settle = (sent, rev, map, current) => {

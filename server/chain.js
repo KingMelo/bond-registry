@@ -34,11 +34,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
 import * as safeLib from "./safe.js";
+import * as holderKeys from "./holder-keys.js";
 
 const ABI = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "registry-abi.json"), "utf8"));
 export const CONTRACT = process.env.CHAIN_CONTRACT || "";
 export const EXPLORER = (process.env.CHAIN_EXPLORER || "https://amoy.polygonscan.com").replace(/\/+$/, "");
 export const enabled = !!CONTRACT;
+export const CHAIN_ID = Number(process.env.CHAIN_ID || 80002);
 const iface = new ethers.Interface(ABI);
 const coder = ethers.AbiCoder.defaultAbiCoder();
 
@@ -96,6 +98,22 @@ export const SCHEMA = `
   create index if not exists chain_ops_open on chain_ops (status, seq);
   create index if not exists chain_ops_ref on chain_ops (ref, seq);
 `;
+
+/** The challenge the holder of `signerId` signs for this call, at this nonce. */
+export const holderChallenge = (signerId, nonce, fn, args) =>
+  holderKeys.challengeFor({ iface, chainId: CHAIN_ID, contract: CONTRACT || ethers.ZeroAddress, signerId, nonce, fn, args });
+/** A document hash for an action that has only a note behind it. */
+export const noteDoc = (recordId, fn, note) => tagged("action", [recordId, fn, "", note]);
+/** The document hash a device key is registered under. */
+export const deviceDoc = (recordId, credId) => tagged("device", [recordId, credId]);
+
+/** When a record's mailing went out, in unix seconds: starts the holder's response period on-chain. */
+const mailedOn = (a) => {
+  const t = Date.parse(a.deliveredAt || "") || Date.parse(a.created || "") || Date.now();
+  return String(Math.floor(Math.min(t, Date.now()) / 1000));
+};
+
+export async function queueOps(c, ops) { if (enabled) await queue(c, ops); }
 
 async function queue(c, ops) {
   for (const o of ops) {
@@ -180,7 +198,7 @@ const EVENT_FOR = {
  * The contract calls that one save of assignment records implies.
  * `before` maps record id → stored data (undefined for new records); `after` is what was saved.
  */
-export async function queueRecordChanges(c, { app, before, after, events }) {
+export async function queueRecordChanges(c, { app, before, after, events, authFor }) {
   if (!enabled || !after.length) return;
   const evFor = (id, name) => events.find((e) => e.id === id && e.ev === name);
   const created = [], refs = [], moves = [];
@@ -188,7 +206,7 @@ export async function queueRecordChanges(c, { app, before, after, events }) {
     const o = before.get(a.id), B = id32(a.bond), A = id32(a.id);
     if (!o) {
       if (a.origin === "AssignOut")
-        created.push({ bond: a.bond, ref: a.id, fn: "assignOut", args: [B, id32(a.parent), A, String(a.units), a.docHash], role: "relayer" });
+        created.push({ bond: a.bond, ref: a.id, fn: "assignOut", args: [B, id32(a.parent), A, String(a.units), a.docHash], role: "relayer", signer: a.parent });
       else if (a.origin === "Replacement")
         created.push({ bond: a.bond, ref: a.id, fn: "replaceAssignment", args: [B, id32(a.parent), A, a.docHash], role: "issuer" });
       else
@@ -197,7 +215,7 @@ export async function queueRecordChanges(c, { app, before, after, events }) {
     if (a.filingRef && a.filingRef !== o?.filingRef)
       refs.push({ bond: a.bond, ref: a.id, fn: "setFilingRef", args: [B, A, a.filingRef], role: "issuer" });
     if (a.deliveryRef && a.deliveryRef !== o?.deliveryRef)
-      refs.push({ bond: a.bond, ref: a.id, fn: "setDeliveryRef", args: [B, A, a.deliveryRef], role: "issuer" });
+      refs.push({ bond: a.bond, ref: a.id, fn: "setDeliveryRef", args: [B, A, a.deliveryRef, mailedOn(a)], role: "issuer" });
     if (o && o.status !== a.status && !IMPLIED.has(a.status)) {
       let [fn, role] = TRANSITIONS[o.status + ">" + a.status] || [undefined, undefined];
       if (fn === null) [fn, role] = app === "holder" ? ["cancelAssignOut", "relayer"] : ["issuerCancelAssignOut", "issuer"];
@@ -205,7 +223,9 @@ export async function queueRecordChanges(c, { app, before, after, events }) {
         moves.push({ bond: a.bond, ref: a.id, fn: "unsupported", args: [], role: "issuer", status: "failed",
           error: `No contract call moves a record from ${o.status} to ${a.status}.` });
       } else {
-        moves.push({ bond: a.bond, ref: a.id, fn, args: [B, A, actionDoc(a.id, fn, evFor(a.id, EVENT_FOR[fn]))], role });
+        // A holder's own move is signed by their key: the assignor's for cancelling an assign-out.
+        const signer = holderKeys.SIGNED[fn] ? (fn === "cancelAssignOut" ? a.parent : a.id) : undefined;
+        moves.push({ bond: a.bond, ref: a.id, fn, args: [B, A, actionDoc(a.id, fn, evFor(a.id, EVENT_FOR[fn]))], role, signer });
       }
     }
     // A passkey reissued on a locked record: the status stays Locked.
@@ -214,7 +234,18 @@ export async function queueRecordChanges(c, { app, before, after, events }) {
   }
   // New records first (a cancel or replacement can refer to them), then references (a credential
   // needs its UCC-3 on record first), then status changes.
-  await queue(c, [...created, ...refs, ...moves]);
+  const ops = [...created, ...refs, ...moves];
+  // Holder moves carry the holder's device signature. Without one, only an assignment taking
+  // effect at the end of its response period can go (the contract checks the date).
+  for (const op of ops) {
+    if (!op.signer) continue;
+    const auth = authFor ? await authFor(op) : null;
+    if (auth) op.args.push(auth);
+    else if (op.fn === "accept") op.args.push(holderKeys.NOAUTH);
+    else Object.assign(op, { status: "failed", error: op.fn + " needs the holder's device signature, and none came with it." });
+    delete op.signer;
+  }
+  await queue(c, ops);
 }
 
 /**
@@ -230,9 +261,15 @@ function replayOps(a) {
       error: `Can't rebuild ${a.id} (${a.origin}, ${a.status}) on the new contract automatically.` }];
   ops.push({ bond: a.bond, ref: a.id, fn: "issueAssignment", args: [B, A, String(a.issuedUnits ?? a.units), a.docHash], role: "issuer" });
   if (a.filingRef && isHash(a.filingRef)) ops.push({ bond: a.bond, ref: a.id, fn: "setFilingRef", args: [B, A, a.filingRef], role: "issuer" });
-  if (a.deliveryRef && isHash(a.deliveryRef)) ops.push({ bond: a.bond, ref: a.id, fn: "setDeliveryRef", args: [B, A, a.deliveryRef], role: "issuer" });
-  if (a.status === "Accepted") ops.push({ bond: a.bond, ref: a.id, fn: "accept", args: [B, A, tagged("action", [a.id, "accept", "replay", ""])], role: "relayer" });
-  if (a.status === "Rejected") ops.push({ bond: a.bond, ref: a.id, fn: "rejectAssignment", args: [B, A, tagged("action", [a.id, "rejectAssignment", "replay", a.rejectionReason])], role: "relayer" });
+  if (a.deliveryRef && isHash(a.deliveryRef)) ops.push({ bond: a.bond, ref: a.id, fn: "setDeliveryRef", args: [B, A, a.deliveryRef, mailedOn(a)], role: "issuer" });
+  // Without the holder's signature, only an unanswered assignment can be rebuilt as in effect
+  // (once its response period has passed); a holder's own acceptance or rejection can't be replayed.
+  if (a.status === "Accepted") ops.push(a.effective === "deemed"
+    ? { bond: a.bond, ref: a.id, fn: "accept", args: [B, A, tagged("action", [a.id, "accept", "replay", ""]), holderKeys.NOAUTH], role: "relayer" }
+    : { bond: a.bond, ref: a.id, fn: "unsupported", args: [], role: "relayer", status: "failed",
+        error: `${a.id} took effect with the holder's signature on the old contract; it can't be replayed without it.` });
+  if (a.status === "Rejected") ops.push({ bond: a.bond, ref: a.id, fn: "unsupported", args: [], role: "relayer", status: "failed",
+    error: `${a.id} was rejected with the holder's signature on the old contract; it can't be replayed without it.` });
   return ops;
 }
 
@@ -317,6 +354,8 @@ async function alreadyDone(reg, op, signer) {
     case "suspendIssuer": return (await reg.issuers(a[0])).suspended;
     case "reinstateIssuer": return !(await reg.issuers(a[0])).suspended;
     case "recordRotation": return false;
+    case "registerHolderKey": case "rotateHolderKey": return (await reg.holderKeys(a[1])).x === BigInt(a[2]);
+    case "clearHolderKey": { const k = await reg.holderKeys(a[1]); return k.x === 0n && k.y === 0n; }
     default:
       if (op.fn in TARGET) return Number((await reg.assignments(a[1])).status) === TARGET[op.fn];
       return false;

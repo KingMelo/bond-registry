@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { ISSUERS, BONDS, ASSIGNMENTS, PASSKEYS, EVENTS } from "./seed.js";
 import * as chain from "./chain.js";
+import * as holderKeys from "./holder-keys.js";
 
 const APP = ["issuer", "platform"].includes(process.env.APP) ? process.env.APP : "holder";
 const PORT = Number(process.env.PORT) || 3000;
@@ -43,7 +44,9 @@ const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
 // An assignment the holder doesn't reject within this many days of its mailing takes effect.
 const RESPONSE_DAYS = Number(process.env.RESPONSE_DAYS || 30);
 // Never stored in the record itself: credential state lives in its own table.
-const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain"];
+const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain", "deviceKey",
+  // Kept by the server only: the holder's device key and when the mailing went out.
+  "holder", "deliveredAt"];
 // Contact details and mail numbers stay out of the public holder portal.
 const HOLDER_HIDDEN = ["address", "instrumentMail", "passkeyMail", "requestedContact"];
 // Issuer codes that would be confusing or are kept for the platform.
@@ -228,6 +231,18 @@ const RELAYER_MOVES = {
   Locked: ["Superseded"],
 };
 
+// What a holder may change on their own record: its status (checked by relayerAllows) and the
+// notes that go with each move. Everything else on a record is the issuer's.
+const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
+  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested"];
+const REQUEST_FIELDS = ["requestedParty", "requestedBy", "requestedContact", "requestedOn", "requestHash"];
+const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "address", "instrumentMail", "passkeyMail", "requestedContact"];
+function changedFields(before, after) {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((k) => !IGNORED.includes(k) || k === "requestedContact")
+    .filter((k) => k in after && JSON.stringify(before[k] ?? null) !== JSON.stringify(after[k] ?? null));
+}
+
 function relayerAllows(before, after) {
   if (!before) return after.origin === "AssignOut" && after.status === "AwaitingCredential";
   if (before.status === after.status) return true;
@@ -258,7 +273,7 @@ const limited = (key, max = 20) => {
 
 const wrap = (fn) => async (req, res, next) => {
   try { await fn(req, res); } catch (e) {
-    if (e instanceof Reject) return res.status(e.status).json({ error: e.message });
+    if (e instanceof Reject || (e?.status >= 400 && e?.status < 500 && !e.code)) return res.status(e.status).json({ error: e.message });
     next(e);
   }
 };
@@ -274,6 +289,17 @@ async function tx(fn) {
     await c.query("rollback").catch(() => {});
     throw e;
   } finally { c.release(); }
+}
+
+/* The holder's device key on the current contract, as the apps show it. */
+function activeKey(data) {
+  const k = data?.holder;
+  return k && k.contract === (chain.CONTRACT || "local") && k.x ? k : null;
+}
+function deviceKeyOf(data) {
+  const k = activeKey(data);
+  return k ? { fingerprint: holderKeys.fingerprint(k.x), since: k.since, credId: k.credId }
+    : data?.holder?.clearedOn && data.holder.contract === (chain.CONTRACT || "local") ? { cleared: data.holder.clearedOn } : null;
 }
 
 /* Reads the register for a set of bonds. The holder portal hides contact details. */
@@ -296,7 +322,8 @@ async function readState(bondFilter, params) {
     }),
     reg: regs.rows.map(({ data, rev }) => {
       const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false,
-        chain: onChain.get(data.id) || null };
+        chain: onChain.get(data.id) || null, deviceKey: deviceKeyOf(data) };
+      delete out.holder;
       if (APP === "holder") for (const k of HOLDER_HIDDEN) delete out[k];
       return out;
     }),
@@ -337,7 +364,7 @@ async function takeEffectWhenDue() {
 /* Saves one commit after the caller's own checks; enforces the units rule for the bonds given.
    A changed bond or record must carry the revision it was loaded at; a new one carries none.
    Returns the new revisions so the app can keep editing without reloading. */
-async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = false }) {
+async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = false, authFor }) {
   const touched = [...new Set([...bonds.map((b) => b.id), ...reg.map((a) => a.bond)])];
   // Lock the bonds involved, so two saves can't each pass the units rule on their own.
   if (touched.length) await c.query("select id from bonds where id = any($1) order by id for update", [touched]);
@@ -393,7 +420,7 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
       "insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4) on conflict (eid) do nothing",
       [eid, data.bond, data.id, data]);
   }
-  await chain.queueRecordChanges(c, { app: APP, before: oldRecs, after: savedRecs, events });
+  await chain.queueRecordChanges(c, { app: APP, before: oldRecs, after: savedRecs, events, authFor });
 
   // Units rule, per bond: prior + live + unassigned + redeemed = total.
   if (!touched.length) return revs;
@@ -474,41 +501,153 @@ if (APP === "holder") {
       issuers: issuers.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status })) });
   }));
 
-  app.post("/api/commit", wrap(async (req, res) => {
-    const { base, bonds = [], reg = [], events = [] } = req.body || {};
+  // ---- holder sessions: the mailed access code opens one record for a while.
+  const SESSION_SECRET = process.env.HOLDER_SESSION_SECRET || sha256("holder-session:" + PEPPER + process.env.DATABASE_URL);
+  const HOLDER_SESSION_MIN = 30;
+  const signToken = (id) => {
+    const body = Buffer.from(JSON.stringify({ id, exp: Date.now() + HOLDER_SESSION_MIN * 60_000 })).toString("base64url");
+    return body + "." + crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  };
+  const readToken = (t) => {
+    const [body, mac] = String(t || "").split(".");
+    if (!body || !mac) return null;
+    const want = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+    if (want.length !== mac.length || !crypto.timingSafeEqual(Buffer.from(want), Buffer.from(mac))) return null;
+    const v = JSON.parse(Buffer.from(body, "base64url").toString());
+    return v.exp > Date.now() ? v : null;
+  };
+  const needSession = (t) => {
+    const v = readToken(t);
+    if (!v) throw new Reject(401, "Your session has ended. Sign in again with your assignment ID and access code.");
+    return v;
+  };
+  // Passkeys belong to this site: its host name and origin.
+  const site = (req) => {
+    const host = req.get("host") || "";
+    return { rpId: process.env.HOLDER_RP_ID || req.hostname, origins: [process.env.HOLDER_ORIGIN || req.protocol + "://" + host] };
+  };
+  const contractOrLocal = () => chain.CONTRACT || "local";
+  const deviceDoc = chain.deviceDoc;
+  const keyArgs = (rec, x, y, doc) => [chain.id32(rec.bond), chain.id32(rec.id), x, y, doc];
+  const startNonce = (data) => (data?.holder && data.holder.contract === contractOrLocal() ? Number(data.holder.nonce || 0) : 0);
+  const challengeOf = chain.holderChallenge;
+
+  /**
+   * One holder save. `mode.collect` gathers what the device must sign (nothing is kept: the caller
+   * rolls back); otherwise each signed call needs the next assertion in `mode.assertions`.
+   */
+  async function holderSave(c, body, mode, req) {
+    const { bonds = [], reg = [], events = [] } = body || {};
     if (bonds.length) throw new Reject(403, "The holder portal cannot change bonds.");
-    const nv = await tx(async (c) => {
-      const clean = [];
-      for (const raw of reg) {
-        const a = cleanRecord(raw);
-        for (const k of HOLDER_HIDDEN) if (!(k in raw) || raw[k] === undefined) delete a[k];
-        const owner = (await c.query(
-          "select i.status, b.review from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [a.bond])).rows[0];
-        if (!owner || owner.status !== "approved" || owner.review !== "approved")
-          throw new Reject(403, "This bond's issuer is not accepting changes right now.");
-        const before = (await c.query("select data from assignments where id = $1", [a.id])).rows[0]?.data;
-        if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
-        if (before && TERMINAL.includes(before.status))
-          throw new Reject(422, a.id + " is " + before.status + " and cannot be changed.");
-        if (!relayerAllows(before, a))
-          throw new Reject(403, "The holder portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
-        needsDocument(before, a);
-        if (before?.status === "Issued" && a.status === "Rejected") {
-          if (!String(a.rejectionReason || "").trim()) throw new Reject(400, "Give a reason for rejecting " + a.id + ".");
-          // The amount goes back where it came from: the assignor's record for an assign-out (sent
-          // with this save), otherwise the bond's unassigned balance, which only the server changes.
-          if (before.origin !== "AssignOut") {
-            const r = await c.query(
-              `update bonds set data = jsonb_set(data, '{unassigned}', to_jsonb((data->>'unassigned')::numeric + $2)), rev = rev + 1
-               where id = $1`, [a.bond, Number(before.units)]);
-            if (!r.rowCount) throw new Reject(404, "No such bond.");
-          }
-        }
-        clean.push(chain.normalizeRecord(a));
+    const session = readToken(body?.token);
+    const clean = [], units = [];
+    for (const raw of reg) {
+      const a = cleanRecord(raw);
+      for (const k of HOLDER_HIDDEN) if (!(k in raw) || raw[k] === undefined) delete a[k];
+      const owner = (await c.query(
+        "select i.status, b.review from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [a.bond])).rows[0];
+      if (!owner || owner.status !== "approved" || owner.review !== "approved")
+        throw new Reject(403, "This bond's issuer is not accepting changes right now.");
+      const before = (await c.query("select data from assignments where id = $1", [a.id])).rows[0]?.data;
+      if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
+      if (before && TERMINAL.includes(before.status))
+        throw new Reject(422, a.id + " is " + before.status + " and cannot be changed.");
+      if (!relayerAllows(before, a))
+        throw new Reject(403, "The holder portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
+      // Who may make this change, and which fields: a new assignee asking for access needs nobody's
+      // session; everything else needs the session of the record's holder, or of the assignor for
+      // their own assign-outs. Amounts are checked against the save as a whole, below.
+      const changed = before ? changedFields(before, a) : [];
+      const accessRequest = before?.status === "AwaitingCredential" && a.status === "CredentialRequested";
+      if (accessRequest) {
+        if (changed.some((k) => !["status", ...REQUEST_FIELDS].includes(k))) throw new Reject(403, "An access request can't change the record.");
+      } else {
+        if (!session) throw new Reject(401, "Sign in with your assignment ID and access code first.");
+        const me = (await c.query("select data->>'parent' as parent, data->>'origin' as origin from assignments where id = $1", [session.id])).rows[0];
+        const role = a.id === session.id ? "holder"
+          : (before?.origin || a.origin) === "AssignOut" && (before ? before.parent : a.parent) === session.id ? "assignor"
+          : before && me?.origin === "AssignOut" && me.parent === a.id ? "parent" : null;
+        if (!role) throw new Reject(403, "You're signed in to " + session.id + "; " + a.id + " isn't yours to change.");
+        const may = role === "holder" ? HOLDER_FIELDS : ["status", "units"];
+        if (before && changed.some((k) => !may.includes(k))) throw new Reject(403, "You can't change " + changed.filter((k) => !may.includes(k)).join(", ") + " on " + a.id + ".");
+        // The assignor can only cancel an assign-out; the parent of a new holder only closes when emptied.
+        if (role === "assignor" && before && a.status !== before.status && a.status !== "Cancelled") throw new Reject(403, "Only the new holder can do that.");
+        if (role === "parent" && a.status !== before.status && !(a.status === "Superseded" && Number(a.units) === 0)) throw new Reject(403, "You can't change " + a.id + ".");
+        if (role === "holder" && a.status === "Accepted" && before?.status === "Issued") Object.assign(a, { effective: "holder" });
       }
-      const bondsOk = new Set(clean.map((a) => a.bond));
-      for (const e of events) if (!bondsOk.has(e.bond)) throw new Reject(403, "An event must belong to a record being saved.");
-      const revs = await applyCommit(c, { bonds: [], reg: clean, events });
+      units.push({ a, before });
+      needsDocument(before, a);
+      if (before?.status === "Issued" && a.status === "Rejected") {
+        if (!String(a.rejectionReason || "").trim()) throw new Reject(400, "Give a reason for rejecting " + a.id + ".");
+        // The amount goes back where it came from: the assignor's record for an assign-out (sent
+        // with this save), otherwise the bond's unassigned balance, which only the server changes.
+        if (before.origin !== "AssignOut") {
+          const r = await c.query(
+            `update bonds set data = jsonb_set(data, '{unassigned}', to_jsonb((data->>'unassigned')::numeric + $2)), rev = rev + 1
+             where id = $1`, [a.bond, Number(before.units)]);
+          if (!r.rowCount) throw new Reject(404, "No such bond.");
+        }
+      }
+      clean.push(chain.normalizeRecord(a));
+    }
+    // Amounts only move with an assign-out: a new child takes units from its parent; a cancelled or
+    // rejected child gives them back. Nothing else in a holder save may change an amount.
+    const delta = new Map();
+    const add = (id, n) => delta.set(id, (delta.get(id) || 0) + n);
+    for (const { a, before } of units) {
+      if (!before) {
+        if (!(Number.isInteger(a.units) && a.units > 0 && a.issuedUnits === a.units)) throw new Reject(400, "Enter a whole number of cents for the assignment.");
+        add(a.parent, -a.units);
+      } else if (a.origin === "AssignOut" && ["Cancelled", "Rejected"].includes(a.status) && a.status !== before.status) add(a.parent, Number(before.units));
+    }
+    for (const { a, before } of units) {
+      if (!before) continue;
+      const want = Number(before.units) + (delta.get(a.id) || 0);
+      if (Number(a.units) !== want && !(TERMINAL.includes(a.status) && Number(a.units) === Number(before.units)))
+        throw new Reject(422, a.id + "'s amount doesn't match the transfer being made.");
+      delta.delete(a.id);
+    }
+    for (const [id, d] of delta) if (d) throw new Reject(422, "The save must include " + id + " with its amount adjusted.");
+
+    const bondsOk = new Set(clean.map((a) => a.bond));
+    for (const e of events) if (!bondsOk.has(e.bond)) throw new Reject(403, "An event must belong to a record being saved.");
+
+    // Each signed call: the signer's key, its next nonce, and the challenge the contract rebuilds.
+    const used = new Map();
+    let next = 0;
+    const authFor = async (op) => {
+      if (!session || op.signer !== session.id) throw new Reject(403, "Only the holder of " + op.signer + " can sign this.");
+      const data = (await c.query("select data from assignments where id = $1", [op.signer])).rows[0]?.data;
+      const key = activeKey(data);
+      if (!key) throw new Reject(409, "Set up your device first: sign in again and confirm with your phone or computer.");
+      const nonce = startNonce(data) + (used.get(op.signer) || 0);
+      const challenge = challengeOf(op.signer, nonce, op.fn, op.args);
+      used.set(op.signer, (used.get(op.signer) || 0) + 1);
+      if (mode.collect) { mode.collect.push({ fn: op.fn, ref: op.ref, challenge, credId: key.credId }); return holderKeys.NOAUTH; }
+      const assertion = (mode.assertions || [])[next++];
+      if (!assertion) throw new Reject(400, "This change needs your device's confirmation.");
+      return holderKeys.checkAssertion({ assertion, challenge, x: key.x, y: key.y, ...site(req) });
+    };
+    const revs = await applyCommit(c, { bonds: [], reg: clean, events, authFor });
+    for (const [id, n] of used)
+      await c.query("update assignments set data = jsonb_set(data, '{holder,nonce}', to_jsonb($2::int)) where id = $1",
+        [id, startNonce((await c.query("select data from assignments where id = $1", [id])).rows[0].data) + n]);
+    return revs;
+  }
+
+  class Collected extends Error {}
+
+  // What the holder's device must sign for a save, before it's made.
+  app.post("/api/holder/prepare", wrap(async (req, res) => {
+    const collect = [];
+    try { await tx(async (c) => { await holderSave(c, req.body, { collect }, req); throw new Collected(); }); }
+    catch (e) { if (!(e instanceof Collected)) throw e; }
+    res.json({ sign: collect });
+  }));
+
+  app.post("/api/commit", wrap(async (req, res) => {
+    const nv = await tx(async (c) => {
+      const revs = await holderSave(c, req.body, { assertions: req.body?.assertions || [] }, req);
       return { version: await bump(c), revs };
     });
     res.json(nv);
@@ -523,12 +662,57 @@ if (APP === "holder") {
       if (cred.locked) return { ok: false, code: "locked" };
       if (sameHex(hashKey(passkey, cred.salt), cred.hash)) {
         if (cred.attempts > 0) await c.query("update credentials set attempts = 0 where id = $1", [id]);
-        return { ok: true };
+        const data = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+        const key = activeKey(data);
+        return { ok: true, token: signToken(id), device: key ? { credId: key.credId, fingerprint: holderKeys.fingerprint(key.x) } : null,
+          // A new passkey for this record: the browser makes it with these.
+          enroll: key ? null : { userId: crypto.createHash("sha256").update("holder:" + id).digest("base64url"), name: id,
+            displayName: data?.party || id, challenge: crypto.randomBytes(32).toString("base64url"), rpId: site(req).rpId } };
       }
       const attempts = cred.attempts + 1, locked = attempts >= MAX_ATTEMPTS;
       await c.query("update credentials set attempts = $2, locked = $3, updated_at = now() where id = $1", [id, attempts, locked]);
       if (locked) await bump(c); // the issuer's queue needs to see the lockout
       return { ok: false, code: locked ? "locked" : "mismatch", left: MAX_ATTEMPTS - attempts };
+    });
+    res.json(out);
+  }));
+
+  // ---- registering the holder's device key: create a passkey, then sign its registration with it.
+  async function keyPlan(c, body, req) {
+    const session = needSession(body?.token);
+    holderKeys.checkCreation({ clientDataJSON: body?.clientDataJSON, ...site(req) });
+    let x, y;
+    try { ({ x, y } = holderKeys.keyFromSpki(body?.spki)); } catch (e) { throw new Reject(422, e.message); }
+    const credId = String(body?.credId || "");
+    if (!/^[A-Za-z0-9_-]{16,}$/.test(credId)) throw new Reject(400, "The device didn't give a key ID.");
+    const row = (await c.query("select data from assignments where id = $1 for update", [session.id])).rows[0];
+    if (!row) throw new Reject(404, "No such record.");
+    const rec = row.data;
+    if (TERMINAL.includes(rec.status) || ["AwaitingCredential", "CredentialRequested"].includes(rec.status))
+      throw new Reject(422, rec.id + " is " + rec.status + "; a device key can't be added now.");
+    if (activeKey(rec)) throw new Reject(409, "This record already has a device key. Use that device, or ask the issuer to reset it.");
+    const doc = deviceDoc(rec.id, credId), args = keyArgs(rec, x, y, doc), nonce = startNonce(rec);
+    return { session, rec, x, y, credId, doc, args, nonce, challenge: challengeOf(rec.id, nonce, "registerHolderKey", args) };
+  }
+
+  app.post("/api/holder/key/prepare", wrap(async (req, res) => {
+    const plan = await tx((c) => keyPlan(c, req.body, req));
+    res.json({ challenge: plan.challenge, credId: plan.credId });
+  }));
+
+  app.post("/api/holder/key", wrap(async (req, res) => {
+    const out = await tx(async (c) => {
+      const p = await keyPlan(c, req.body, req);
+      const auth = holderKeys.checkAssertion({ assertion: req.body?.assertion, challenge: p.challenge, x: p.x, y: p.y, ...site(req) });
+      const holder = { contract: contractOrLocal(), credId: p.credId, x: p.x, y: p.y, nonce: p.nonce + 1, since: stampNow() };
+      await c.query("update assignments set data = data || jsonb_build_object('holder', $2::jsonb), rev = rev + 1 where id = $1",
+        [p.rec.id, JSON.stringify(holder)]);
+      await chain.queueOps(c, [{ bond: p.rec.bond, ref: p.rec.id, fn: "registerHolderKey", args: [...p.args, auth], role: "relayer" }]);
+      await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
+        [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "DeviceKeyRegistered", actor: "HOLDER",
+          ref: "Device key " + holderKeys.fingerprint(p.x) }]);
+      await bump(c);
+      return { ok: true, fingerprint: holderKeys.fingerprint(p.x), credId: p.credId };
     });
     res.json(out);
   }));
@@ -876,6 +1060,30 @@ if (APP === "issuer") {
     const { id, passkey } = req.body || {};
     if (!id || normKey(passkey).length < 16) throw new Reject(400, "A 16-character passkey is required.");
     await setPasskey(pool, id, passkey);
+    res.json({ ok: true });
+  }));
+
+  // Recovery when a holder loses their device: clears the record's device key, on-chain too (signed
+  // through the issuer's Safe). The holder registers a new device at their next sign-in, usually
+  // with a new access code mailed after the issuer verifies them.
+  app.post("/api/issuer/holder-key/clear", wrap(async (req, res) => {
+    await recordAccess(req);
+    const { id, reason } = req.body || {};
+    if (!String(reason || "").trim()) throw new Reject(400, "Say how you verified the holder, for the record.");
+    await tx(async (c) => {
+      const row = (await c.query("select bond, data from assignments where id = $1 for update", [id])).rows[0];
+      if (!row) throw new Reject(404, "No such record.");
+      const k = row.data.holder;
+      if (!k || k.contract !== (chain.CONTRACT || "local") || !k.x) throw new Reject(409, id + " has no device key to reset.");
+      const holder = { ...k, x: null, y: null, credId: null, clearedOn: stampNow() };
+      await c.query("update assignments set data = data || jsonb_build_object('holder', $2::jsonb), rev = rev + 1 where id = $1",
+        [id, JSON.stringify(holder)]);
+      await chain.queueOps(c, [{ bond: row.bond, ref: id, fn: "clearHolderKey",
+        args: [chain.id32(row.bond), chain.id32(id), chain.noteDoc(id, "clearHolderKey", stampNow() + " " + String(reason).trim())], role: "issuer" }]);
+      await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
+        [crypto.randomUUID(), row.bond, id, { bond: row.bond, id, t: stampNow(), ev: "DeviceKeyReset", actor: "ISSUER", ref: String(reason).trim() }]);
+      await bump(c);
+    });
     res.json({ ok: true });
   }));
 
