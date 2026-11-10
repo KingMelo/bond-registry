@@ -449,10 +449,9 @@ export default function HolderPortal() {
   const [stepUp, setStepUp] = useState("");
   const [stepUpNeeded, setStepUpNeeded] = useState(false);
 
-  // lock / redeem
+  // lock
   const [lockKind, setLockKind] = useState("pledge");
   const [lockRotate, setLockRotate] = useState(false);
-  const [rdErr, setRdErr] = useState("");
   const [rjReason, setRjReason] = useState(""); // why the holder rejects an assignment
   const [rjErr, setRjErr] = useState("");
 
@@ -668,17 +667,7 @@ export default function HolderPortal() {
     flash("New access code requested. The issuer will verify your identity and mail it.");
   }
 
-  function requestRedemption() {
-    if (open.status !== "Accepted" || open.units <= 0) return setRdErr("Only a record that's in effect with an amount left can be redeemed.");
-    if (pendingChildren.length > 0) return setRdErr("Settle your pending transfers first. Each must take effect, be rejected or be cancelled.");
-    if (stepUp.trim() !== STEP_UP_DEMO) return setRdErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
-    setRdErr("");
-    setReg((r) => r.map((a) => (a.id === open.id ? { ...a, status: "PendingRedemption" } : a)));
-    emit(open.bond, open.id, "RedemptionRequested", "RELAYER", "—");
-    setStepUp(""); setStepUpNeeded(false);
-    setView("position");
-    flash("Redemption requested. The record is frozen pending issuer review.");
-  }
+
 
   function requestAccess() {
     const id = rId.trim().toUpperCase();
@@ -885,7 +874,7 @@ export default function HolderPortal() {
               <div className="mt-4">
                 <Note kind="warn">
                   This record is locked{open.lockReason ? " (" + open.lockReason.toLowerCase() + ")" : ""}.
-                  Assigning out and redemption are blocked until the issuer unlocks it.
+                  Assigning out is blocked until the issuer unlocks it.
                   {open.lockKind === "pledge" && " The issuer will need your lender's signed release to unlock it."}
                 </Note>
                 <div className="mt-3 space-y-3">
@@ -929,16 +918,6 @@ export default function HolderPortal() {
                   Assign out
                 </Button>
                 <Button variant="quiet" onClick={() => setView("lockConfirm")}>Lock this record</Button>
-                <Button variant="quiet" disabled={open.units <= 0 || pendingChildren.length > 0}
-                  onClick={() => { setRdErr(""); requestStepUp("redeemConfirm"); }}>
-                  Request redemption
-                </Button>
-                {pendingChildren.length > 0 && open.units > 0 && (
-                  <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5 }}>
-                    Redemption opens once your pending transfers take effect, are rejected or are cancelled.
-                    To redeem part of your holding, assign that portion to yourself first.
-                  </div>
-                )}
               </div>
             )}
 
@@ -1125,7 +1104,7 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Lock this record</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              Locking takes effect immediately and blocks assigning out and redemption. A signed
+              Locking takes effect immediately and blocks assigning out. A signed
               lock notice is recorded with the reason you give.
             </p>
 
@@ -1154,32 +1133,6 @@ export default function HolderPortal() {
             </Note>
             <div className="mt-5 space-y-3">
               <Button onClick={lock}>Lock it</Button>
-              <Button variant="quiet" onClick={() => setView("position")}>Cancel</Button>
-            </div>
-          </div>
-        )}
-
-        {/* ============ redeem confirm ============ */}
-        {inHolder && view === "redeemConfirm" && open && (
-          <div>
-            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Request redemption</h1>
-            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              This freezes {usd(open.units)} while the issuer reviews the register, the chain
-              record and the paperwork.
-            </p>
-            <Note kind="warn">
-              If the issuer approves, the record becomes Redeemed. That is terminal — the
-              contract will not accept any further action on it, ever. If they reject it, the
-              record is back in effect. Redemption covers the whole record.
-            </Note>
-            <div className="mt-5">
-              <Field label="Code sent to your verified contact" value={stepUp}
-                onChange={(v) => { setStepUp(v); setRdErr(""); }}
-                placeholder="6 digits" mono hint={"Demo code: " + STEP_UP_DEMO} />
-            </div>
-            {rdErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{rdErr}</p>}
-            <div className="space-y-3">
-              <Button onClick={requestRedemption}>Request redemption</Button>
               <Button variant="quiet" onClick={() => setView("position")}>Cancel</Button>
             </div>
           </div>

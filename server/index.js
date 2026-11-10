@@ -227,7 +227,9 @@ async function setPasskey(c, id, key) {
 const RELAYER_MOVES = {
   Issued: ["Accepted", "Rejected"], // acknowledged, or refused with a reason
   AwaitingCredential: ["CredentialRequested", "Cancelled"],
-  Accepted: ["Locked", "PendingRedemption", "Superseded"],
+  // Redemption isn't requested through the registry: the fiduciary paperwork tells holders where
+  // to get paid, and the issuer records the outcome.
+  Accepted: ["Locked", "Superseded"],
   Locked: ["Superseded"],
 };
 

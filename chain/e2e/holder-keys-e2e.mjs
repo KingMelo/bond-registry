@@ -185,15 +185,14 @@ await hsave(s2.token, phone2, { reg: [{ ...c2, status: "Rejected", rejectionReas
   events: [ev(c2.bond, c2.id, "AssignmentRejected", "Unknown assignor")] });
 ok((await hrec(a1.id)).units === 1_000_000, "the rejected $10.40 is back on A00001");
 
-// 6. Lock, issuer unlocks; redemption requested (signed) and approved.
+// 6. Lock, issuer unlocks. Holders don't request redemption through the registry: refused.
 a1 = await hrec(a1.id);
 await hsave(s1.token, phone, { reg: [{ ...a1, status: "Locked", lockKind: "pledge", lockReason: "Pledged", lockedOn: "now" }], events: [ev(a1.bond, a1.id, "Locked")] });
 await icommit({ reg: [{ ...(await rec(a1.id)), status: "Accepted", lockKind: null }], events: [ev(a1.bond, a1.id, "Unlocked", "release")] });
 await settle();
 a1 = await hrec(a1.id);
-await hsave(s1.token, phone, { reg: [{ ...a1, status: "PendingRedemption" }], events: [ev(a1.bond, a1.id, "RedemptionRequested")] });
-const b0 = await bondNow(), r1 = await rec(a1.id);
-await icommit({ bonds: [{ ...b0, redeemed: b0.redeemed + r1.units }], reg: [{ ...r1, status: "Redeemed" }], events: [ev(a1.bond, a1.id, "Redeemed", "paid")] });
+e = await hsave(s1.token, phone, { reg: [{ ...a1, status: "PendingRedemption" }], events: [ev(a1.bond, a1.id, "RedemptionRequested")] }).then(() => null, (x) => x);
+ok(e?.status === 403, "a holder can't request redemption through the registry (" + e?.status + ")");
 
 // 7. Lost phone: the issuer resets the key; the holder registers a new phone; the old one is dead.
 const CODE3 = "QRST-UVWX-YZ23-4567";
@@ -236,7 +235,7 @@ console.log("queue:", JSON.stringify(sum.counts), sum.failed.length ? JSON.strin
 ok(!sum.counts.failed && !sum.counts.queued && !sum.counts.sent, "every write confirmed (" + sum.counts.confirmed + ")");
 for (const a of (await st()).reg) ok((await onchain(a.id)) === a.status, `${a.id}: chain ${await onchain(a.id)} · register ${a.status}`);
 const nonce = (await regC.holderKeys(id32("PENS-0001-BD-A00001"))).nonce;
-ok(nonce === 5n, "A00001's key signed 5 times on-chain: register key, acknowledge, assign out, lock, redeem (" + nonce + ")");
+ok(nonce === 4n, "A00001's key signed 4 times on-chain: register key, acknowledge, assign out, lock (" + nonce + ")");
 
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");
 for (const c of procs) c.kill();
