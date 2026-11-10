@@ -26,7 +26,8 @@ export async function holderSignIn(call, H, id, code, dev) {
   if (r.enroll && dev) {
     const c = created(dev, r.enroll);
     const p = await call(H, "POST", "/api/holder/key/prepare", { token: r.token, ...c });
-    await call(H, "POST", "/api/holder/key", { token: r.token, ...c, assertion: signs(dev, p.challenge) });
+    const k = await call(H, "POST", "/api/holder/key", { token: r.token, ...c, assertion: signs(dev, p.challenge) });
+    r.accessCode = k.accessCode; // the personal code that replaces the one-time transfer code
   }
   return r;
 }

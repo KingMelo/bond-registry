@@ -158,7 +158,7 @@ const t4 = await v4.bondTotals(id32("KJPII-0001-BD")), t5 = await v5.bondTotals(
 ok(t4.toArray().map(String).join() === t5.toArray().map(String).join(), "bond totals match: " + t5.toArray().slice(0, 5).join(" / "));
 
 // ---- life goes on: same device, same Safe
-const sAgain = await holderSignIn(call, H, A1, CODE, null);
+const sAgain = await holderSignIn(call, H, A1, s1.accessCode, null); // the personal code set up on v4
 ok(!!sAgain.device && !sAgain.enroll, "the holder signs in on v5 and isn't asked to set up the device again");
 const c1 = await hrec(C1); a1 = await hrec(A1);
 await holderSave(call, H, sAgain.token, phone, { reg: [{ ...c1, status: "Cancelled" }, { ...a1, units: a1.units + 1040 }], events: [ev(a1.bond, C1, "AssignOutCancelled")] });

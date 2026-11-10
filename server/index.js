@@ -779,8 +779,17 @@ if (APP === "holder") {
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
         [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "DeviceKeyRegistered", actor: "HOLDER",
           ref: "Device key " + holderKeys.fingerprint(p.x) }]);
+      // The mailed code was a one-time transfer code: whoever mailed it (the issuer, or the assignor
+      // for an assign-out) knows it. Now that the holder's own device is set up, it's replaced by a
+      // personal access code only they see, shown once below. The transfer code stops working.
+      const accessCode = genAccessCode();
+      await setPasskey(c, p.rec.id, accessCode);
+      await c.query("delete from sealed_codes where id = $1", [p.rec.id]);
+      await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
+        [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "AccessCodeReplaced", actor: "HOLDER",
+          ref: "Transfer code used; personal access code set" }]);
       await bump(c);
-      return { ok: true, fingerprint: holderKeys.fingerprint(p.x), credId: p.credId };
+      return { ok: true, fingerprint: holderKeys.fingerprint(p.x), credId: p.credId, accessCode };
     });
     res.json(out);
   }));

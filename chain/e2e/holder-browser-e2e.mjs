@@ -87,6 +87,11 @@ await page.getByRole("heading", { name: "Set up this device" }).waitFor({ timeou
 await shot("2-device-setup");
 ok(true, "the mailed code opens the record and asks to set up the device");
 await page.getByRole("button", { name: "Set up device key" }).click();
+await page.getByRole("heading", { name: "Your access code" }).waitFor({ timeout: 20000 });
+const personal = (await page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/).first().textContent()).trim();
+ok(personal !== CODE, "after device setup the holder gets their own access code, shown once");
+await shot("3a-personal-code");
+await page.getByRole("button", { name: "I've written it down" }).click();
 await page.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
 const creds = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials;
 ok(creds.length === 1 && creds[0].rpId === "localhost", "the device made one passkey for this site");
@@ -147,7 +152,7 @@ await p2.getByLabel("Assignment ID").fill(A1);
 await p2.getByLabel("Access code").fill(CODE);
 await p2.getByRole("button", { name: "Continue" }).click();
 await p2.waitForTimeout(1500);
-ok(!(await p2.getByRole("heading", { name: "Set up this device" }).count()), "someone else with the code can't register a second device");
+ok(!(await p2.getByRole("heading", { name: "Set up this device" }).count()), "the mailed transfer code no longer opens the record");
 const before = await call(H, "GET", "/api/state");
 // Try to lock it from the other browser: its device has no key for this record, so it can't sign.
 const lockBtn = p2.getByRole("button", { name: /^Lock/ }).first();

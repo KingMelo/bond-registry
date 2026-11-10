@@ -539,6 +539,7 @@ export default function HolderPortal() {
 
   // First sign-in on this record: the device makes a key, then signs its registration with it.
   const [devErr, setDevErr] = useState("");
+  const [myCode, setMyCode] = useState(null); // the personal access code that replaced the transfer code, shown once
   const [devBusy, setDevBusy] = useState(false);
   async function setUpDevice() {
     const s = session.current;
@@ -550,9 +551,9 @@ export default function HolderPortal() {
       const assertion = await signWithDevice({ challenge, credId: made.credId, rpId: s.rpId });
       const r = await api.holderKey({ token: s.token, ...made, assertion });
       setDevice({ fingerprint: r.fingerprint, credId: r.credId });
+      setMyCode(r.accessCode);
       await reload().catch(() => {});
-      flash("Device key set up. Its registration is being recorded on-chain.");
-      setView(open?.status === "Issued" ? "claim" : "position");
+      setView("newCode");
     } catch (e) { setDevErr(e.message); } finally { setDevBusy(false); }
   }
 
@@ -730,9 +731,10 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Open your assignment</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-              Enter the assignment ID from your instrument and the access code from the sealed
-              envelope in the same mailing. The first time, your phone or computer then sets up a
-              device key: every action you take here is signed with it.
+              Enter the assignment ID from your instrument and your access code. The first time,
+              that's the one-time transfer code from the sealed envelope in your mailing; your phone or
+              computer then sets up a device key, and you get your own access code to use from then on.
+              Every action you take here is signed with your device.
             </p>
 
             <Field label="Assignment ID" value={qId} onChange={setQId} placeholder="KPII-0001-BD-A00001" mono />
@@ -768,6 +770,7 @@ export default function HolderPortal() {
             <Rows data={[
               ["Assignment", open.id],
               ["You'll be asked", "Twice: once to make the key, once to sign its registration"],
+              ["Then", "You get your own access code. The one from the mailing stops working."],
               ["Use", "The device you'll use to manage this assignment. Passkeys saved to your Apple, Google or Microsoft account work on your other devices too."],
             ]} />
             {!passkeysAvailable() && <div className="mt-4"><Note kind="warn">This browser can't use passkeys. Open this page on an up-to-date phone or computer.</Note></div>}
@@ -775,6 +778,32 @@ export default function HolderPortal() {
             <div className="mt-5 space-y-3">
               <Button disabled={devBusy || !passkeysAvailable()} onClick={setUpDevice}>{devBusy ? "Follow your device's prompts…" : "Set up device key"}</Button>
               <Button variant="quiet" onClick={() => { session.current = null; setView(null); setOpenId(null); }}>Not now</Button>
+            </div>
+          </div>
+        )}
+
+        {/* ============ personal access code ============ */}
+        {inHolder && view === "newCode" && open && (
+          <div>
+            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Your access code</h1>
+            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 18px", maxWidth: "62ch" }}>
+              Your device key is set up. The code that came in the mailing was a one-time transfer code,
+              and it no longer works: whoever mailed it can't use it. From now on you sign in to {open.id} with
+              this code, then confirm on your device.
+            </p>
+            <div className="px-3 py-4 mb-3 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
+              fontSize: 24, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>
+              {myCode}
+            </div>
+            <Note kind="warn">
+              <strong style={{ fontWeight: 600 }}>Shown once, and only to you.</strong> Write it down and keep it somewhere
+              safe. Nobody else has it, not the issuer and not the registry, which keeps only a fingerprint of it.
+              If you lose it, the issuer can verify you and mail a new one.
+            </Note>
+            <div className="mt-5">
+              <Button onClick={() => { setMyCode(null); flash("Device key set up. Its registration is being recorded on-chain."); setView(open?.status === "Issued" ? "claim" : "position"); }}>
+                I've written it down
+              </Button>
             </div>
           </div>
         )}
@@ -1088,7 +1117,7 @@ export default function HolderPortal() {
             ]} />
 
             <div className="mt-5">
-              <Label>{childIssued.party}'s access code</Label>
+              <Label>{childIssued.party}'s transfer code</Label>
               {!childCode ? (
                 <div style={{ fontSize: 14, color: T.inkSoft, padding: "14px 0" }}>Saving the assignment and confirming your device's signature…</div>
               ) : childCode.error ? (
@@ -1104,7 +1133,8 @@ export default function HolderPortal() {
                     own envelope, and send it with your signed instrument to {childIssued.party} in one certified
                     mailing. Keep the tracking number: the issuer records it when they activate the assignee.
                     {" "}{childIssued.party} can't use the code until the issuer has verified them and recorded the
-                    UCC-3; then they sign in with it and set up their own device. Don't keep a copy.
+                    UCC-3. It works once: when they sign in and set up their device, it's replaced by their own
+                    access code, and this one stops working.
                   </Note>
                 </>
               )}

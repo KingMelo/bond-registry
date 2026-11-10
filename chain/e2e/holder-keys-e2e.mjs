@@ -91,7 +91,7 @@ async function signIn(id, code, dev) {
   if (r.enroll && dev) {
     const c = created(dev, r.enroll);
     const p = await call(H, "POST", "/api/holder/key/prepare", { token: r.token, ...c });
-    await call(H, "POST", "/api/holder/key", { token: r.token, ...c, assertion: signs(dev, p.challenge) });
+    r.accessCode = (await call(H, "POST", "/api/holder/key", { token: r.token, ...c, assertion: signs(dev, p.challenge) })).accessCode;
   }
   return r;
 }
@@ -184,6 +184,13 @@ await icommit({ reg: [{ ...(await rec(child.id)), status: "Issued", passkeyMail:
 // 5. The new holder signs in on their own phone and rejects it, with a reason: the $10.40 goes back.
 const phone2 = newDevice();
 const s2 = await signIn(child.id, CODE2, phone2);
+ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(s2.accessCode) && s2.accessCode !== CODE2, "setting up the device replaces the transfer code with a personal access code");
+{
+  const old = await call(H, "POST", "/api/holder/signin", { id: child.id, passkey: CODE2 });
+  ok(!old.ok && old.code === "mismatch", "the transfer code the assignor knew no longer opens the record (" + old.code + ")");
+  const mine = await call(H, "POST", "/api/holder/signin", { id: child.id, passkey: s2.accessCode });
+  ok(mine.ok && !!mine.device, "the new holder's personal code does");
+}
 a1 = await hrec(a1.id); c2 = await hrec(child.id);
 e = await tryCall(H, "POST", "/api/commit", { token: s2.token, reg: [{ ...a1, party: "Company D" }], events: [] });
 ok(e?.status === 403, "the new holder can't edit their assignor's record (" + e?.status + ")");
@@ -230,7 +237,7 @@ let a3 = await hrec("PENS-0001-BD-A00003");
 e = await hsave(s3.token, old, { reg: [{ ...a3, status: "Rejected", rejectionReason: "x" }] }).then(() => null, (x) => x);
 ok(e?.status === 409, "the old phone can no longer act (" + e?.status + ")");
 const fresh = newDevice();
-const s3b = await signIn("PENS-0001-BD-A00003", CODE3, fresh);
+const s3b = await signIn("PENS-0001-BD-A00003", s3.accessCode, fresh); // their personal code still opens it; a new device is set up
 a3 = await hrec("PENS-0001-BD-A00003");
 await hsave(s3b.token, fresh, { reg: [{ ...a3, status: "Accepted", accepted: "now", effective: "holder" }], events: [ev(a3.bond, a3.id, "Acknowledged")] });
 
