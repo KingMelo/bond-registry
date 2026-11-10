@@ -56,6 +56,7 @@ export const api = {
   platformSigning: () => call("GET", "/api/platform/signing"),
   platformSign: (seq, signature) => call("POST", "/api/platform/sign", { seq, signature }),
   chainRetry: (seq) => call("POST", "/api/platform/chain/retry", { seq }),
+  chainFreeze: () => call("POST", "/api/platform/chain/freeze", {}),
 };
 
 const byId = (list, key = "id") => new Map(list.map((x) => [x[key], x]));

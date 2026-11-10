@@ -1299,6 +1299,14 @@ if (APP === "platform") {
     res.json(await chain.summary(pool));
   }));
 
+  // Freezes this contract so a new version can copy it. Owner only; approved through the platform's Safe.
+  app.post("/api/platform/chain/freeze", wrap(async (req, res) => {
+    const u = await needStaff(req);
+    if (!isOwner(u)) throw new Reject(403, "Only the platform owner can freeze the contract.");
+    try { await chain.freezeForMove(pool); } catch (e) { throw new Reject(e.status || 409, e.message); }
+    res.json({ ok: true });
+  }));
+
   app.post("/api/platform/chain/retry", wrap(async (req, res) => {
     const u = await needStaff(req);
     if (!isOwner(u)) throw new Reject(403, "Only the platform owner can retry chain writes.");

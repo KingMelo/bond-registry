@@ -13,6 +13,7 @@ const FN_SAY = {
   recordRotation: "Record a passkey reissue", redeem: "Record a redemption",
   suspendIssuer: "Suspend an issuer", reinstateIssuer: "Reinstate an issuer",
   clearHolderKey: "Reset a holder's device key",
+  pause: "Freeze the registry contract (for a move to a new version)", unpause: "Unfreeze the registry contract",
 };
 export const sayFn = (fn) => FN_SAY[fn] || fn;
 

@@ -228,7 +228,8 @@ const FN_LABEL = {
   registerIssuer: "Register issuer", anchorBond: "Anchor bond", recordPriorInstrument: "Record prior instrument",
   reversePriorInstrument: "Reverse prior instrument", issueAssignment: "Issue assignment", assignOut: "Assign out",
   replaceAssignment: "Replace assignment", setFilingRef: "Record UCC-3 filing", setDeliveryRef: "Record mailing",
-  accept: "Took effect", rejectAssignment: "Rejected by holder", registerHolderKey: "Holder device key", rotateHolderKey: "Holder device key changed", clearHolderKey: "Holder device key reset", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
+  accept: "Took effect", rejectAssignment: "Rejected by holder", registerHolderKey: "Holder device key", pause: "Freeze contract", importIssuer: "Copy issuer", importBond: "Copy bond",
+  importPrior: "Copy prior instrument", importRecord: "Copy record", finishImport: "Finish the copy", rotateHolderKey: "Holder device key changed", clearHolderKey: "Holder device key reset", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
   issueCredential: "Issue credential", cancelAssignOut: "Cancel assign-out", issuerCancelAssignOut: "Cancel assign-out (issuer)",
   lock: "Lock", unlock: "Unlock", recordRotation: "Record passkey rotation", redeem: "Redeemed",
   suspendIssuer: "Suspend issuer",
@@ -252,6 +253,11 @@ function ChainPanel({ me, flash }) {
   const retry = async (seq) => {
     try { await api.chainRetry(seq); flash("Queued again."); await load(); } catch (e) { flash(e.message); }
   };
+  const [freezeOk, setFreezeOk] = useState(false);
+  const freeze = async () => {
+    try { await api.chainFreeze(); setFreezeOk(false); flash("Freeze queued. Approve it with your Trezor above."); await load(); } catch (e) { flash(e.message); }
+  };
+  const openWrites = n("queued") + n("sent") + n("signing") + n("failed");
   return (
     <div>
       <Heading>Chain</Heading>
@@ -269,6 +275,8 @@ function ChainPanel({ me, flash }) {
         ["Waiting to be written", String(n("queued") + n("sent"))],
         n("signing") > 0 && ["Waiting for signatures", String(n("signing"))],
         s.platformSafe && ["Platform role held by", "Safe " + s.platformSafe],
+        s.predecessor && ["Copied from", s.predecessor.slice(0, 10) + "…" + s.predecessor.slice(-6) + " (the contract this one replaced)"],
+        s.freeze && ["Frozen for a move", s.freeze === "confirmed" ? "Yes: no more writes go to this contract" : s.freeze === "failed" ? "The freeze was refused; see below" : "Waiting: " + s.freeze],
         ["Refused", String(n("failed"))],
         s.last && ["Last transaction", <a href={s.explorer + "/tx/" + s.last.tx} target="_blank" rel="noreferrer"
           style={{ color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 }}>{new Date(s.last.updated_at).toLocaleString()}</a>],
@@ -285,6 +293,25 @@ function ChainPanel({ me, flash }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+      {me.role === "owner" && !s.freeze && (
+        <div className="mt-6 pt-4" style={{ borderTop: "1px solid " + T.rule }}>
+          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 6 }}>Move to a new contract version</div>
+          <p style={{ fontSize: 14, color: T.inkSoft, lineHeight: 1.6, margin: "0 0 10px", maxWidth: "62ch" }}>
+            Step one is freezing this contract, so the new version can copy everything it holds
+            (records, holders' device keys, prior instruments) exactly. Once frozen, nothing more is
+            written here; the registry waits until the new version is deployed and has copied it.
+            {openWrites > 0 && " First, " + openWrites + " open write(s) must finish or be fixed."}
+          </p>
+          {!freezeOk ? (
+            <Button variant="quiet" disabled={openWrites > 0} onClick={() => setFreezeOk(true)}>Freeze this contract for a move…</Button>
+          ) : (
+            <div className="flex gap-3 flex-wrap">
+              <Button danger onClick={freeze}>Yes, freeze it (Trezor approval)</Button>
+              <Button variant="quiet" onClick={() => setFreezeOk(false)}>Cancel</Button>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -41,6 +41,8 @@ export const CONTRACT = process.env.CHAIN_CONTRACT || "";
 export const EXPLORER = (process.env.CHAIN_EXPLORER || "https://amoy.polygonscan.com").replace(/\/+$/, "");
 export const enabled = !!CONTRACT;
 export const CHAIN_ID = Number(process.env.CHAIN_ID || 80002);
+// The contract this one replaced, when it was deployed to copy that one's state (see importAll).
+export const PREDECESSOR = process.env.CHAIN_PREDECESSOR ? ethers.getAddress(process.env.CHAIN_PREDECESSOR) : null;
 const iface = new ethers.Interface(ABI);
 const coder = ethers.AbiCoder.defaultAbiCoder();
 
@@ -133,13 +135,13 @@ function anchorArgs(row) {
 /** Queues everything needed to put an approved bond on-chain: its issuer, the bond, its prior instruments. */
 export async function queueAnchor(c, bondId) {
   if (!enabled) return;
-  if ((await c.query("select 1 from chain_ops where fn = 'anchorBond' and ref = $1 and contract = $2", [bondId, CONTRACT])).rows.length) return;
+  if ((await c.query("select 1 from chain_ops where fn in ('anchorBond', 'importBond') and ref = $1 and contract = $2", [bondId, CONTRACT])).rows.length) return;
   const row = (await c.query(
     "select b.id, b.data, i.id as issuer_id, i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [bondId])).rows[0];
   if (!row) return;
   const b = row.data;
   const ops = [];
-  if (!(await c.query("select 1 from chain_ops where fn = 'registerIssuer' and ref = $1 and contract = $2", [row.issuer_id, CONTRACT])).rows.length)
+  if (!(await c.query("select 1 from chain_ops where fn in ('registerIssuer', 'importIssuer') and ref = $1 and contract = $2", [row.issuer_id, CONTRACT])).rows.length)
     ops.push({ bond: bondId, ref: row.issuer_id, fn: "registerIssuer", args: [id32(row.code), "$SIGNER"], role: "platform" });
   const a = anchorArgs(row);
   ops.push(a.problem
@@ -154,7 +156,7 @@ export async function queueAnchor(c, bondId) {
 /** Prior instruments added or reversed on a bond that is already on-chain. */
 export async function queuePriorChanges(c, bondId, before, after) {
   if (!enabled) return;
-  if (!(await c.query("select 1 from chain_ops where fn = 'anchorBond' and ref = $1 and contract = $2", [bondId, CONTRACT])).rows.length) return;
+  if (!(await c.query("select 1 from chain_ops where fn in ('anchorBond', 'importBond') and ref = $1 and contract = $2", [bondId, CONTRACT])).rows.length) return;
   const was = new Map(((before && before.prior) || []).map((p) => [p.id, p]));
   const ops = [];
   for (const p of after.prior || []) {
@@ -273,7 +275,7 @@ function replayOps(a) {
 
 export async function queueIssuerStatus(c, issuerId, code, status) {
   if (!enabled) return;
-  if (!(await c.query("select 1 from chain_ops where fn = 'registerIssuer' and ref = $1 and contract = $2", [issuerId, CONTRACT])).rows.length) return;
+  if (!(await c.query("select 1 from chain_ops where fn in ('registerIssuer', 'importIssuer') and ref = $1 and contract = $2", [issuerId, CONTRACT])).rows.length) return;
   const fn = status === "suspended" ? "suspendIssuer" : "reinstateIssuer";
   await queue(c, [{ bond: null, ref: issuerId, fn, args: [id32(code), tagged("action", [issuerId, fn, new Date().toISOString(), ""])], role: "platform" }]);
 }
@@ -354,6 +356,12 @@ async function alreadyDone(reg, op, signer) {
     case "recordRotation": return false;
     case "registerHolderKey": case "rotateHolderKey": return (await reg.holderKeys(a[1])).x === BigInt(a[2]);
     case "clearHolderKey": { const k = await reg.holderKeys(a[1]); return k.x === 0n && k.y === 0n; }
+    case "pause": return reg.paused();
+    case "importIssuer": return (await reg.issuers(a[0])).account !== ethers.ZeroAddress;
+    case "importBond": return (await reg.bonds(a[0])).issuerId !== ethers.ZeroHash;
+    case "importPrior": return (await reg.priorInstruments(a[0], a[1])).recorded;
+    case "importRecord": return Number((await reg.assignments(a[0])).status) !== 0;
+    case "finishImport": return !(await reg.migrating());
     default:
       if (op.fn in TARGET) return Number((await reg.assignments(a[1])).status) === TARGET[op.fn];
       return false;
@@ -373,6 +381,11 @@ function readable(p) {
     case "UnknownBond": return "the bond isn't on-chain";
     case "IssuerIsSuspended": return "the issuer is suspended on-chain";
     case "FilingNotRecorded": return "the UCC-3 filing isn't on-chain yet";
+    case "Migrating": return "this contract is still copying from the one it replaced; it opens when the copy is finished";
+    case "EnforcedPause": return "this contract is frozen (paused), for a move or an emergency";
+    case "PredecessorNotPaused": return "the old contract has to be frozen before its records can be copied";
+    case "NotOnPredecessor": return "the old contract doesn't hold that";
+    case "AlreadyImported": return "already copied";
     default: return p.name;
   }
 }
@@ -396,7 +409,7 @@ const provider = () => (readProvider ||= new ethers.JsonRpcProvider(process.env.
 /** Which Safe must approve this op, or null when the platform's key sends it directly. */
 export async function safeFor(pool, op) {
   if (op.role === "relayer") return null;
-  if (op.role === "platform") return PLATFORM_SAFE;
+  if (op.role === "platform" || op.role === "guardian") return PLATFORM_SAFE; // the platform's Safe holds both
   // Issuer calls act for the issuer that owns the op's bond.
   const r = (await pool.query("select i.safe_address from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [op.bond])).rows[0];
   return r?.safe_address ? ethers.getAddress(r.safe_address) : null;
@@ -468,9 +481,14 @@ export function startWorker(pool, log = console) {
     try {
       await c.query("begin");
       await c.query("select pg_advisory_xact_lock(424243)");
+      // A contract that replaced another copies its state first; the rest below then finds it covered.
+      if (PREDECESSOR && (await reg.migrating().catch(() => false))) {
+        const n = await queueImports(c);
+        if (n) log.log(`Chain: queued ${n} import(s) from ${PREDECESSOR}`);
+      }
       const rows = (await c.query(`select b.id from bonds b join issuers i on i.id = b.issuer_id
         where b.review = 'approved' and i.status in ('approved','suspended')
-          and not exists (select 1 from chain_ops o where o.fn = 'anchorBond' and o.ref = b.id and o.contract = $1) order by b.id`, [CONTRACT])).rows;
+          and not exists (select 1 from chain_ops o where o.fn in ('anchorBond', 'importBond') and o.ref = b.id and o.contract = $1) order by b.id`, [CONTRACT])).rows;
       for (const r of rows) await queueAnchor(c, r.id);
       // Records that have nothing on this contract yet (it replaced an earlier deployment):
       // rebuild them, oldest first, after their bond.
@@ -660,10 +678,54 @@ export async function retry(pool, seq) {
   return true;
 }
 
+/**
+ * Freezes this contract for a move to a new version: queues pause(), approved through the
+ * platform's Safe. Only with nothing else open, so the new contract copies a settled state.
+ */
+export async function freezeForMove(pool) {
+  if (!enabled) throw Object.assign(new Error("The chain mirror is off."), { status: 409 });
+  const open = (await pool.query("select count(*)::int c from chain_ops where contract = $1 and status in ('queued','sent','signing','failed')", [CONTRACT])).rows[0].c;
+  if (open) throw Object.assign(new Error(open + " chain write(s) are still open. Let them finish (or fix the failed ones) before freezing."), { status: 409 });
+  if ((await pool.query("select 1 from chain_ops where contract = $1 and fn = 'pause' and status <> 'failed'", [CONTRACT])).rows.length)
+    throw Object.assign(new Error("This contract is already frozen, or the freeze is waiting for approval."), { status: 409 });
+  await queue(pool, [{ bond: null, ref: "registry", fn: "pause", args: [], role: "guardian" }]);
+}
+
+/**
+ * On a contract deployed to replace PREDECESSOR: the imports that copy everything the
+ * predecessor holds, in order (issuers, bonds, prior instruments, records), then finishImport.
+ * All in one lane, so nothing runs out of order. Holders' device keys move with their records.
+ */
+async function queueImports(c) {
+  const done = (await c.query("select 1 from chain_ops where contract = $1 and fn like 'import%' limit 1", [CONTRACT])).rows.length;
+  if (done) return 0;
+  const was = (fn) => c.query("select ref, args from chain_ops where contract = $1 and fn = any($2) and status = 'confirmed' order by seq", [PREDECESSOR, fn]);
+  const ops = [];
+  for (const r of (await was(["registerIssuer", "importIssuer"])).rows)
+    ops.push({ bond: null, ref: r.ref, fn: "importIssuer", args: [r.args[0]], role: "relayer" });
+  for (const r of (await was(["anchorBond", "importBond"])).rows)
+    ops.push({ bond: null, ref: r.ref, fn: "importBond", args: [r.args[0]], role: "relayer" });
+  for (const r of (await was(["recordPriorInstrument", "importPrior"])).rows)
+    ops.push({ bond: null, ref: r.ref, fn: "importPrior", args: [r.args[0], r.args[1]], role: "relayer" });
+  // Every record the predecessor created (issued, assigned out, replacement, or itself imported).
+  const recs = (await c.query(`select distinct on (ref) ref, fn, args from chain_ops where contract = $1 and status = 'confirmed'
+      and fn in ('issueAssignment', 'assignOut', 'replaceAssignment', 'importRecord') order by ref, seq`, [PREDECESSOR])).rows;
+  const recId = (r) => r.fn === "assignOut" ? r.args[2] : r.fn === "replaceAssignment" ? r.args[2] : r.fn === "importRecord" ? r.args[0] : r.args[1];
+  for (const r of recs) ops.push({ bond: null, ref: r.ref, fn: "importRecord", args: [recId(r)], role: "relayer" });
+  ops.push({ bond: null, ref: "registry", fn: "finishImport", args: [], role: "relayer" });
+  await queue(c, ops);
+  // The register's device keys now belong to this contract (the import copies them, counter included).
+  await c.query(`update assignments set data = jsonb_set(data, '{holder,contract}', to_jsonb($1::text))
+    where data->'holder'->>'contract' = $2`, [CONTRACT, PREDECESSOR]);
+  return ops.length;
+}
+
 export async function summary(pool) {
   if (!enabled) return { enabled: false };
   const counts = Object.fromEntries((await pool.query("select status, count(*)::int as n from chain_ops where contract = $1 group by status", [CONTRACT])).rows.map((r) => [r.status, r.n]));
   const failed = (await pool.query("select seq, bond, ref, fn, error, updated_at from chain_ops where status = 'failed' and contract = $1 order by seq limit 20", [CONTRACT])).rows;
   const last = (await pool.query("select tx, updated_at from chain_ops where status = 'confirmed' and tx is not null and contract = $1 order by seq desc limit 1", [CONTRACT])).rows[0] || null;
-  return { enabled: true, contract: CONTRACT, explorer: EXPLORER, counts, failed, last, platformSafe: PLATFORM_SAFE };
+  const frozen = (await pool.query("select status from chain_ops where contract = $1 and fn = 'pause' order by seq desc limit 1", [CONTRACT])).rows[0]?.status || null;
+  return { enabled: true, contract: CONTRACT, explorer: EXPLORER, counts, failed, last, platformSafe: PLATFORM_SAFE,
+    predecessor: PREDECESSOR, freeze: frozen };
 }
