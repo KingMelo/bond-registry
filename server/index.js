@@ -1100,7 +1100,8 @@ if (APP === "issuer") {
   // Chain writes waiting on this issuer's Safe, and a signature for one of them.
   app.get("/api/issuer/signing", wrap(async (req, res) => {
     const m = await membership(req, req.query.issuer);
-    res.json({ safe: m.safe_address || null, items: await chain.awaitingSignature(pool, m.safe_address) });
+    res.json({ safe: m.safe_address || null, items: await chain.awaitingSignature(pool, m.safe_address),
+      recent: await chain.recentForSafe(pool, m.safe_address), contract: chain.CONTRACT });
   }));
 
   app.post("/api/issuer/sign", wrap(async (req, res) => {
@@ -1280,7 +1281,8 @@ if (APP === "platform") {
   // Chain writes waiting on the platform's Safe (registering and suspending issuers), and a signature.
   app.get("/api/platform/signing", wrap(async (req, res) => {
     await needStaff(req);
-    res.json({ safe: chain.PLATFORM_SAFE, items: await chain.awaitingSignature(pool, chain.PLATFORM_SAFE) });
+    res.json({ safe: chain.PLATFORM_SAFE, items: await chain.awaitingSignature(pool, chain.PLATFORM_SAFE),
+      recent: await chain.recentForSafe(pool, chain.PLATFORM_SAFE), contract: chain.CONTRACT });
   }));
 
   app.post("/api/platform/sign", wrap(async (req, res) => {

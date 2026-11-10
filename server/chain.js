@@ -425,6 +425,17 @@ export async function awaitingSignature(pool, safe) {
   }));
 }
 
+/** The last few writes this Safe approved, newest first, with their transactions. */
+export async function recentForSafe(pool, safe, limit = 4) {
+  if (!enabled || !safe) return [];
+  const rows = (await pool.query(
+    `select seq, ref, fn, status, tx, error, safe_tx->'message'->>'nonce' as nonce, updated_at from chain_ops
+      where contract = $1 and safe = $2 and status in ('sent', 'confirmed', 'failed') and safe_tx is not null
+      order by updated_at desc limit $3`, [CONTRACT, ethers.getAddress(safe), limit])).rows;
+  return rows.map((r) => ({ seq: Number(r.seq), ref: r.ref, fn: r.fn, status: r.status, nonce: Number(r.nonce), error: r.error,
+    tx: r.tx, link: r.tx ? EXPLORER + "/tx/" + r.tx : null, at: r.updated_at }));
+}
+
 /** Records one owner's signature on a waiting op. Refuses anything that isn't a current owner's. */
 export async function addSignature(pool, seq, safe, signature) {
   const op = (await pool.query("select * from chain_ops where seq = $1 and contract = $2 and status = 'signing'", [seq, CONTRACT])).rows[0];

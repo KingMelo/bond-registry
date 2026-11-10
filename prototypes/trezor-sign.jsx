@@ -73,20 +73,23 @@ export function SignatureQueue({ load, submit, T, sans, serif, onDone, onCount }
     .catch((e) => setErr(e.message)), [load, onCount]);
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [refresh]);
   if (!data || !data.safe) return null;
-  const items = data.items || [];
+  const items = data.items || [], recent = data.recent || [];
+  const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
   async function approve(item) {
     setBusy(true); setErr(""); setMsg("Connect your Trezor and confirm on the device…");
     try {
       const { signature } = await signOnTrezor(item);
       await submit(item.seq, signature);
-      setMsg("Signed. The Safe transaction is being submitted.");
+      const next = items.find((x) => x.seq !== item.seq);
+      setMsg("Approved: " + sayFn(item.fn) + " (" + item.ref + "). It's being sent to the chain; it appears under Recently approved once it's in."
+        + (next ? " Next in line: " + sayFn(next.fn) + ", Safe nonce " + next.nonce + ". It's a separate approval." : ""));
       await refresh(); onDone && onDone();
     } catch (e) { setErr(e.message); setMsg(""); } finally { setBusy(false); }
   }
   return (
     <div className="mb-6 px-3 py-3" style={{ border: "1px solid " + (items.length ? T.ink : T.rule), borderRadius: 2, background: T.white, fontFamily: sans }}>
       <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 4 }}>
-        {items.length ? items.length + (items.length === 1 ? " action waits" : " actions wait") + " for your signature" : "Nothing waiting for your signature"}
+        {items.length ? items.length + (items.length === 1 ? " action waits" : " actions wait") + " for your signature, one approval each" : "Nothing waiting for your signature"}
       </div>
       <div style={{ fontSize: 13, color: T.inkSoft, lineHeight: 1.55, marginBottom: items.length ? 10 : 0 }}>
         Signed by your Safe {data.safe.slice(0, 6)}…{data.safe.slice(-4)}
@@ -97,10 +100,10 @@ export function SignatureQueue({ load, submit, T, sans, serif, onDone, onCount }
           <div style={{ minWidth: 0 }}>
             <div style={{ color: T.ink }}>{sayFn(it.fn)}</div>
             <div style={{ fontSize: 12, color: T.inkSoft, wordBreak: "break-all" }}>
-              {it.ref} · Safe nonce {it.nonce}{it.signedBy.length ? " · signed by " + it.signedBy.length : ""}
+              {i + 1} of {items.length} · {it.ref} · Safe nonce {it.nonce}{it.signedBy.length ? " · signed, being sent" : ""}
             </div>
             {i === 0 && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2, wordBreak: "break-all" }}>
-              Your Trezor shows this transaction's hash: {it.typedData.safeTxHash.slice(0, 10)}…{it.typedData.safeTxHash.slice(-8)}</div>}
+              On your Trezor, check: verifying contract {short(it.safe)} (your Safe), to {short(it.typedData.message.to)} (the registry), nonce {it.nonce}.</div>}
           </div>
           {i === 0 ? (
             <button disabled={busy} onClick={() => approve(it)}
@@ -111,7 +114,20 @@ export function SignatureQueue({ load, submit, T, sans, serif, onDone, onCount }
           ) : <span style={{ fontSize: 12, color: T.inkSoft, whiteSpace: "nowrap" }}>Next in line</span>}
         </div>
       ))}
-      {msg && <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>{msg}</div>}
+      {msg && <div style={{ fontSize: 13, color: T.ink, marginTop: 8, lineHeight: 1.5 }}>{msg}</div>}
+      {recent.length > 0 && (
+        <div className="mt-3 pt-2" style={{ borderTop: "1px solid " + T.rule }}>
+          <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 4 }}>Recently approved</div>
+          {recent.map((r) => (
+            <div key={r.seq} className="flex justify-between gap-3" style={{ fontSize: 13, color: T.ink, padding: "3px 0" }}>
+              <span style={{ minWidth: 0, wordBreak: "break-all" }}>{sayFn(r.fn)} · {r.ref} · nonce {r.nonce}</span>
+              <span style={{ whiteSpace: "nowrap", color: r.status === "failed" ? T.red : T.inkSoft }}>
+                {r.status === "failed" ? "Refused" : r.status === "sent" ? "Sending…" : r.link ? <a href={r.link} target="_blank" rel="noreferrer" style={{ color: T.ink }}>On-chain ↗</a> : "On-chain"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       {err && <div style={{ fontSize: 13, color: T.red, marginTop: 8, lineHeight: 1.5 }}>{err}</div>}
     </div>
   );
