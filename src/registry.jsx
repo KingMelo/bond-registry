@@ -31,6 +31,7 @@ export const api = {
   holderKey: (body) => call("POST", "/api/holder/key", body),
   clearDeviceKey: (issuer, id, reason) => call("POST", "/api/issuer/holder-key/clear", { issuer, id, reason }),
   setPasskey: (issuer, id, passkey) => call("POST", "/api/issuer/passkey", { issuer, id, passkey }),
+  revealAccessCode: (issuer, id) => call("POST", "/api/issuer/access-code/reveal", { issuer, id }),
   clearLockout: (issuer, id) => call("POST", "/api/issuer/clear-lockout", { issuer, id }),
   me: () => call("GET", "/api/auth/me"),
   setup: (body) => call("POST", "/api/auth/setup", body),

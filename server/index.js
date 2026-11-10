@@ -44,7 +44,7 @@ const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
 // An assignment the holder doesn't reject within this many days of its mailing takes effect.
 const RESPONSE_DAYS = Number(process.env.RESPONSE_DAYS || 30);
 // Never stored in the record itself: credential state lives in its own table.
-const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain", "deviceKey",
+const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain", "deviceKey", "accessCode",
   // Kept by the server only: the holder's device key and when the mailing went out.
   "holder", "deliveredAt"];
 // Contact details and mail numbers stay out of the public holder portal.
@@ -72,6 +72,11 @@ async function migrate() {
         id text primary key, salt text not null, hash text not null,
         attempts int not null default 0, locked boolean not null default false,
         updated_at timestamptz not null default now());
+      -- A new assignee's access code, made when the assignor's device signs the assign-out and
+      -- sealed so only the issuer can open it, once, to mail it. Emptied once opened.
+      create table if not exists sealed_codes (
+        id text primary key, sealed text not null, created_at timestamptz not null default now(),
+        revealed_at timestamptz, revealed_by text);
       create table if not exists events (
         seq bigserial primary key, eid text unique not null, bond text, assignment text,
         data jsonb not null, created_at timestamptz not null default now());
@@ -212,6 +217,26 @@ const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const sameHex = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
 const newId = (prefix) => prefix + "_" + crypto.randomBytes(9).toString("base64url");
 
+// Access codes: 16 characters from an alphabet with no look-alikes, grouped in fours.
+function genAccessCode() {
+  const set = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let out = "";
+  while (out.length < 16) for (const b of crypto.randomBytes(32)) if (b < 248 && out.length < 16) out += set[b % set.length];
+  return out.match(/.{4}/g).join("-");
+}
+// Sealed with AES-256-GCM under a key only the servers have (all three share the pepper and database).
+const SEAL_KEY = crypto.createHash("sha256").update("sealed-codes:" + (process.env.ACCESS_CODE_KEY || PEPPER + process.env.DATABASE_URL)).digest();
+function seal(text) {
+  const iv = crypto.randomBytes(12), c = crypto.createCipheriv("aes-256-gcm", SEAL_KEY, iv);
+  const body = Buffer.concat([c.update(text, "utf8"), c.final()]);
+  return [iv, c.getAuthTag(), body].map((b) => b.toString("base64url")).join(".");
+}
+function unseal(s) {
+  const [iv, tag, body] = String(s).split(".").map((x) => Buffer.from(x, "base64url"));
+  const d = crypto.createDecipheriv("aes-256-gcm", SEAL_KEY, iv); d.setAuthTag(tag);
+  return Buffer.concat([d.update(body), d.final()]).toString("utf8");
+}
+
 async function setPasskey(c, id, key) {
   const salt = crypto.randomBytes(16).toString("hex");
   await c.query(
@@ -313,6 +338,9 @@ async function readState(bondFilter, params) {
     pool.query(`select e.eid, e.data from events e join bonds b on b.id = e.bond where ${bondFilter} order by e.seq desc`, params),
   ]);
   const cred = new Map(creds.rows.map((r) => [r.id, r]));
+  const sealedRows = APP === "holder" ? [] : (await pool.query(
+    `select s.id, s.revealed_at from sealed_codes s join assignments a on a.id = s.id join bonds b on b.id = a.bond where ${bondFilter}`, params)).rows;
+  const sealed = new Map(sealedRows.map((r) => [r.id, r.revealed_at ? "shown" : "sealed"]));
   const onChain = await chain.statusFor(pool, bonds.rows.map((r) => r.data.id), regs.rows.map((r) => r.data.id));
   return {
     bonds: bonds.rows.map((r) => {
@@ -324,7 +352,7 @@ async function readState(bondFilter, params) {
     }),
     reg: regs.rows.map(({ data, rev }) => {
       const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false,
-        chain: onChain.get(data.id) || null, deviceKey: deviceKeyOf(data) };
+        chain: onChain.get(data.id) || null, deviceKey: deviceKeyOf(data), ...(APP === "holder" ? {} : { accessCode: sealed.get(data.id) || null }) };
       delete out.holder;
       if (APP === "holder") for (const k of HOLDER_HIDDEN) delete out[k];
       return out;
@@ -631,6 +659,14 @@ if (APP === "holder") {
       return holderKeys.checkAssertion({ assertion, challenge, x: key.x, y: key.y, ...site(req) });
     };
     const revs = await applyCommit(c, { bonds: [], reg: clean, events, authFor });
+    // Each new assign-out gets its assignee's access code now, signed off by the assignor's device,
+    // and sealed for the issuer. The assignor never sees it.
+    if (!mode.collect)
+      for (const { a, before } of units) if (!before && a.origin === "AssignOut") {
+        const code = genAccessCode();
+        await setPasskey(c, a.id, code);
+        await c.query("insert into sealed_codes (id, sealed) values ($1, $2) on conflict (id) do nothing", [a.id, seal(code)]);
+      }
     for (const [id, n] of used)
       await c.query("update assignments set data = jsonb_set(data, '{holder,nonce}', to_jsonb($2::int)) where id = $1",
         [id, startNonce((await c.query("select data from assignments where id = $1", [id])).rows[0].data) + n]);
@@ -665,6 +701,8 @@ if (APP === "holder") {
       if (sameHex(hashKey(passkey, cred.salt), cred.hash)) {
         if (cred.attempts > 0) await c.query("update credentials set attempts = 0 where id = $1", [id]);
         const data = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+        if (["AwaitingCredential", "CredentialRequested"].includes(data?.status))
+          return { ok: false, code: "inactive", error: "This assignment isn't active yet. The issuer activates it after verifying you." };
         const key = activeKey(data);
         return { ok: true, token: signToken(id), rpId: site(req).rpId, device: key ? { credId: key.credId, fingerprint: holderKeys.fingerprint(key.x) } : null,
           // A new passkey for this record: the browser makes it with these.
@@ -1071,6 +1109,23 @@ if (APP === "issuer") {
     if (!id || normKey(passkey).length < 16) throw new Reject(400, "A 16-character passkey is required.");
     await setPasskey(pool, id, passkey);
     res.json({ ok: true });
+  }));
+
+  // Opens a new assignee's sealed access code, once, so the issuer can mail it at activation.
+  app.post("/api/issuer/access-code/reveal", wrap(async (req, res) => {
+    await recordAccess(req);
+    const { id } = req.body || {};
+    const out = await tx(async (c) => {
+      const row = (await c.query("select * from sealed_codes where id = $1 for update", [id])).rows[0];
+      if (!row) throw new Reject(404, "No sealed access code for " + id + ".");
+      if (row.revealed_at) throw new Reject(409, "This access code was already shown (" + row.revealed_at.toISOString().slice(0, 10) + "). If it's lost, issue a new one.");
+      const d = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+      if (d?.status !== "CredentialRequested") throw new Reject(409, "Open the access code when you activate the assignee, after verifying them.");
+      const code = unseal(row.sealed);
+      await c.query("update sealed_codes set sealed = '', revealed_at = now(), revealed_by = $2 where id = $1", [id, (await currentUser(req))?.email || "issuer"]);
+      return { code };
+    });
+    res.json(out);
   }));
 
   // Recovery when a holder loses their device: clears the record's device key, on-chain too (signed

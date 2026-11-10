@@ -355,8 +355,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   async function issueCredential(a) {
     if (!mail.trim() || !a.filingRef) return;
+    // The code was made when the assignor's device signed the assign-out, sealed for the issuer.
+    // Older assign-outs have none, so one is made now.
     let passkey;
-    try { passkey = await newPasskey(a.id); } catch (e) { return flash(e.message); }
+    try { passkey = a.accessCode === "sealed" ? (await api.revealAccessCode(issuerId, a.id)).code : await newPasskey(a.id); }
+    catch (e) { return flash(e.message); }
     const deliveryRef = "pending"; // the server sets the real hash from the mailing numbers
     patch(a.id, { status: "Issued", passkeyMail: mail.trim(), deliveryRef });
     emit(a.bond, a.id, "CredentialIssued", "ISSUER", deliveryRef);

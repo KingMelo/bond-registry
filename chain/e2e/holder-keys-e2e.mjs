@@ -161,12 +161,19 @@ const child = { id: "PENS-0001-BD-A00002", bond: "PENS-0001-BD", parent: a1.id, 
   contact: "M", position: "", address: "addr", units: 1040, issuedUnits: 1040, status: "AwaitingCredential", created: "Nov 9, 2026",
   accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
 await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, child], events: [ev(a1.bond, child.id, "AssignedOut")] });
+ok((await rec(child.id)).accessCode === "sealed", "the assign-out made the assignee's access code, sealed for the issuer");
+ok(!JSON.stringify(await call(H, "GET", "/api/state")).includes("accessCode"), "the holder side never sees it");
 let c2 = await hrec(child.id);
+e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
+ok(e?.status === 409, "the issuer can't open it before the assignee has come forward (" + e?.status + ")");
 await call(H, "POST", "/api/commit", { reg: [{ ...c2, status: "CredentialRequested", requestedParty: "Company D", requestedBy: "M", requestedOn: "now" }], events: [] });
 ok((await hrec(child.id)).status === "CredentialRequested", "a new assignee asks for access without a key");
-const CODE2 = "9ABC-DEFG-HJKL-MNPQ";
-await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: child.id, passkey: CODE2 });
 await icommit({ reg: [{ ...(await rec(child.id)), filingNumber: "UCC3-555", filedBy: "Company A", filingRef: "pending" }] });
+const CODE2 = (await call(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id })).code;
+ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(CODE2), "the issuer opens the sealed code at activation: " + CODE2.slice(0, 4) + "-…");
+e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
+ok(e?.status === 409, "and only once (" + e?.status + ")");
+ok((await rec(child.id)).accessCode === "shown", "the register shows it was opened");
 await icommit({ reg: [{ ...(await rec(child.id)), status: "Issued", passkeyMail: "9407 2", deliveryRef: "pending" }] });
 
 // 5. The new holder signs in on their own phone and rejects it, with a reason: the $10.40 goes back.
@@ -236,6 +243,16 @@ await provider.send("evm_increaseTime", [31 * 86400]); await provider.send("evm_
 let deemed = null;
 for (let i = 0; i < 30 && !deemed; i++) { await new Promise((r) => setTimeout(r, 1000)); const x = await rec("PENS-0001-BD-A00004"); if (x.status === "Accepted") deemed = x; }
 ok(deemed?.effective === "deemed", "after 30 days without a rejection it took effect");
+
+// 8b. It repeats: the holder of A00003 (in effect, on their new phone) assigns out in turn.
+{
+  const a3 = await hrec("PENS-0001-BD-A00003");
+  const g = { id: "PENS-0001-BD-A00005", bond: "PENS-0001-BD", parent: a3.id, origin: "AssignOut", assignor: "Company A", party: "Company E",
+    contact: "N", position: "", address: "addr", units: 2500, issuedUnits: 2500, status: "AwaitingCredential", created: "Nov 10, 2026",
+    accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
+  await hsave(s3b.token, fresh, { reg: [{ ...a3, units: a3.units - 2500 }, g], events: [ev(a3.bond, g.id, "AssignedOut")] });
+  ok((await rec(g.id)).accessCode === "sealed", "the next assignee's access code is made and sealed the same way");
+}
 
 // 9. Everything confirmed, and the chain matches the register.
 const sum = await settle(120000);

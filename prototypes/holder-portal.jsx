@@ -1071,9 +1071,10 @@ export default function HolderPortal() {
 
             <div className="mt-4">
               <Note>
-                <strong style={{ fontWeight: 600 }}>No access code appears here, by design.</strong> Deliver
-                your signed instrument to {childIssued.party}. They request access with the
-                assignment ID; the issuer verifies them and mails their access code.
+                <strong style={{ fontWeight: 600 }}>Their access code was made just now, and sealed.</strong> Only
+                the issuer can open it, once they've verified {childIssued.party}; they mail it to them. You
+                never see it, which is what keeps the portion you transferred out of your hands. Deliver your
+                signed instrument to {childIssued.party}; they request access with the assignment ID.
               </Note>
             </div>
 
