@@ -33,6 +33,8 @@ async function call(method, url, body) {
 export const api = {
   signIn: (id, passkey) => call("POST", "/api/holder/signin", { id, passkey }),
   holderPrepare: (body) => call("POST", "/api/holder/prepare", body),
+  holderStart: (id) => call("POST", "/api/holder/start", { id }),
+  signInPasskey: (body) => call("POST", "/api/holder/signin-passkey", body),
   holderMine: (token) => call("POST", "/api/holder/mine", { token }),
   assigneeCode: (token, id) => call("POST", "/api/holder/assignee-code", { token, id }),
   holderKeyPrepare: (body) => call("POST", "/api/holder/key/prepare", body),

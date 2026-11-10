@@ -61,7 +61,8 @@ export async function readRecord(info, displayId) {
 // (same rule as the server), so a reader can check a number against the chain themselves.
 const tagged = (kind, values) => keccak256(AbiCoder.defaultAbiCoder().encode(
   ["string", ...values.map(() => "string")], ["BondInterestRegistry/" + kind + "/v1", ...values.map((v) => String(v ?? ""))]));
-export const filingRefOf = (recordId, filingNumber) => tagged("filing", [recordId, filingNumber]);
+export const filingRefOf = (recordId, filingNumber, filingDoc) =>
+  filingDoc ? tagged("filing", [recordId, filingNumber, filingDoc]) : tagged("filing", [recordId, filingNumber]);
 export const deliveryRefOf = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
 
 export const nameFor = (hash, candidates) => candidates.find((c) => id32(c) === hash) || null;

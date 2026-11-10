@@ -264,8 +264,9 @@ const REJECTION_MIN = 255;
 
 // What a holder may change on their own record: its status (checked by relayerAllows) and the
 // notes that go with each move. Everything else on a record is the issuer's.
+const FILING_FIELDS = ["filingNumber", "filedBy", "filedOn", "filingDoc", "filingFile", "filingRef"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
-  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested"];
+  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...FILING_FIELDS];
 const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -594,6 +595,10 @@ if (APP === "holder") {
       // Who may make this change, and which fields: a new assignee asking for access needs nobody's
       // session; everything else needs the session of the record's holder, or of the assignor for
       // their own assign-outs. Amounts are checked against the save as a whole, below.
+      // A recorded UCC-3 is the server's: a page that hasn't caught up (no filingRef yet) or leaves
+      // the fields out isn't asking to change it. A different number still is, and is refused below.
+      if (before?.filingNumber && (a.filingNumber == null || a.filingNumber === before.filingNumber))
+        for (const k of FILING_FIELDS) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
       const changed = before ? changedFields(before, a) : [];
       {
         if (!session) throw new Reject(401, "Sign in with your assignment ID and access code first.");
@@ -602,7 +607,13 @@ if (APP === "holder") {
           : (before?.origin || a.origin) === "AssignOut" && (before ? before.parent : a.parent) === session.id ? "assignor"
           : before && me?.origin === "AssignOut" && me.parent === a.id ? "parent" : null;
         if (!role) throw new Reject(403, "You're signed in to " + session.id + "; " + a.id + " isn't yours to change.");
-        const may = role === "holder" ? HOLDER_FIELDS : ["status", "units"];
+        const may = role === "holder" ? HOLDER_FIELDS : role === "assignor" ? ["status", "units", ...FILING_FIELDS] : ["status", "units"];
+        // The holder's UCC-3: once, with the filed copy attached (only its hash is kept).
+        if (before && changed.some((k) => FILING_FIELDS.includes(k))) {
+          if (before.filingRef || before.filingNumber) throw new Reject(409, "A UCC-3 is already recorded for " + a.id + ".");
+          if (!String(a.filingNumber || "").trim()) throw new Reject(400, "Enter the UCC-3 filing number.");
+          if (!chain.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3. Only its SHA-256 is kept.");
+        }
         if (before && changed.some((k) => !may.includes(k))) throw new Reject(403, "You can't change " + changed.filter((k) => !may.includes(k)).join(", ") + " on " + a.id + ".");
         // The assignor can only cancel an assign-out; the parent of a new holder only closes when emptied.
         if (role === "assignor" && before && a.status !== before.status && a.status !== "Cancelled") throw new Reject(403, "Only the new holder can do that.");
@@ -655,6 +666,7 @@ if (APP === "holder") {
     const used = new Map();
     let next = 0;
     const authFor = async (op) => {
+      if (op.signer === "$SESSION" && session) { op.signer = session.id; op.args = op.args.map((x) => (x === "$SIGNER_ID" ? chain.id32(session.id) : x)); }
       if (!session || op.signer !== session.id) throw new Reject(403, "Only the holder of " + op.signer + " can sign this.");
       const data = (await c.query("select data from assignments where id = $1", [op.signer])).rows[0]?.data;
       const key = activeKey(data);
@@ -700,6 +712,38 @@ if (APP === "holder") {
     res.json(nv);
   }));
 
+  // Holder access starts with the assignment ID alone. The answer says what opens it: the one-time
+  // transfer code (until the holder has set up their passkey), or the passkey, with when it was set up.
+  const ticketFor = (id, challenge, exp) => crypto.createHmac("sha256", SESSION_SECRET).update("signin|" + id + "|" + challenge + "|" + exp).digest("base64url");
+  app.post("/api/holder/start", wrap(async (req, res) => {
+    if (limited("start:" + req.ip)) return res.status(429).json({ error: "Too many attempts. Wait a minute and try again." });
+    const id = String(req.body?.id || "").trim().toUpperCase();
+    const data = (await pool.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+    if (!data) return res.json({ mode: "none", error: "No assignment with that ID is on the register." });
+    if (TERMINAL.includes(data.status)) return res.json({ mode: "closed", status: data.status });
+    const key = activeKey(data);
+    if (key) {
+      const challenge = "0x" + crypto.randomBytes(32).toString("hex"), exp = Date.now() + 5 * 60_000;
+      return res.json({ mode: "passkey", id, credId: key.credId, since: key.since, fingerprint: holderKeys.fingerprint(key.x),
+        challenge, exp, ticket: ticketFor(id, challenge, exp), rpId: site(req).rpId });
+    }
+    const cred = (await pool.query("select locked from credentials where id = $1", [id])).rows[0];
+    if (!cred) return res.json({ mode: "none", error: data.holder?.clearedOn
+      ? "This assignment's passkey was reset. The issuer mails a new transfer code once they've verified you."
+      : "No transfer code has been issued for this assignment yet." });
+    return res.json({ mode: cred.locked ? "locked" : "code", id });
+  }));
+
+  app.post("/api/holder/signin-passkey", wrap(async (req, res) => {
+    const { id, challenge, exp, ticket, assertion } = req.body || {};
+    if (!(Number(exp) > Date.now()) || ticketFor(id, challenge, exp) !== ticket) throw new Reject(401, "That sign-in took too long. Start again.");
+    const data = (await pool.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+    const key = activeKey(data);
+    if (!key) throw new Reject(409, "This assignment has no passkey set up.");
+    holderKeys.checkAssertion({ assertion, challenge, x: key.x, y: key.y, ...site(req) });
+    res.json({ ok: true, token: signToken(id), rpId: site(req).rpId, device: { credId: key.credId, fingerprint: holderKeys.fingerprint(key.x), since: key.since } });
+  }));
+
   app.post("/api/holder/signin", wrap(async (req, res) => {
     if (limited("signin:" + req.ip)) return res.status(429).json({ ok: false, code: "rate", error: "Too many attempts. Wait a minute and try again." });
     const { id, passkey } = req.body || {};
@@ -712,6 +756,7 @@ if (APP === "holder") {
         const data = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
         if (["AwaitingCredential", "CredentialRequested"].includes(data?.status))
           return { ok: false, code: "inactive", error: "This assignment isn't active yet. The issuer activates it after verifying you." };
+        if (activeKey(data)) return { ok: false, code: "passkey", error: "This assignment is secured with a passkey. Sign in with it." };
         const key = activeKey(data);
         return { ok: true, token: signToken(id), rpId: site(req).rpId, device: key ? { credId: key.credId, fingerprint: holderKeys.fingerprint(key.x) } : null,
           // A new passkey for this record: the browser makes it with these.
@@ -787,16 +832,15 @@ if (APP === "holder") {
         [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "DeviceKeyRegistered", actor: "HOLDER",
           ref: "Device key " + holderKeys.fingerprint(p.x) }]);
       // The mailed code was a one-time transfer code: whoever mailed it (the issuer, or the assignor
-      // for an assign-out) knows it. Now that the holder's own device is set up, it's replaced by a
-      // personal access code only they see, shown once below. The transfer code stops working.
-      const accessCode = genAccessCode();
-      await setPasskey(c, p.rec.id, accessCode);
+      // for an assign-out) knows it. With the holder's own passkey set up, it's used up: from now on
+      // the passkey alone opens the record.
+      await c.query("delete from credentials where id = $1", [p.rec.id]);
       await c.query("delete from sealed_codes where id = $1", [p.rec.id]);
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
-        [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "AccessCodeReplaced", actor: "HOLDER",
-          ref: "Transfer code used; personal access code set" }]);
+        [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "TransferCodeUsed", actor: "HOLDER",
+          ref: "Passkey set up; the transfer code no longer works" }]);
       await bump(c);
-      return { ok: true, fingerprint: holderKeys.fingerprint(p.x), credId: p.credId, accessCode };
+      return { ok: true, fingerprint: holderKeys.fingerprint(p.x), credId: p.credId, since: holder.since };
     });
     res.json(out);
   }));
@@ -1144,6 +1188,9 @@ if (APP === "issuer") {
     const { id, passkey } = req.body || {};
     if (!id || normKey(passkey).length < 16) throw new Reject(400, "A 16-character passkey is required.");
     await setPasskey(pool, id, passkey);
+    // A transfer code: the issuer can review it until the holder uses it.
+    await pool.query(`insert into sealed_codes (id, sealed) values ($1, $2)
+      on conflict (id) do update set sealed = excluded.sealed, created_at = now(), revealed_at = null, revealed_by = null`, [id, seal(passkey)]);
     res.json({ ok: true });
   }));
 
@@ -1177,6 +1224,11 @@ if (APP === "issuer") {
       const holder = { ...k, x: null, y: null, credId: null, clearedOn: stampNow() };
       await c.query("update assignments set data = data || jsonb_build_object('holder', $2::jsonb), rev = rev + 1 where id = $1",
         [id, JSON.stringify(holder)]);
+      // A new transfer code for the holder's next device, for the issuer to mail.
+      const code = genAccessCode();
+      await setPasskey(c, id, code);
+      await c.query(`insert into sealed_codes (id, sealed) values ($1, $2)
+        on conflict (id) do update set sealed = excluded.sealed, created_at = now(), revealed_at = null, revealed_by = null`, [id, seal(code)]);
       await chain.queueOps(c, [{ bond: row.bond, ref: id, fn: "clearHolderKey",
         args: [chain.id32(row.bond), chain.id32(id), chain.noteDoc(id, "clearHolderKey", stampNow() + " " + String(reason).trim())], role: "issuer" }]);
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",

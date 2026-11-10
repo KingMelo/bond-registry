@@ -66,7 +66,6 @@ await icommit({ bonds: [{ ...(await st()).bonds[0], unassigned: TOTAL - 1_000_00
   status: "Issued", created: "Nov 9, 2026", accepted: null, filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null,
   id: A1, bond: "PENS-0001-BD", units: 1_000_000, issuedUnits: 1_000_000, docHash: H32() }] });
 await icommit({ reg: [{ ...(await st()).reg[0], instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01" }] });
-await icommit({ reg: [{ ...(await st()).reg[0], filingNumber: "UCC3-2026-0417", filedBy: "Penson Trust", filingRef: "pending" }] });
 
 // ---- the browser, with a virtual passkey device (platform authenticator, face/fingerprint passes)
 const browser = await chromium.launch();
@@ -80,33 +79,38 @@ const shot = async (name) => SHOTS && page.screenshot({ path: SHOTS + "/" + name
 
 await page.goto(H + "/holder");
 await page.getByLabel("Assignment ID").fill(A1);
-await page.getByLabel("Access code").fill(CODE);
+await page.getByRole("button", { name: "Continue" }).click();
+await page.getByLabel("Transfer code").fill(CODE);
 await shot("1-sign-in");
 await page.getByRole("button", { name: "Continue" }).click();
 await page.getByRole("heading", { name: "Set up this device" }).waitFor({ timeout: 15000 });
 await shot("2-device-setup");
 ok(true, "the mailed code opens the record and asks to set up the device");
 await page.getByRole("button", { name: "Set up device key" }).click();
-await page.getByRole("heading", { name: "Your access code" }).waitFor({ timeout: 20000 });
-const personal = (await page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/).first().textContent()).trim();
-ok(personal !== CODE, "after device setup the holder gets their own access code, shown once");
-await shot("3a-personal-code");
-await page.getByRole("button", { name: "I've written it down" }).click();
 await page.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
+ok(!(await page.getByRole("heading", { name: "Your access code" }).count()), "no personal code: the passkey is the key");
 const creds = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials;
 ok(creds.length === 1 && creds[0].rpId === "localhost", "the device made one passkey for this site");
 const rec1 = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1);
 ok(!!rec1.deviceKey?.fingerprint, "the register shows the device key " + rec1.deviceKey?.fingerprint);
 await shot("3-review");
 
-await page.getByRole("button", { name: /Confirm/ }).click();
+await page.getByRole("button", { name: /^Accept: confirm with your passkey/ }).click();
 let saved = null;
 for (let i = 0; i < 30 && !saved; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1); if (r.status === "Accepted") saved = r; }
 ok(saved?.effective === "holder", "the holder's confirmation, signed on the device, is saved");
 const signCount = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signCount >= 2, "the device signed the key registration and the confirmation (" + signCount + " signatures)");
 await page.getByText("Signed with your device key").waitFor({ timeout: 10000 }).catch(() => {});
-ok(await page.getByText("UCC3-2026-0417 · filed by Penson Trust").count() > 0, "the holder sees the UCC-3 filing number");
+// The holder records their own UCC-3: the number and the filed copy, signed with the passkey.
+await page.getByLabel("Filing number").fill("UCC3-2026-0417");
+await page.locator('input[type="file"]').first().setInputFiles({ name: "ucc3-ack.pdf", mimeType: "application/pdf", buffer: Buffer.from("filed ucc-3") });
+await page.getByRole("button", { name: /^Record UCC-3: confirm with your passkey/ }).click();
+let filed = null;
+for (let i = 0; i < 30 && !filed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1); if (r.filingNumber) filed = r; }
+ok(filed?.filedBy === "Company A" && /^0x[0-9a-f]{64}$/.test(filed.filingRef || ""), "the holder's UCC-3 is saved, with its reference");
+await page.getByText("UCC3-2026-0417 · filed by Company A").first().waitFor({ timeout: 10000 }).catch(() => {});
+ok(await page.getByText("UCC3-2026-0417 · filed by Company A").count() > 0, "the holder sees the UCC-3 filing number");
 ok(await page.getByText(/9407 1000 0000 0000 0000 01/).count() > 0, "the signed-in holder sees their certified mail number");
 const publicState = await call(H, "GET", "/api/state");
 ok(!JSON.stringify(publicState).includes("9407 1000"), "the public record list never carries the mail number");
@@ -143,7 +147,8 @@ const t0 = Date.now(); let s;
 while (Date.now() - t0 < 90000) { s = await call(P, "GET", "/api/platform/chain"); if (!(s.counts.queued || s.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
 const id32 = (x) => ethers.keccak256(ethers.toUtf8Bytes(x));
 const k = await regC.holderKeys(id32(A1));
-ok(k.x !== 0n && k.nonce === 3n, "the chain holds the device key and counted 3 signatures from it (" + k.nonce + ")");
+ok(k.x !== 0n && k.nonce === 4n, "the chain holds the device key and counted 4 signatures from it (" + k.nonce + ")");
+ok((await regC.assignments(id32(A1))).filingRef === filed.filingRef, "the chain holds the holder's UCC-3 reference");
 ok(Number((await regC.assignments(id32(A1))).status) === 4, "the chain shows A00001 in effect, by the holder's own signature");
 ok(!s.counts.failed, "no write failed (" + JSON.stringify(s.counts) + ")");
 
@@ -155,10 +160,13 @@ await cdp2.send("WebAuthn.enable");
 await cdp2.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
 await p2.goto(H + "/holder");
 await p2.getByLabel("Assignment ID").fill(A1);
-await p2.getByLabel("Access code").fill(CODE);
 await p2.getByRole("button", { name: "Continue" }).click();
-await p2.waitForTimeout(1500);
-ok(!(await p2.getByRole("heading", { name: "Set up this device" }).count()), "the mailed transfer code no longer opens the record");
+await p2.getByRole("button", { name: "Sign in with your passkey" }).waitFor({ timeout: 10000 });
+ok(!(await p2.getByLabel("Transfer code").count()), "once the transfer code is used, Holder access asks for the passkey, not a code");
+ok(await p2.getByText(/Set up/).count() > 0, "and shows when the key was set up");
+await p2.getByRole("button", { name: "Sign in with your passkey" }).click();
+await p2.waitForTimeout(3000);
+ok(!(await p2.getByRole("heading", { name: "Review this assignment" }).count()) && !(await p2.getByRole("button", { name: "Assign out" }).count()), "a device without the passkey can't get in");
 const before = await call(H, "GET", "/api/state");
 // Try to lock it from the other browser: its device has no key for this record, so it can't sign.
 const lockBtn = p2.getByRole("button", { name: /^Lock/ }).first();
@@ -167,7 +175,7 @@ await p2.waitForTimeout(3000);
 const after = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1);
 ok(after.status === "Accepted", "without the device key, nothing changes (" + after.status + ")");
 
-// ---- the new assignee, on their own device: transfer code -> passkey -> their own code -> reject with a reason
+// ---- the new assignee, on their own device: transfer code -> passkey -> reject with a reason
 {
   const ctx3 = await browser.newContext({ viewport: { width: 430, height: 900 }, deviceScaleFactor: 2 });
   const p3 = await ctx3.newPage();
@@ -177,13 +185,12 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   await p3.goto(H + "/holder");
   ok(!(await p3.getByRole("button", { name: "Request access" }).count()), "there's no Request access tab");
   await p3.getByLabel("Assignment ID").fill(child.id);
-  await p3.getByLabel("Access code").fill(TRANSFER);
+  await p3.getByRole("button", { name: "Continue" }).click();
+  await p3.getByLabel("Transfer code").fill(TRANSFER);
   await p3.getByRole("button", { name: "Continue" }).click();
   await p3.getByRole("heading", { name: "Set up this device" }).waitFor({ timeout: 15000 });
   ok(true, "the assignee opens the assign-out with the transfer code and is asked for a passkey");
   await p3.getByRole("button", { name: "Set up device key" }).click();
-  await p3.getByRole("heading", { name: "Your access code" }).waitFor({ timeout: 20000 });
-  await p3.getByRole("button", { name: "I've written it down" }).click();
   await p3.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
   await p3.getByRole("button", { name: "Reject this assignment" }).click();
   const why = p3.getByLabel(/Reason for rejecting/);

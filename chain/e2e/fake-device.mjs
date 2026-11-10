@@ -27,9 +27,17 @@ export async function holderSignIn(call, H, id, code, dev) {
     const c = created(dev, r.enroll);
     const p = await call(H, "POST", "/api/holder/key/prepare", { token: r.token, ...c });
     const k = await call(H, "POST", "/api/holder/key", { token: r.token, ...c, assertion: signs(dev, p.challenge) });
-    r.accessCode = k.accessCode; // the personal code that replaces the one-time transfer code
+    r.since = k.since; // the transfer code is used up now; the passkey opens the record from here on
   }
   return r;
+}
+
+/** Holder access once a passkey is set up: the assignment ID, then the passkey's signature. */
+export async function holderPasskeySignIn(call, H, id, dev, o = {}) {
+  const st = await call(H, "POST", "/api/holder/start", { id });
+  if (st.mode !== "passkey") throw Object.assign(new Error("expected a passkey sign-in, got " + st.mode), { start: st });
+  const r = await call(H, "POST", "/api/holder/signin-passkey", { id, challenge: st.challenge, exp: st.exp, ticket: st.ticket, assertion: signs(dev, st.challenge, o) });
+  return { ...r, start: st };
 }
 
 /** A holder save: ask what the device must sign, sign it, save. */

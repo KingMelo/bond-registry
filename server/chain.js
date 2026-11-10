@@ -59,14 +59,16 @@ export const priorRef = (ref) => id32(priorKey(ref));
 export const priorDoc = (bondDisplay, p) => ethers.keccak256(coder.encode(
   ["string", "string", "string", "string", "uint128", "string"],
   ["BondInterestRegistry/prior/v1", bondDisplay, p.id, priorKey(p.ref), BigInt(p.units), p.recordedOn || ""]));
-export const filingRef = (recordId, filingNumber) => tagged("filing", [recordId, filingNumber]);
+// With the filed copy's SHA-256 when the holder uploaded it (no paper, no record); older ones have the number alone.
+export const filingRef = (recordId, filingNumber, filingDoc) =>
+  filingDoc ? tagged("filing", [recordId, filingNumber, filingDoc]) : tagged("filing", [recordId, filingNumber]);
 export const deliveryRef = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
 const actionDoc = (recordId, fn, ev) => (ev && isHash(ev.ref) ? ev.ref : tagged("action", [recordId, fn, ev?.eid, ev?.ref]));
 
 /** The register keeps readable filing and mailing numbers; the chain gets their hashes. */
 export function normalizeRecord(a) {
   const out = { ...a };
-  if (out.filingNumber) out.filingRef = filingRef(out.id, out.filingNumber);
+  if (out.filingNumber) out.filingRef = filingRef(out.id, out.filingNumber, out.filingDoc);
   else if (out.filingRef && !isHash(out.filingRef)) out.filingRef = null;
   if (out.instrumentMail || out.passkeyMail) out.deliveryRef = deliveryRef(out.id, out.instrumentMail, out.passkeyMail);
   else if (out.deliveryRef && !isHash(out.deliveryRef)) out.deliveryRef = null;
@@ -210,7 +212,10 @@ export async function queueRecordChanges(c, { app, before, after, events, authFo
         created.push({ bond: a.bond, ref: a.id, fn: "issueAssignment", args: [B, A, String(a.units), a.docHash], role: "issuer" });
     }
     if (a.filingRef && a.filingRef !== o?.filingRef)
-      refs.push({ bond: a.bond, ref: a.id, fn: "setFilingRef", args: [B, A, a.filingRef], role: "issuer" });
+      refs.push(app === "holder"
+        // The holder's own UCC-3, signed with the device of whoever is signed in (the record's holder, or its assignor).
+        ? { bond: a.bond, ref: a.id, fn: "recordFiling", args: [B, A, "$SIGNER_ID", a.filingRef], role: "relayer", signer: "$SESSION" }
+        : { bond: a.bond, ref: a.id, fn: "setFilingRef", args: [B, A, a.filingRef], role: "issuer" });
     if (a.deliveryRef && a.deliveryRef !== o?.deliveryRef)
       refs.push({ bond: a.bond, ref: a.id, fn: "setDeliveryRef", args: [B, A, a.deliveryRef, mailedOn(a)], role: "issuer" });
     if (o && o.status !== a.status && !IMPLIED.has(a.status)) {

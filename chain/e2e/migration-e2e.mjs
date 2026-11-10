@@ -11,7 +11,7 @@ import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import { newDevice, holderSignIn, holderSave, RP_ID, ORIGIN } from "./fake-device.mjs";
+import { newDevice, holderSignIn, holderPasskeySignIn, holderSave, RP_ID, ORIGIN } from "./fake-device.mjs";
 const require = createRequire(new URL("../../package.json", import.meta.url));
 const { ethers } = require("ethers");
 
@@ -160,13 +160,16 @@ const t4 = await v4.bondTotals(id32("KJPII-0001-BD")), t5 = await v5.bondTotals(
 ok(t4.toArray().map(String).join() === t5.toArray().map(String).join(), "bond totals match: " + t5.toArray().slice(0, 5).join(" / "));
 
 // ---- life goes on: same device, same Safe
-const sAgain = await holderSignIn(call, H, A1, s1.accessCode, null); // the personal code set up on v4
-ok(!!sAgain.device && !sAgain.enroll, "the holder signs in on v5 and isn't asked to set up the device again");
+const sAgain = await holderPasskeySignIn(call, H, A1, phone); // the passkey set up on v4
+ok(!!sAgain.token && !sAgain.enroll, "the holder signs in on v5 and isn't asked to set up the device again");
 const c1 = await hrec(C1); a1 = await hrec(A1);
 await holderSave(call, H, sAgain.token, phone, { reg: [{ ...c1, status: "Cancelled" }, { ...a1, units: a1.units + 1040 }], events: [ev(a1.bond, C1, "AssignOutCancelled")] });
-await icommit({ reg: [{ ...(await rec(A1)), filingNumber: "UCC3-2026-0417", filedBy: "King-Joseph: Penson II", filingRef: "pending" }] });
-ok(await approveAll(), "after the move: the holder cancelled with the same device, and the issuer's filing went through the Safe");
-ok(Number((await v5.assignments(id32(C1))).status) === 9 && (await v5.holderKeys(id32(A1))).nonce === 4n, "v5 recorded the holder's cancel (counter now 4)");
+a1 = await hrec(A1);
+await holderSave(call, H, sAgain.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-2026-0417", filingDoc: H32(), filingFile: "ucc3.pdf", filedOn: "Nov 10, 2026", filedBy: a1.party }],
+  events: [ev(a1.bond, A1, "FilingRecorded", "UCC3-2026-0417")] });
+ok(await approveAll(), "after the move: the holder cancelled and recorded their UCC-3 with the same device");
+ok(Number((await v5.assignments(id32(C1))).status) === 9 && (await v5.holderKeys(id32(A1))).nonce === 5n, "v5 recorded the holder's cancel and UCC-3 (counter now 5)");
+ok((await v5.assignments(id32(A1))).filingRef === (await rec(A1)).filingRef, "the holder's UCC-3 reference is on v5");
 const failed = (await db.query("select fn, ref, error from chain_ops where status = 'failed'")).rows;
 ok(!failed.length, "no write failed" + (failed.length ? ": " + JSON.stringify(failed) : ""));
 const st5 = await st();

@@ -1385,29 +1385,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             {!a.filingRef && !TERMINAL.includes(a.status) && (
               <div className="mt-5">
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>UCC-3 filing</div>
-                <Field label="Filing number and date" value={filing} onChange={setFiling}
-                  placeholder="2026-1234567890 · Oct 17, 2026"
-                  hint={(() => {
-                    const u = bonds.find((x) => x.id === a.bond)?.ucc1;
-                    return (ucc1Done(u) ? "Amends UCC-1 " + u.number + " (" + u.office + "). " : "") +
-                      "Stored on-chain as a hash. The filing describes the collateral by bond, assignment ID, units, contract address, chain ID and document hash.";
-                  })()} />
-                {isChild && (
-                  <div className="mb-4">
-                    <Label>Filed by</Label>
-                    <div className="flex gap-4" style={{ fontSize: 14, color: T.ink }}>
-                      {[["assignor", a.assignor + " (assignor)"], ["issuer", "Issuer — assignor missed 30 days"]].map(([k, l]) => (
-                        <label key={k} className="flex items-center gap-2" style={{ cursor: "pointer" }}>
-                          <input type="radio" name="filedBy" checked={filedBy === k} onChange={() => setFiledBy(k)} />
-                          {l}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <Button variant="quiet" disabled={!filing.trim()} onClick={() => setFilingRef(a)}>
-                  Record filing reference
-                </Button>
+                <Note>
+                  Not recorded yet. The UCC-3 is the holder's: {a.party} records it at Holder access, with the filing
+                  number and the filed copy, signed with their passkey. Nothing for you to do here.
+                </Note>
               </div>
             )}
 

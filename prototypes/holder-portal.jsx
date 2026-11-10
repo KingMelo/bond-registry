@@ -150,6 +150,27 @@ function Rows({ data }) {
 }
 
 // Picks or takes a dropped file and keeps only its name and SHA-256. Nothing is uploaded.
+/** The holder records the UCC-3 they filed: its number and the filed copy (only its SHA-256 is kept). */
+function UccForm({ forWhom, onSave }) {
+  const [num, setNum] = useState("");
+  const [doc, setDoc] = useState(null);
+  const [err, setErr] = useState("");
+  return (
+    <div className="mt-3 px-3 py-3" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
+      <div style={{ fontFamily: serif, fontSize: 16, color: T.ink, marginBottom: 8 }}>Record your UCC-3{forWhom ? " for " + forWhom : ""}</div>
+      <Field label="Filing number" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="e.g. 2026 4417 0091" mono />
+      <DocDrop label="Filed UCC-3 (acknowledgment copy)" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
+        hint="Hashed on this device; only the hash is kept and written on-chain, with the filing number." />
+      {err && <p style={{ color: T.red, fontSize: 14, margin: "0 0 10px" }}>{err}</p>}
+      <Button onClick={() => {
+        if (!num.trim()) return setErr("Enter the filing number.");
+        if (!doc) return setErr("Attach the filed UCC-3.");
+        onSave({ filingNumber: num.trim(), filingDoc: doc.hash, filingFile: doc.name, filedOn: today() });
+      }}>Record UCC-3: confirm with your passkey</Button>
+    </div>
+  );
+}
+
 function DocDrop({ label, value, onChange, hint }) {
   const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -299,7 +320,7 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
             r.parentId && ["From record", parentName || shortHash(r.parentId)],
             r.pendingChildren > 0 && ["Pending transfers", String(r.pendingChildren)],
             ["UCC-3 filing", !r.filingRef ? "Not recorded"
-              : mine?.filingNumber ? mine.filingNumber + (filingRefOf(mine.id, mine.filingNumber) === r.filingRef ? " · matches the chain ✓" : " · doesn't match the chain")
+              : mine?.filingNumber ? mine.filingNumber + (filingRefOf(mine.id, mine.filingNumber, mine.filingDoc) === r.filingRef ? " · matches the chain ✓" : " · doesn't match the chain")
               : "Recorded on-chain"],
             ["Certified mailing", r.deliveryRef ? "Recorded on-chain (the tracking number is shown only to the holder)" : "Not recorded"],
             ["Last changed", when(r.updatedAt)],
@@ -512,31 +533,25 @@ export default function HolderPortal() {
   };
 
   /* --- sign in --- */
-  async function signIn() {
+  // Holder access: the assignment ID first. The server says what opens it: the one-time transfer
+  // code (until a passkey is set up), or the passkey itself.
+  const [qStep, setQStep] = useState(null); // null | { mode: "code" } | { mode: "passkey", ... }
+  async function start() {
     const id = qId.trim().toUpperCase();
-    const rec = reg.find((a) => a.id.toUpperCase() === id);
-    if (!rec) { setQErr("No assignment with that ID is on the register."); return; }
-    let res;
-    try { res = await api.signIn(rec.id, qKey); } catch (e) { setQErr(e.message); return; }
-    if (!res.ok) {
-      if (res.code === "locked") {
-        await reload().catch(() => {});
-        setQErr("This credential is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
-      } else if (res.code === "nokey") {
-        setQErr("No access code has been issued for this assignment. Your transfer code comes in the certified mailing with your instrument.");
-      } else if (res.code === "mismatch") {
-        setQErr("That access code doesn't match. " + res.left + (res.left === 1 ? " attempt" : " attempts") + " remaining before the credential locks.");
-      } else {
-        setQErr(res.error || "Sign-in failed.");
-      }
-      return;
-    }
-    const fresh = (await reload().catch(() => null))?.reg.find((a) => a.id === rec.id) || rec;
-    if (TERMINAL.includes(fresh.status)) {
-      setQErr("This record is " + LABEL[fresh.status].toLowerCase() + " and can no longer be acted on.");
-      return;
-    }
-    setQErr(""); setQKey("");
+    if (!id) return;
+    setQErr("");
+    let r;
+    try { r = await api.holderStart(id); } catch (e) { return setQErr(e.message); }
+    if (r.mode === "code" || r.mode === "passkey") return setQStep(r);
+    if (r.mode === "locked") return setQErr("This transfer code is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
+    if (r.mode === "closed") return setQErr("This record is " + (LABEL[r.status] || r.status).toLowerCase() + " and can no longer be acted on.");
+    setQErr(r.error || "That assignment can't be opened.");
+  }
+
+  async function opened(id, res) {
+    const fresh = (await reload().catch(() => null))?.reg.find((a) => a.id === id) || reg.find((a) => a.id === id);
+    if (!fresh) return setQErr("No assignment with that ID is on the register.");
+    setQErr(""); setQKey(""); setQStep(null);
     session.current = { id: fresh.id, token: res.token, rpId: res.rpId, enroll: res.enroll };
     api.holderMine(res.token).then(setMyMail).catch(() => setMyMail(null));
     setDevice(res.device);
@@ -544,9 +559,40 @@ export default function HolderPortal() {
     setView(res.device ? (fresh.status === "Issued" ? "claim" : "position") : "device");
   }
 
+  async function signInWithCode() {
+    const id = qStep?.id || qId.trim().toUpperCase();
+    let res;
+    try { res = await api.signIn(id, qKey); } catch (e) { setQErr(e.message); return; }
+    if (!res.ok) {
+      if (res.code === "locked") {
+        await reload().catch(() => {});
+        setQErr("This transfer code is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
+      } else if (res.code === "mismatch") {
+        setQErr("That transfer code doesn't match. " + res.left + (res.left === 1 ? " attempt" : " attempts") + " remaining before it locks.");
+      } else {
+        setQErr(res.error || "Sign-in failed.");
+      }
+      return;
+    }
+    await opened(id, res);
+  }
+
+  const [qBusy, setQBusy] = useState(false);
+  async function signInWithPasskey() {
+    const st = qStep;
+    setQErr(""); setQBusy(true);
+    try {
+      const assertion = await signWithDevice({ challenge: st.challenge, credId: st.credId, rpId: st.rpId });
+      const res = await api.signInPasskey({ id: st.id, challenge: st.challenge, exp: st.exp, ticket: st.ticket, assertion });
+      await opened(st.id, res);
+    } catch (e) {
+      setQErr(e.message);
+      if (/took too long/.test(e.message)) setQStep(null);
+    } finally { setQBusy(false); }
+  }
+
   // First sign-in on this record: the device makes a key, then signs its registration with it.
   const [devErr, setDevErr] = useState("");
-  const [myCode, setMyCode] = useState(null); // the personal access code that replaced the transfer code, shown once
   const [devBusy, setDevBusy] = useState(false);
   async function setUpDevice() {
     const s = session.current;
@@ -557,10 +603,10 @@ export default function HolderPortal() {
       const { challenge } = await api.holderKeyPrepare({ token: s.token, ...made });
       const assertion = await signWithDevice({ challenge, credId: made.credId, rpId: s.rpId });
       const r = await api.holderKey({ token: s.token, ...made, assertion });
-      setDevice({ fingerprint: r.fingerprint, credId: r.credId });
-      setMyCode(r.accessCode);
+      setDevice({ fingerprint: r.fingerprint, credId: r.credId, since: r.since });
       await reload().catch(() => {});
-      setView("newCode");
+      flash("Passkey set up. The transfer code no longer works; from now on your passkey opens this assignment.");
+      setView(open?.status === "Issued" ? "claim" : "position");
     } catch (e) { setDevErr(e.message); } finally { setDevBusy(false); }
   }
 
@@ -638,6 +684,16 @@ export default function HolderPortal() {
     setChildIssued(child); setChildCode(null);
     setAUnits(""); setAParty(""); setAContact(""); setAPosition(""); setAAddress(""); setADoc(null);
     setView("childIssued");
+  }
+
+  // The holder records a UCC-3: on their own record, or on an assign-out they made. Saved like any
+  // other change, so their passkey signs it and it goes on-chain with the filed copy's hash.
+  const [uccFor, setUccFor] = useState(null);
+  function recordUcc(rec, f) {
+    const by = open.party; // whoever is signed in filed it: the holder, for their record or an assign-out they made
+    setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, ...f, filedBy: by } : a)));
+    emit(rec.bond, rec.id, "FilingRecorded", "HOLDER", f.filingNumber);
+    flash("UCC-3 " + f.filingNumber + " recorded. Confirm with your passkey; it's written on-chain with the filed copy's hash.");
   }
 
   function cancelAssignOut(child) {
@@ -728,27 +784,45 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Open your assignment</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-              Enter the assignment ID from your instrument and your access code. The first time,
-              that's the one-time transfer code from the sealed envelope in your mailing; your phone or
-              computer then sets up a device key, and you get your own access code to use from then on.
-              Every action you take here is signed with your device.
+              Enter the assignment ID from your instrument. The first time, you'll use the one-time transfer
+              code from your mailing and set up a passkey; after that, your passkey opens it.
             </p>
 
-            <Field label="Assignment ID" value={qId} onChange={setQId} placeholder="KPII-0001-BD-A00001" mono />
-            <Field label="Access code" value={qKey} onChange={setQKey} placeholder="XXXX-XXXX-XXXX-XXXX" mono />
+            <Field label="Assignment ID" value={qId} onChange={(v) => { setQId(v); setQStep(null); setQErr(""); }} placeholder="KJPII-0001-BD-A00001" mono />
 
-            {qErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{qErr}</p>}
+            {!qStep && <Button onClick={start}>Continue</Button>}
 
-            <Button onClick={signIn}>Continue</Button>
+            {qStep?.mode === "code" && (
+              <div>
+                <Field label="Transfer code" value={qKey} onChange={setQKey} placeholder="XXXX-XXXX-XXXX-XXXX" mono
+                  hint="The one-time code in the sealed envelope with your instrument. You'll set up your passkey next." />
+                <Button onClick={signInWithCode}>Continue</Button>
+              </div>
+            )}
+
+            {qStep?.mode === "passkey" && (
+              <div>
+                <Rows data={[
+                  ["Secured with", "A passkey"],
+                  ["Set up", qStep.since || "—"],
+                  ["Key", qStep.fingerprint],
+                ]} />
+                <div className="mt-4">
+                  <Button disabled={qBusy} onClick={signInWithPasskey}>{qBusy ? "Confirm on your device…" : "Sign in with your passkey"}</Button>
+                </div>
+                <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
+                  Use the device, password manager or security key you set it up with. Lost it? The issuer can verify
+                  you, reset it, and mail you a new transfer code.
+                </div>
+              </div>
+            )}
+
+            {qErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, margin: "14px 0 0" }}>{qErr}</p>}
 
             <div className="mt-6">
               <Note>
-                Your access code comes in a sealed envelope inside the certified mailing with your
+                Your transfer code comes in a sealed envelope inside the certified mailing with your
                 instrument. Nothing from the registry will ever email you one or ask for it.
-                <div style={{ marginTop: 8, color: T.ink, fontVariantNumeric: "tabular-nums" }}>
-                  Demo · accepted: …A00001 / 7KQM-R4XW-9TPH-C2NV
-                  <br />Demo · awaiting claim: …A00004 / N4VP-K9TC-X3HW-R7MJ
-                </div>
               </Note>
             </div>
           </div>
@@ -767,7 +841,8 @@ export default function HolderPortal() {
             <Rows data={[
               ["Assignment", open.id],
               ["You'll be asked", "Twice: once to make the key, once to sign its registration"],
-              ["Then", "You get your own access code. The one from the mailing stops working."],
+              ["Then", "The transfer code from your mailing stops working. Your passkey opens this assignment from then on."],
+              ["What you can use", "This phone or computer, a password manager such as Bitwarden, or a security key such as a YubiKey or a Trezor."],
               ["Use", "The device you'll use to manage this assignment. Passkeys saved to your Apple, Google or Microsoft account work on your other devices too."],
             ]} />
             {!passkeysAvailable() && <div className="mt-4"><Note kind="warn">This browser can't use passkeys. Open this page on an up-to-date phone or computer.</Note></div>}
@@ -775,32 +850,6 @@ export default function HolderPortal() {
             <div className="mt-5 space-y-3">
               <Button disabled={devBusy || !passkeysAvailable()} onClick={setUpDevice}>{devBusy ? "Follow your device's prompts…" : "Set up device key"}</Button>
               <Button variant="quiet" onClick={() => { session.current = null; setView(null); setOpenId(null); }}>Not now</Button>
-            </div>
-          </div>
-        )}
-
-        {/* ============ personal access code ============ */}
-        {inHolder && view === "newCode" && open && (
-          <div>
-            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Your access code</h1>
-            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 18px", maxWidth: "62ch" }}>
-              Your device key is set up. The code that came in the mailing was a one-time transfer code,
-              and it no longer works: whoever mailed it can't use it. From now on you sign in to {open.id} with
-              this code, then confirm on your device.
-            </p>
-            <div className="px-3 py-4 mb-3 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
-              fontSize: 24, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>
-              {myCode}
-            </div>
-            <Note kind="warn">
-              <strong style={{ fontWeight: 600 }}>Shown once, and only to you.</strong> Write it down and keep it somewhere
-              safe. Nobody else has it, not the issuer and not the registry, which keeps only a fingerprint of it.
-              If you lose it, the issuer can verify you and mail a new one.
-            </Note>
-            <div className="mt-5">
-              <Button onClick={() => { setMyCode(null); flash("Device key set up. Its registration is being recorded on-chain."); setView(open?.status === "Issued" ? "claim" : "position"); }}>
-                I've written it down
-              </Button>
             </div>
           </div>
         )}
@@ -901,7 +950,8 @@ export default function HolderPortal() {
             </div>
             {device && (
               <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 8 }}>
-                Signed with your device key <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums" }}>{device.fingerprint}</span>
+                Signed with your passkey <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums" }}>{device.fingerprint}</span>
+                {(device.since || open.deviceKey?.since) ? " · set up " + (device.since || open.deviceKey?.since) : ""}
               </div>
             )}
 
@@ -974,6 +1024,10 @@ export default function HolderPortal() {
               ]} />
             </div>
 
+            {!open.filingNumber && !open.filingRef && !TERMINAL.includes(open.status) && (
+              <UccForm onSave={(f) => recordUcc(open, f)} />
+            )}
+
             <div style={{ fontFamily: serif, fontSize: 18, color: T.ink, margin: "22px 0 10px" }}>
               Chain of authority
             </div>
@@ -1035,6 +1089,13 @@ export default function HolderPortal() {
                       <Button variant="quiet" onClick={() => showTransferCode(c)}>Show {c.party}'s transfer code</Button>
                     )}
                   </div>
+                )}
+                {!c.filingNumber && !c.filingRef && !TERMINAL.includes(c.status) && (
+                  uccFor === c.id ? <UccForm forWhom={c.party} onSave={(f) => { recordUcc(c, f); setUccFor(null); }} />
+                    : <div className="mt-3"><Button variant="quiet" onClick={() => setUccFor(c.id)}>Record the UCC-3 for this assignment</Button></div>
+                )}
+                {c.filingNumber && (
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8 }}>UCC-3 {c.filingNumber}{c.filedBy ? " · filed by " + c.filedBy : ""}</div>
                 )}
                 {c.status === "Issued" && !c.deviceKey?.fingerprint && (
                   <div className="mt-3">
@@ -1112,8 +1173,8 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Assignment created</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              Signed with your device and being recorded on-chain; it waits for the issuer to
-              activate the assignee. These are the values the register generated; carry them onto
+              Signed with your device and being recorded on-chain. It's open to the assignee now:
+              give them the transfer code below with the instrument. These are the values the register generated; carry them onto
               the instrument you sign.
             </p>
 
@@ -1157,7 +1218,7 @@ export default function HolderPortal() {
 
             <div className="mt-4">
               <Note kind="caution">
-                You can cancel this yourself and take the {usd(childIssued.units)} back only until
+                You can cancel this yourself and take the {usd(childIssued.units)} back only until{" "}
                 {childIssued.party} claims it with the transfer code. After that only they can accept or
                 reject it.
               </Note>

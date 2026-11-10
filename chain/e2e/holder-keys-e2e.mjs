@@ -12,7 +12,7 @@ const require = createRequire(new URL("../../package.json", import.meta.url));
 const { ethers } = require("ethers");
 const pg = require("pg");
 // A fake phone: passkeys that answer like a browser's WebAuthn.
-import { newDevice, created, signs } from "./fake-device.mjs";
+import { newDevice, created, signs, holderPasskeySignIn } from "./fake-device.mjs";
 
 const ROOT = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
 const DB = "postgres://postgres@127.0.0.1:54329/hke";
@@ -91,7 +91,7 @@ async function signIn(id, code, dev) {
   if (r.enroll && dev) {
     const c = created(dev, r.enroll);
     const p = await call(H, "POST", "/api/holder/key/prepare", { token: r.token, ...c });
-    r.accessCode = (await call(H, "POST", "/api/holder/key", { token: r.token, ...c, assertion: signs(dev, p.challenge) })).accessCode;
+    r.since = (await call(H, "POST", "/api/holder/key", { token: r.token, ...c, assertion: signs(dev, p.challenge) })).since;
   }
   return r;
 }
@@ -179,12 +179,15 @@ const LONG = "The amount on the instrument I received does not match the registe
   "Please return the amount to the assignor's record.";
 const phone2 = newDevice();
 const s2 = await signIn(child.id, CODE2, phone2);
-ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(s2.accessCode) && s2.accessCode !== CODE2, "setting up the device replaces the transfer code with a personal access code");
 {
-  const old = await call(H, "POST", "/api/holder/signin", { id: child.id, passkey: CODE2 });
-  ok(!old.ok && old.code === "mismatch", "the transfer code the assignor knew no longer opens the record (" + old.code + ")");
-  const mine = await call(H, "POST", "/api/holder/signin", { id: child.id, passkey: s2.accessCode });
-  ok(mine.ok && !!mine.device, "the new holder's personal code does");
+  const old = await call(H, "POST", "/api/holder/signin", { id: child.id, passkey: CODE2 }).catch((x) => ({ ok: false, code: x.status }));
+  ok(!old.ok, "the transfer code the assignor knew no longer opens the record (" + old.code + ")");
+  const st = await call(H, "POST", "/api/holder/start", { id: child.id });
+  ok(st.mode === "passkey" && !!st.since, "Holder access now asks for the passkey, set up " + st.since);
+  const bad = await holderPasskeySignIn(call, H, child.id, phone2, { signWith: newDevice() }).then(() => null, (x) => x);
+  ok(bad?.status === 422, "another device can't sign in (" + bad?.status + ")");
+  const mine = await holderPasskeySignIn(call, H, child.id, phone2);
+  ok(mine.ok && !!mine.token && mine.device?.since === st.since, "the new holder's own passkey does");
 }
 a1 = await hrec(a1.id); c2 = await hrec(child.id);
 e = await tryCall(H, "POST", "/api/commit", { token: s2.token, reg: [{ ...a1, party: "Company D" }], events: [] });
@@ -202,6 +205,25 @@ await hsave(s2.token, phone2, { reg: [{ ...c2, status: "Rejected", rejectionReas
 ok((await hrec(a1.id)).units === 1_000_000, "the rejected $10.40 is back on A00001");
 e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
 ok(e?.status === 404, "once used, the transfer code is gone for the issuer too (" + e?.status + ")");
+
+// 5b. The holder records their own UCC-3 with the filed copy; nothing waits on the issuer.
+{
+  a1 = await hrec(a1.id);
+  const doc = H32();
+  e = await hsave(s1.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-2026-0417" }] }).then(() => null, (x) => x);
+  ok(e?.status === 400, "a UCC-3 needs the filed copy attached (" + e?.status + ")");
+  await hsave(s1.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-2026-0417", filingDoc: doc, filingFile: "ucc3.pdf", filedOn: "Nov 10, 2026", filedBy: "Company A" }],
+    events: [ev(a1.bond, a1.id, "FilingRecorded", "UCC3-2026-0417")] });
+  await settle();
+  const want = (await import(ROOT + "/server/chain.js")).filingRef(a1.id, "UCC3-2026-0417", doc);
+  ok((await regC.assignments(id32(a1.id))).filingRef === want, "the holder's UCC-3 is on-chain (number and filed copy), signed by their passkey");
+  const db = new pg.Client({ connectionString: DB }); await db.connect();
+  const ops = (await db.query("select fn, role from chain_ops where ref = $1", [a1.id])).rows; await db.end();
+  ok(ops.some((r) => r.fn === "recordFiling" && r.role === "relayer") && !ops.some((r) => r.fn === "setFilingRef"), "and nothing went to the issuer to sign for it");
+  a1 = await hrec(a1.id);
+  e = await hsave(s1.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-OTHER", filingDoc: H32() }] }).then(() => null, (x) => x);
+  ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
+}
 
 // 6. Lock, issuer unlocks. Holders don't request redemption through the registry: refused.
 a1 = await hrec(a1.id);
@@ -236,7 +258,10 @@ let a3 = await hrec("PENS-0001-BD-A00003");
 e = await hsave(s3.token, old, { reg: [{ ...a3, status: "Rejected", rejectionReason: LONG }] }).then(() => null, (x) => x);
 ok(e?.status === 409, "the old phone can no longer act (" + e?.status + ")");
 const fresh = newDevice();
-const s3b = await signIn("PENS-0001-BD-A00003", s3.accessCode, fresh); // their personal code still opens it; a new device is set up
+// The reset made a new transfer code, which the issuer reviews and mails; it opens the record once, for the new device.
+const CODE3b = (await call(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: "PENS-0001-BD-A00003" })).code;
+ok(CODE3b && CODE3b !== CODE3, "the reset made a new transfer code for the issuer to mail");
+const s3b = await signIn("PENS-0001-BD-A00003", CODE3b, fresh);
 a3 = await hrec("PENS-0001-BD-A00003");
 await hsave(s3b.token, fresh, { reg: [{ ...a3, status: "Accepted", accepted: "now", effective: "holder" }], events: [ev(a3.bond, a3.id, "Acknowledged")] });
 
@@ -275,7 +300,7 @@ console.log("queue:", JSON.stringify(sum.counts), sum.failed.length ? JSON.strin
 ok(!sum.counts.failed && !sum.counts.queued && !sum.counts.sent, "every write confirmed (" + sum.counts.confirmed + ")");
 for (const a of (await st()).reg) ok((await onchain(a.id)) === a.status, `${a.id}: chain ${await onchain(a.id)} · register ${a.status}`);
 const nonce = (await regC.holderKeys(id32("PENS-0001-BD-A00001"))).nonce;
-ok(nonce === 4n, "A00001's key signed 4 times on-chain: register key, acknowledge, assign out, lock (" + nonce + ")");
+ok(nonce === 5n, "A00001's key signed 5 times on-chain: register key, acknowledge, assign out, UCC-3, lock (" + nonce + ")");
 
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");
 for (const c of procs) c.kill();
