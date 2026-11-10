@@ -16,6 +16,7 @@ const { chromium } = require("playwright");
 const ROOT = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
 const SHOTS = process.argv[2] || null;
 const DB = "postgres://postgres@127.0.0.1:54329/hbe";
+const pg = require("pg");
 const I = "http://localhost:5002", P = "http://localhost:5003", H = "http://localhost:5004";
 const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 let fails = 0; const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) fails++; };
@@ -33,7 +34,7 @@ const procs = [];
 process.on("exit", () => procs.forEach((c) => c.kill())); // stop the servers even when a step throws
 const start = (app, port, extra = {}) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
-    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CHAIN_CONTRACT: CONTRACT, CHAIN_ID: "31337", CHAIN_RPC_URL: "http://127.0.0.1:8545", ...extra } });
+    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CHAIN_CONTRACT: CONTRACT, CHAIN_ID: "31337", CHAIN_RPC_URL: "http://127.0.0.1:8545", CHAIN_PUBLIC_RPC: "http://127.0.0.1:8545", CHAIN_FROM_BLOCK: "0", ...extra } });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; if (out.includes("listening")) res(c); });
   c.stderr.on("data", (d) => process.stdout.write("[" + app + " err] " + d));
@@ -205,6 +206,37 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   ok(!!rj && rj.rejectionReason.length >= 255, "the assignee's rejection, signed with their passkey, is saved with its reason");
   ok((await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1).units === 1_000_000, "the $10.40 is back on the assignor's record");
   await ctx3.close();
+}
+
+// ---- Verify: the browser reads the chain itself and compares it with the register
+{
+  const t1 = Date.now();
+  while (Date.now() - t1 < 60000) { const q = await call(P, "GET", "/api/platform/chain"); if (!(q.counts.queued || q.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
+  await page.goto(H + "/holder");
+  await page.getByRole("button", { name: "Verify" }).click();
+  const box = page.getByLabel("Assignment or bond ID");
+  await box.fill("PENS-0001-BD");
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  await page.getByText(/agrees with the chain on this bond/).waitFor({ timeout: 20000 }).catch(() => {});
+  ok(await page.getByText(/agrees with the chain on this bond/).count() > 0, "Verify: the bond's figures on-chain match the register");
+  await box.fill(A1);
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  await page.getByText(/register agrees with the chain/).waitFor({ timeout: 20000 }).catch(() => {});
+  ok(await page.getByText(/register agrees with the chain/).count() > 0, "Verify: the assignment on-chain matches the register");
+  // A record removed from the register still shows on-chain, flagged as removed.
+  const db = new pg.Client({ connectionString: DB }); await db.connect();
+  await db.query("delete from chain_ops where ref = $1", [child.id]); await db.query("delete from assignments where id = $1", [child.id]);
+  await db.query("update meta set version = version + 1 where k = 'v'"); await db.end();
+  await page.reload();
+  await page.getByRole("button", { name: "Verify" }).click();
+  await page.getByLabel("Assignment or bond ID").fill(child.id);
+  await page.getByRole("button", { name: "Check the chain" }).click();
+  await page.getByText(/has no .* it was removed from the register/).waitFor({ timeout: 20000 }).catch(() => {});
+  ok(await page.getByText(/it was removed from the register/).count() > 0, "Verify: a record removed from the register is flagged, not shown as current");
+  await page.getByText("Assignment rejected by the holder").or(page.getByText("No events found.")).first().waitFor({ timeout: 20000 }).catch(() => {});
+  const hist = await page.locator("text=History on-chain").locator("xpath=following-sibling::*[1]").innerText().catch(() => "");
+  ok(/Created by an assign-out/.test(hist) && !/No events found/.test(hist), "Verify: the record's on-chain history is listed (" + hist.replace(/\s+/g, " ").slice(0, 120) + ")");
+  await shot("8-verify");
 }
 
 await browser.close();

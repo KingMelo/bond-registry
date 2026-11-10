@@ -236,7 +236,7 @@ function VerifyChain(props) {
   return <VerifyChainReady {...props} lib={lib} />;
 }
 
-function VerifyChainReady({ info, reg, issuerOf, lib }) {
+function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
   const { readRecord, readBond, history, nameFor, looksLikeRecord, when, filingRefOf } = lib;
   const start = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") || "" : "";
   const [q, setQ] = useState(start);
@@ -259,7 +259,12 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
       } else {
         const bond = looksLikeRecord(id) ? null : await readBond(info, id);
         if (bond) setRes({ kind: "bond", data: bond });
-        else setErr("Nothing with the ID " + id + " is recorded on-chain. Check the ID on your paperwork; a record issued in the last minute may still be on its way.");
+        else {
+          const inReg = reg.find((a) => a.id.toUpperCase() === id);
+          setErr(inReg
+            ? "The platform's register has " + id + " (" + (LABEL[inReg.status] || inReg.status).toLowerCase() + "), but it isn't on-chain yet: its write is still on its way. Check again in a minute."
+            : "Nothing with the ID " + id + " is recorded on-chain. Check the ID on your paperwork; a record issued in the last minute may still be on its way.");
+        }
       }
     } catch (e) {
       setErr("Couldn't reach the blockchain endpoint (" + (e.shortMessage || e.message) + "). Try again in a moment, or look the contract up on the block explorer below.");
@@ -326,6 +331,12 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
             ["Last changed", when(r.updatedAt)],
             ["Document fingerprint", shortHash(r.docHash)],
           ]} />
+          {!mine && (
+            <div className="mt-3">
+              <Note kind="warn">The platform's register has no {r.id}: it was removed from the register. A blockchain can't erase what it
+                recorded, so this contract still shows the record as it last stood. The register is the record to rely on.</Note>
+            </div>
+          )}
           {mine && (
             <div className="mt-3">
               {mine.units === r.units && mine.status === r.status
@@ -351,6 +362,24 @@ function VerifyChainReady({ info, reg, issuerOf, lib }) {
             !r && ["Bond instrument fingerprint", shortHash(b.instrumentHash)],
             !r && ["UCC-1 fingerprint", shortHash(b.ucc1Ref)],
           ]} />
+          {(() => {
+            // The register's figures for the same bond, to compare with the chain's.
+            const rb = bonds.find((x) => x.id.toUpperCase() === b.id);
+            if (!rb) return null;
+            const prior = (rb.prior || []).filter((p) => !p.reversed).reduce((t, p) => t + Number(p.units), 0);
+            const redeemed = Number(rb.redeemed || 0), unassigned = Number(rb.unassigned);
+            const live = Number(rb.total) - unassigned - redeemed - prior;
+            const same = live === b.live && unassigned === b.unassigned && prior === b.prior && redeemed === b.redeemed && Number(rb.total) === b.total;
+            return (
+              <div className="mt-3">
+                {same ? <Note>The platform's register agrees with the chain on this bond's figures.</Note>
+                  : <Note kind="warn">The platform's register shows {usd(live)} held in assignments and {usd(unassigned)} left to assign
+                      {prior !== b.prior ? ", " + usd(prior) + " in prior instruments" : ""}{redeemed !== b.redeemed ? ", " + usd(redeemed) + " redeemed" : ""}, which
+                      differs from the chain. A change may still be on its way; if it persists, records were removed from the register
+                      that this contract still holds, and the register is the record to rely on.</Note>}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1273,7 +1302,7 @@ export default function HolderPortal() {
         )}
 
         {/* ============ verify ============ */}
-        {tab === "verify" && <VerifyChain info={chainInfo} reg={reg} issuerOf={issuerOf} />}
+        {tab === "verify" && <VerifyChain info={chainInfo} reg={reg} bonds={bonds} issuerOf={issuerOf} />}
       </div>
 
       {signing && (
