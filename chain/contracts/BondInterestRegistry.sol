@@ -25,7 +25,12 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 ///    and can suspend or reinstate it.
 ///  - Each issuer's address acts only on that issuer's bonds, and only it can move the
 ///    issuer to a new address. The platform can't.
-///  - RELAYER (the platform's signing key) makes holder-initiated transitions only.
+///  - RELAYER (the platform's signing key) submits holder-initiated transitions and pays
+///    their gas, but can't make them up: each one must carry a signature from the
+///    holder's own device key (a passkey, P-256, checked with Polygon's RIP-7212
+///    precompile). The only holder-side moves without one are an assignment taking
+///    effect after its response period ends unanswered, and a new assignee asking for
+///    access before they have a key.
 ///  - GUARDIAN pauses and unpauses in an emergency.
 ///
 /// IDs are bytes32. The platform uses keccak256 of the display ID, for example
@@ -95,11 +100,40 @@ contract BondInterestRegistry is AccessControl, Pausable {
         bool reversed;
     }
 
+    /// The holder's device key for a record: a P-256 public key, and a counter that makes
+    /// each signature good for one action only.
+    struct HolderKey {
+        uint256 x;
+        uint256 y;
+        uint64 nonce;
+    }
+
+    /// A WebAuthn assertion: what a passkey produces when it signs. The challenge it signed is
+    /// inside clientDataJSON; the contract rebuilds the challenge for the action and checks it.
+    struct HolderAuth {
+        bytes authenticatorData;
+        string clientDataJSON;
+        uint256 challengeIndex; // where "challenge":"…" starts in clientDataJSON
+        uint256 typeIndex; // where "type":"webauthn.get" starts
+        uint256 r;
+        uint256 s;
+    }
+
+    /// How long a holder has to reject an assignment after it is mailed. Past it, an
+    /// unanswered assignment can be recorded as in effect without the holder's signature.
+    uint256 public constant RESPONSE_PERIOD = 30 days;
+    address internal constant P256_VERIFIER = address(0x100); // RIP-7212
+    bytes32 internal constant HOLDER_TAG = keccak256("BondInterestRegistry/holder/v1");
+
     mapping(bytes32 => Issuer) public issuers;
     mapping(bytes32 => Bond) public bonds;
     mapping(bytes32 => Assignment) public assignments;
     /// @dev bondId => refHash (hash of the instrument's identifier) => entry
     mapping(bytes32 => mapping(bytes32 => PriorInstrument)) public priorInstruments;
+    /// assignmentId => the holder's device key
+    mapping(bytes32 => HolderKey) public holderKeys;
+    /// assignmentId => when the issuer says it was mailed (unix seconds); starts the response period
+    mapping(bytes32 => uint64) public mailedAt;
 
     // ---------------------------------------------------------------- events
     // Every event names the bond, the record (zero when the change is to the
@@ -130,7 +164,9 @@ contract BondInterestRegistry is AccessControl, Pausable {
     event Superseded(bytes32 indexed bondId, bytes32 indexed assignmentId);
     event AssignmentRejected(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 units, bytes32 reasonHash, address actor);
     event FilingRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 filingRef, address actor);
-    event DeliveryRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 deliveryRef, address actor);
+    event DeliveryRecorded(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 deliveryRef, uint64 mailedAt, address actor);
+    event HolderKeyRegistered(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 x, uint256 y, bytes32 docHash, address actor);
+    event HolderKeyCleared(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
 
     // ---------------------------------------------------------------- errors
 
@@ -156,6 +192,11 @@ contract BondInterestRegistry is AccessControl, Pausable {
     error UnknownPrior(bytes32 bondId, bytes32 refHash);
     error PriorAlreadyReversed(bytes32 bondId, bytes32 refHash);
     error UnitsUnbalanced(bytes32 bondId);
+    error NoHolderKey(bytes32 assignmentId);
+    error HolderKeyExists(bytes32 assignmentId);
+    error BadHolderSignature(bytes32 assignmentId);
+    error ResponsePeriodOpen(bytes32 assignmentId, uint256 until);
+    error BadMailingDate(uint256 mailedAt);
 
     // ------------------------------------------------------------- modifiers
 
@@ -329,16 +370,38 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit AssignmentIssued(bondId, assignmentId, units, docHash, msg.sender);
     }
 
-    function setDeliveryRef(bytes32 bondId, bytes32 assignmentId, bytes32 deliveryRef)
+    /// Records the certified mailing (its tracking number's hash) and the date it was mailed,
+    /// which starts the holder's response period. The issuer attests the date; it can't be in
+    /// the future.
+    function setDeliveryRef(bytes32 bondId, bytes32 assignmentId, bytes32 deliveryRef, uint64 mailedOn)
         external
         whenNotPaused
         onlyIssuerOf(bondId)
         nonZero(deliveryRef)
     {
+        if (mailedOn == 0 || mailedOn > block.timestamp) revert BadMailingDate(mailedOn);
         Assignment storage a = _liveRecord(bondId, assignmentId);
         a.deliveryRef = deliveryRef;
         a.updatedAt = uint64(block.timestamp);
-        emit DeliveryRecorded(bondId, assignmentId, deliveryRef, msg.sender);
+        mailedAt[assignmentId] = mailedOn;
+        emit DeliveryRecorded(bondId, assignmentId, deliveryRef, mailedOn, msg.sender);
+    }
+
+    /// Recovery when a holder loses their device: clears the record's key so the holder can
+    /// register a new one after the issuer verifies them and mails a new access code. The
+    /// counter keeps going, so nothing the old key signed can be replayed.
+    function clearHolderKey(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
+        external
+        whenNotPaused
+        onlyIssuerOf(bondId)
+        nonZero(docHash)
+    {
+        _liveRecord(bondId, assignmentId);
+        HolderKey storage k = holderKeys[assignmentId];
+        if (k.x == 0 && k.y == 0) revert NoHolderKey(assignmentId);
+        k.x = 0;
+        k.y = 0;
+        emit HolderKeyCleared(bondId, assignmentId, docHash, msg.sender);
     }
 
     function setFilingRef(bytes32 bondId, bytes32 assignmentId, bytes32 filingRef)
@@ -468,13 +531,58 @@ contract BondInterestRegistry is AccessControl, Pausable {
     // Holder-initiated transitions. The relayer can never redeem, unlock, activate a
     // new holder, or cancel a child once its assignee has come forward.
 
-    function accept(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
+    /// Registers the holder's device key for a record, the first time they sign in. The
+    /// assertion must come from that same key (signed over this call), proving the device
+    /// holds it. Only one key at a time: replacing it takes the holder's own signature
+    /// (rotateHolderKey) or the issuer clearing it for recovery.
+    function registerHolderKey(bytes32 bondId, bytes32 assignmentId, uint256 x, uint256 y, bytes32 docHash, HolderAuth calldata auth)
+        external
+        whenNotPaused
+        onlyRelayerOn(bondId)
+        nonZero(docHash)
+    {
+        Assignment storage a = _liveRecord(bondId, assignmentId);
+        if (a.status == Status.AwaitingCredential || a.status == Status.CredentialRequested) revert WrongStatus(assignmentId, a.status);
+        HolderKey storage k = holderKeys[assignmentId];
+        if (k.x != 0 || k.y != 0) revert HolderKeyExists(assignmentId);
+        if (x == 0 && y == 0) revert NoHolderKey(assignmentId);
+        _holderSigned(assignmentId, this.registerHolderKey.selector, keccak256(abi.encode(bondId, assignmentId, x, y, docHash)), auth, x, y);
+        k.x = x;
+        k.y = y;
+        emit HolderKeyRegistered(bondId, assignmentId, x, y, docHash, msg.sender);
+    }
+
+    /// The holder moves to a new device: signed by the current key.
+    function rotateHolderKey(bytes32 bondId, bytes32 assignmentId, uint256 x, uint256 y, bytes32 docHash, HolderAuth calldata auth)
+        external
+        whenNotPaused
+        onlyRelayerOn(bondId)
+        nonZero(docHash)
+    {
+        _liveRecord(bondId, assignmentId);
+        if (x == 0 && y == 0) revert NoHolderKey(assignmentId);
+        _byHolder(assignmentId, this.rotateHolderKey.selector, keccak256(abi.encode(bondId, assignmentId, x, y, docHash)), auth);
+        HolderKey storage k = holderKeys[assignmentId];
+        k.x = x;
+        k.y = y;
+        emit HolderKeyRegistered(bondId, assignmentId, x, y, docHash, msg.sender);
+    }
+
+    /// The holder acknowledges the assignment (signed), or the response period has ended with
+    /// no rejection and it takes effect without a signature.
+    function accept(bytes32 bondId, bytes32 assignmentId, bytes32 docHash, HolderAuth calldata auth)
         external
         whenNotPaused
         onlyRelayerOn(bondId)
         nonZero(docHash)
     {
         Assignment storage a = _inStatus(bondId, assignmentId, Status.Issued);
+        if (auth.r != 0) {
+            _byHolder(assignmentId, this.accept.selector, keccak256(abi.encode(bondId, assignmentId, docHash)), auth);
+        } else {
+            uint256 m = mailedAt[assignmentId];
+            if (m == 0 || block.timestamp < m + RESPONSE_PERIOD) revert ResponsePeriodOpen(assignmentId, m == 0 ? 0 : m + RESPONSE_PERIOD);
+        }
         _set(a, Status.Accepted);
         if (a.origin == Origin.AssignOut) _childResolved(bondId, a.parentId);
         emit Accepted(bondId, assignmentId, docHash, msg.sender);
@@ -482,7 +590,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
 
     /// The holder assigns part or all of their units to a new party. The child waits,
     /// locked, until the new party comes forward and the issuer activates them.
-    function assignOut(bytes32 bondId, bytes32 parentId, bytes32 childId, uint128 units, bytes32 docHash)
+    function assignOut(bytes32 bondId, bytes32 parentId, bytes32 childId, uint128 units, bytes32 docHash, HolderAuth calldata auth)
         external
         whenNotPaused
         onlyRelayerOn(bondId)
@@ -490,6 +598,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         balanced(bondId)
     {
         Assignment storage p = _inStatus(bondId, parentId, Status.Accepted);
+        _byHolder(parentId, this.assignOut.selector, keccak256(abi.encode(bondId, parentId, childId, units, docHash)), auth);
         if (units == 0) revert ZeroUnits();
         if (units > p.units) revert NotEnoughUnits(p.units, units);
         p.units -= units;
@@ -503,7 +612,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
     /// came from: to the assignor's record for an assign-out, otherwise to the bond's unassigned
     /// balance. An assignment the holder doesn't reject takes effect through `accept`, either
     /// when they acknowledge it or when the response period ends.
-    function rejectAssignment(bytes32 bondId, bytes32 assignmentId, bytes32 reasonHash)
+    function rejectAssignment(bytes32 bondId, bytes32 assignmentId, bytes32 reasonHash, HolderAuth calldata auth)
         external
         whenNotPaused
         onlyRelayerOn(bondId)
@@ -511,6 +620,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         balanced(bondId)
     {
         Assignment storage a = _inStatus(bondId, assignmentId, Status.Issued);
+        _byHolder(assignmentId, this.rejectAssignment.selector, keccak256(abi.encode(bondId, assignmentId, reasonHash)), auth);
         if (a.pendingChildren != 0) revert PendingChildren(assignmentId, a.pendingChildren);
         if (a.origin == Origin.AssignOut) {
             Assignment storage p = assignments[a.parentId];
@@ -527,8 +637,8 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit AssignmentRejected(bondId, assignmentId, a.units, reasonHash, msg.sender);
     }
 
-    /// The assignor cancels an assign-out nobody has claimed yet.
-    function cancelAssignOut(bytes32 bondId, bytes32 childId, bytes32 docHash)
+    /// The assignor cancels an assign-out nobody has claimed yet, signed with the assignor's key.
+    function cancelAssignOut(bytes32 bondId, bytes32 childId, bytes32 docHash, HolderAuth calldata auth)
         external
         whenNotPaused
         onlyRelayerOn(bondId)
@@ -536,6 +646,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         balanced(bondId)
     {
         Assignment storage c = _inStatus(bondId, childId, Status.AwaitingCredential);
+        _byHolder(c.parentId, this.cancelAssignOut.selector, keccak256(abi.encode(bondId, childId, docHash)), auth);
         _cancelChild(bondId, childId, c, docHash);
     }
 
@@ -551,24 +662,26 @@ contract BondInterestRegistry is AccessControl, Pausable {
     }
 
     /// `docHash` is the hash of the holder's lock notice.
-    function lock(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
+    function lock(bytes32 bondId, bytes32 assignmentId, bytes32 docHash, HolderAuth calldata auth)
         external
         whenNotPaused
         onlyRelayerOn(bondId)
         nonZero(docHash)
     {
         Assignment storage a = _inStatus(bondId, assignmentId, Status.Accepted);
+        _byHolder(assignmentId, this.lock.selector, keccak256(abi.encode(bondId, assignmentId, docHash)), auth);
         _set(a, Status.Locked);
         emit Locked(bondId, assignmentId, docHash, msg.sender);
     }
 
-    function requestRedemption(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
+    function requestRedemption(bytes32 bondId, bytes32 assignmentId, bytes32 docHash, HolderAuth calldata auth)
         external
         whenNotPaused
         onlyRelayerOn(bondId)
         nonZero(docHash)
     {
         Assignment storage a = _inStatus(bondId, assignmentId, Status.Accepted);
+        _byHolder(assignmentId, this.requestRedemption.selector, keccak256(abi.encode(bondId, assignmentId, docHash)), auth);
         if (a.units == 0) revert ZeroUnits();
         if (a.pendingChildren != 0) revert PendingChildren(assignmentId, a.pendingChildren);
         _set(a, Status.PendingRedemption);
@@ -590,6 +703,12 @@ contract BondInterestRegistry is AccessControl, Pausable {
         unassigned = b.unassigned;
         redeemed = b.redeemed;
         reconciled = prior + live + unassigned + redeemed == total;
+    }
+
+    /// What the holder's key must sign for a call: bound to this chain, this contract, the record
+    /// whose key signs, its current counter, the function and its arguments.
+    function holderChallenge(bytes32 signerId, bytes4 selector, bytes32 argsHash) public view returns (bytes32) {
+        return keccak256(abi.encode(HOLDER_TAG, block.chainid, address(this), signerId, holderKeys[signerId].nonce, selector, argsHash));
     }
 
     function isTerminal(Status s) public pure returns (bool) {
@@ -674,5 +793,60 @@ contract BondInterestRegistry is AccessControl, Pausable {
             p.status = Status.Superseded;
             emit Superseded(bondId, parentId);
         }
+    }
+
+    // ------------------------------------------------------------ holder keys
+
+    /// The record's own key must have signed this call.
+    function _byHolder(bytes32 signerId, bytes4 selector, bytes32 argsHash, HolderAuth calldata auth) internal {
+        HolderKey storage k = holderKeys[signerId];
+        if (k.x == 0 && k.y == 0) revert NoHolderKey(signerId);
+        _holderSigned(signerId, selector, argsHash, auth, k.x, k.y);
+    }
+
+    function _holderSigned(bytes32 signerId, bytes4 selector, bytes32 argsHash, HolderAuth calldata auth, uint256 x, uint256 y) internal {
+        bytes32 challenge = holderChallenge(signerId, selector, argsHash);
+        if (!_verifyWebAuthn(challenge, auth, x, y)) revert BadHolderSignature(signerId);
+        holderKeys[signerId].nonce += 1;
+    }
+
+    /// Checks a WebAuthn assertion: the user was present and verified on the device, it is a
+    /// sign-in ("webauthn.get") over exactly this challenge, and the P-256 signature over
+    /// authenticatorData || sha256(clientDataJSON) is valid for the key.
+    function _verifyWebAuthn(bytes32 challenge, HolderAuth calldata auth, uint256 x, uint256 y) internal view returns (bool) {
+        bytes calldata ad = auth.authenticatorData;
+        if (ad.length < 37) return false;
+        uint8 flags = uint8(ad[32]);
+        if (flags & 0x01 == 0 || flags & 0x04 == 0) return false; // user present, user verified
+        bytes memory cd = bytes(auth.clientDataJSON);
+        if (!_at(cd, auth.typeIndex, bytes('"type":"webauthn.get"'))) return false;
+        if (!_at(cd, auth.challengeIndex, abi.encodePacked('"challenge":"', _base64url(challenge), '"'))) return false;
+        bytes32 h = sha256(abi.encodePacked(ad, sha256(cd)));
+        (bool ok, bytes memory out) = P256_VERIFIER.staticcall(abi.encode(h, auth.r, auth.s, x, y));
+        return ok && out.length == 32 && abi.decode(out, (uint256)) == 1;
+    }
+
+    function _at(bytes memory hay, uint256 index, bytes memory needle) internal pure returns (bool) {
+        if (index + needle.length > hay.length) return false;
+        for (uint256 i = 0; i < needle.length; i++) if (hay[index + i] != needle[i]) return false;
+        return true;
+    }
+
+    /// Unpadded base64url of 32 bytes (43 characters), as WebAuthn writes the challenge.
+    function _base64url(bytes32 d) internal pure returns (bytes memory out) {
+        bytes memory T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        out = new bytes(43);
+        uint256 j;
+        for (uint256 i = 0; i < 30; i += 3) {
+            uint256 n = (uint256(uint8(d[i])) << 16) | (uint256(uint8(d[i + 1])) << 8) | uint256(uint8(d[i + 2]));
+            out[j++] = T[(n >> 18) & 63];
+            out[j++] = T[(n >> 12) & 63];
+            out[j++] = T[(n >> 6) & 63];
+            out[j++] = T[n & 63];
+        }
+        uint256 m = (uint256(uint8(d[30])) << 16) | (uint256(uint8(d[31])) << 8);
+        out[40] = T[(m >> 18) & 63];
+        out[41] = T[(m >> 12) & 63];
+        out[42] = T[(m >> 6) & 63];
     }
 }

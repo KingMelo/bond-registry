@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
+const { withHolders, NOAUTH } = require("./webauthn");
 
 const id = (s) => ethers.keccak256(ethers.toUtf8Bytes(s));
 const h = (s) => ethers.sha256(ethers.toUtf8Bytes(s)); // stands in for a document's SHA-256
@@ -22,7 +23,7 @@ async function setup() {
   await reg.connect(platform).registerIssuer(OTHER, other.address);
   await reg.connect(issuer).anchorBond(BOND, ISS, TOTAL, h("instrument"), h("ucc1"));
   await reg.connect(other).anchorBond(BOND2, OTHER, TOTAL, h("instrument2"), h("ucc1-2"));
-  const I = reg.connect(issuer), RL = reg.connect(relayer);
+  const I = reg.connect(issuer), RL = withHolders(reg, relayer);
   return { reg, I, RL, admin, platform, relayer, guardian, issuer, other, stranger };
 }
 
@@ -98,7 +99,7 @@ describe("BondInterestRegistry", () => {
       const { reg, I, RL } = await setup();
       await expect(RL.issueAssignment(BOND, A1, 100, h("d"))).to.be.revertedWithCustomError(reg, "NotIssuer");
       await I.issueAssignment(BOND, A1, 100, h("d"));
-      await expect(I.accept(BOND, A1, h("a"))).to.be.revertedWithCustomError(reg, "AccessControlUnauthorizedAccount");
+      await expect(I.accept(BOND, A1, h("a"), NOAUTH)).to.be.revertedWithCustomError(reg, "AccessControlUnauthorizedAccount");
     });
 
     it("an issuer can't touch another issuer's bonds", async () => {
@@ -232,7 +233,7 @@ describe("BondInterestRegistry", () => {
     it("delivery and filing references are stored without changing status", async () => {
       const { reg, I } = await setup();
       await I.issueAssignment(BOND, A1, 100, h("d"));
-      await expect(I.setDeliveryRef(BOND, A1, h("mail"))).to.emit(reg, "DeliveryRecorded");
+      await expect(I.setDeliveryRef(BOND, A1, h("mail"), 1)).to.emit(reg, "DeliveryRecorded");
       await expect(I.setFilingRef(BOND, A1, h("ucc3"))).to.emit(reg, "FilingRecorded");
       const a = await reg.assignments(A1);
       expect([a.deliveryRef, a.filingRef, Number(a.status)]).to.deep.equal([h("mail"), h("ucc3"), S.Issued]);
@@ -364,7 +365,7 @@ describe("BondInterestRegistry", () => {
       await accepted(I, RL, A1, 100);
       await expect(RL.rejectAssignment(BOND, A1, h("late"))).to.be.revertedWithCustomError(reg, "WrongStatus");
       await I.issueAssignment(BOND, A2, 100, h("d"));
-      await expect(I.rejectAssignment(BOND, A2, h("x"))).to.be.revertedWithCustomError(reg, "AccessControlUnauthorizedAccount");
+      await expect(I.rejectAssignment(BOND, A2, h("x"), NOAUTH)).to.be.revertedWithCustomError(reg, "AccessControlUnauthorizedAccount");
       await expect(RL.rejectAssignment(BOND, A2, Z)).to.be.revertedWithCustomError(reg, "ZeroHash");
       await RL.rejectAssignment(BOND, A2, h("no"));
       await expect(RL.rejectAssignment(BOND, A2, h("again"))).to.be.revertedWithCustomError(reg, "WrongStatus");
@@ -492,7 +493,7 @@ describe("BondInterestRegistry", () => {
         await expect(I.approveRedemption(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(I.replaceAssignment(BOND, t, C2, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(I.setFilingRef(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
-        await expect(I.setDeliveryRef(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+        await expect(I.setDeliveryRef(BOND, t, h("x"), 1)).to.be.revertedWithCustomError(reg, "WrongStatus");
       }
     });
   });
