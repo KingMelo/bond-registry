@@ -4,7 +4,9 @@
 //   RELAYER_ADDRESS   the platform's signing key for holder actions
 //   GUARDIAN_ADDRESS  can pause in an emergency
 //   PREDECESSOR       the contract this one replaces (it copies that one's state); unset for none
+//   WRITE_DEPLOYMENT=1  record it in deployments/<network>.json (in the job's copy; commit it after)
 // Any that are unset fall back to the deployer, which is only sensible on a testnet.
+const fs = require("fs"), path = require("path");
 const { ethers, network } = require("hardhat");
 
 async function main() {
@@ -19,6 +21,12 @@ async function main() {
   if (balance === 0n) throw new Error("The deployer has no POL for gas. Fund " + deployer.address + " first.");
   const predecessor = process.env.PREDECESSOR ? ethers.getAddress(process.env.PREDECESSOR) : ethers.ZeroAddress;
   console.log("Roles:", roles, "Predecessor:", predecessor);
+  // A successor only makes sense once its predecessor is frozen: nothing can change on it after the copy.
+  if (predecessor !== ethers.ZeroAddress) {
+    const p = new ethers.Contract(predecessor, ["function paused() view returns (bool)"], ethers.provider);
+    if (!(await p.paused())) throw new Error("The predecessor " + predecessor + " isn't paused. Freeze it first.");
+    console.log("Predecessor is paused.");
+  }
   const R = await ethers.getContractFactory("BondInterestRegistry");
   const reg = await R.deploy(roles.admin, roles.platform, roles.relayer, roles.guardian, predecessor);
   await reg.waitForDeployment();
@@ -27,6 +35,16 @@ async function main() {
   console.log("BondInterestRegistry:", addr);
   console.log("Deployed in block", receipt.blockNumber, "tx", receipt.hash, "gas used", receipt.gasUsed.toString());
   if (network.name === "amoy") console.log("Explorer: https://amoy.polygonscan.com/address/" + addr);
+  if (process.env.WRITE_DEPLOYMENT) {
+    const block = await ethers.provider.getBlock(receipt.blockNumber);
+    const dep = { network: network.name, chainId: Number(network.config.chainId), contract: "BondInterestRegistry",
+      version: Number(process.env.VERSION || 0) || undefined, address: addr, deployTx: receipt.hash, block: receipt.blockNumber,
+      gasUsed: Number(receipt.gasUsed), deployedAt: new Date(Number(block.timestamp) * 1000).toISOString().replace(/\.\d+Z$/, "Z"),
+      changes: process.env.CHANGES || undefined, predecessor, roles,
+      explorer: (network.name === "amoy" ? "https://amoy.polygonscan.com" : "https://polygonscan.com") + "/address/" + addr };
+    fs.writeFileSync(path.join(__dirname, "..", "deployments", network.name + ".json"), JSON.stringify(dep, null, 2) + "\n");
+    console.log("DEPLOYMENT " + JSON.stringify(dep));
+  }
   if (network.name === "polygon") console.log("Explorer: https://polygonscan.com/address/" + addr);
 }
 
