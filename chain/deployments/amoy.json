@@ -15,5 +15,18 @@
     "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "guardian": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4"
   },
-  "explorer": "https://amoy.polygonscan.com/address/0x79481267B07714758c5C31Fd90B44828Fb4A1745"
+  "explorer": "https://amoy.polygonscan.com/address/0x79481267B07714758c5C31Fd90B44828Fb4A1745",
+  "roleHolders": {
+    "admin": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "platform": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "guardian": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "issuerKJPII": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "movedAt": "2026-11-10T03:33:40Z",
+    "note": "roles (above) are the constructor arguments. After the register was replayed, governing roles and KJPII moved to the Amoy Safe (owner: the Trezor); the deployer keeps only RELAYER, which can no longer act for a holder without their device signature.",
+    "txs": {
+      "setIssuerAccount": "0xd84035a30efcc00cb3b12d2eda120504fe497e9cb145a01e80f53bbb09d205fa",
+      "renounceAdmin": "0x2b309ffd0807c0c7b9375eb726a119603758cb9b63e8e30ad38b3ae5fe146134"
+    }
+  }
 }
