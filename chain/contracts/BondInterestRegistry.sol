@@ -31,6 +31,8 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 ///    precompile). The only holder-side moves without one are an assignment taking
 ///    effect after its response period ends unanswered, and a new assignee asking for
 ///    access before they have a key.
+///  - Redemption is the issuer's act alone (redeem): the bond's holder pays under the
+///    fiduciary paperwork. Holders don't request it.
 ///  - GUARDIAN pauses and unpauses in an emergency.
 ///
 /// IDs are bytes32. The platform uses keccak256 of the display ID, for example
@@ -51,7 +53,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
         Issued,
         Accepted,
         Locked,
-        PendingRedemption,
+        PendingRedemption, // no longer reachable: redemption is the issuer's act (v5); kept so the numbers don't shift
         Redeemed, // terminal
         Superseded, // terminal
         Cancelled, // terminal
@@ -157,9 +159,7 @@ contract BondInterestRegistry is AccessControl, Pausable {
     event Locked(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event Unlocked(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event PasskeyRotated(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
-    event RedemptionRequested(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event Redeemed(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 units, bytes32 docHash, address actor);
-    event RedemptionRejected(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
     event AssignmentReplaced(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 indexed newId, bytes32 docHash, address actor);
     event Superseded(bytes32 indexed bondId, bytes32 indexed assignmentId);
     event AssignmentRejected(bytes32 indexed bondId, bytes32 indexed assignmentId, uint256 units, bytes32 reasonHash, address actor);
@@ -477,14 +477,20 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit PasskeyRotated(bondId, assignmentId, docHash, msg.sender);
     }
 
-    function approveRedemption(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
+    /// Records that a holding was paid out and retires its units for good. Redemption is the
+    /// issuer's act: the bond's holder pays under the fiduciary paperwork, and the holder of the
+    /// record doesn't ask for it here. Only a record in effect, unlocked, with nothing pending.
+    /// `docHash` is the payment confirmation.
+    function redeem(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
         external
         whenNotPaused
         onlyIssuerOf(bondId)
         nonZero(docHash)
         balanced(bondId)
     {
-        Assignment storage a = _inStatus(bondId, assignmentId, Status.PendingRedemption);
+        Assignment storage a = _inStatus(bondId, assignmentId, Status.Accepted);
+        if (a.units == 0) revert ZeroUnits();
+        if (a.pendingChildren != 0) revert PendingChildren(assignmentId, a.pendingChildren);
         Bond storage b = bonds[bondId];
         b.live -= a.units;
         b.redeemed += a.units;
@@ -492,16 +498,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit Redeemed(bondId, assignmentId, a.units, docHash, msg.sender);
     }
 
-    function rejectRedemption(bytes32 bondId, bytes32 assignmentId, bytes32 reasonHash)
-        external
-        whenNotPaused
-        onlyIssuerOf(bondId)
-        nonZero(reasonHash)
-    {
-        Assignment storage a = _inStatus(bondId, assignmentId, Status.PendingRedemption);
-        _set(a, Status.Accepted);
-        emit RedemptionRejected(bondId, assignmentId, reasonHash, msg.sender);
-    }
 
     /// Supersedes a record with a new one for the same units, for example a reissued
     /// instrument. A Locked record can't be replaced: unlock it first, with the
@@ -674,19 +670,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
         emit Locked(bondId, assignmentId, docHash, msg.sender);
     }
 
-    function requestRedemption(bytes32 bondId, bytes32 assignmentId, bytes32 docHash, HolderAuth calldata auth)
-        external
-        whenNotPaused
-        onlyRelayerOn(bondId)
-        nonZero(docHash)
-    {
-        Assignment storage a = _inStatus(bondId, assignmentId, Status.Accepted);
-        _byHolder(assignmentId, this.requestRedemption.selector, keccak256(abi.encode(bondId, assignmentId, docHash)), auth);
-        if (a.units == 0) revert ZeroUnits();
-        if (a.pendingChildren != 0) revert PendingChildren(assignmentId, a.pendingChildren);
-        _set(a, Status.PendingRedemption);
-        emit RedemptionRequested(bondId, assignmentId, docHash, msg.sender);
-    }
 
     // ================================================================= views
 

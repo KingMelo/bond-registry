@@ -193,6 +193,14 @@ await settle();
 a1 = await hrec(a1.id);
 e = await hsave(s1.token, phone, { reg: [{ ...a1, status: "PendingRedemption" }], events: [ev(a1.bond, a1.id, "RedemptionRequested")] }).then(() => null, (x) => x);
 ok(e?.status === 403, "a holder can't request redemption through the registry (" + e?.status + ")");
+// The issuer pays under the paperwork and records the redemption, with the payment confirmation's hash.
+{
+  const b0 = await bondNow(), r1 = await rec(a1.id);
+  await icommit({ bonds: [{ ...b0, redeemed: b0.redeemed + r1.units }], reg: [{ ...r1, status: "Redeemed", redeemedOn: "now" }],
+    events: [ev(a1.bond, a1.id, "Redeemed", H32())] });
+  await settle();
+  ok((await onchain(a1.id)) === "Redeemed", "the issuer's redemption is on-chain, with no holder request");
+}
 
 // 7. Lost phone: the issuer resets the key; the holder registers a new phone; the old one is dead.
 const CODE3 = "QRST-UVWX-YZ23-4567";

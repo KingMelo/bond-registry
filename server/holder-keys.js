@@ -20,7 +20,6 @@ export const SIGNED = {
   accept: { types: B3 },
   rejectAssignment: { types: B3 },
   lock: { types: B3 },
-  requestRedemption: { types: B3 },
   cancelAssignOut: { types: B3 },
   assignOut: { types: ["bytes32", "bytes32", "bytes32", "uint128", "bytes32"] },
   registerHolderKey: { types: ["bytes32", "bytes32", "uint256", "uint256", "bytes32"] },

@@ -181,17 +181,15 @@ const TRANSITIONS = {
   "CredentialRequested>Cancelled": ["issuerCancelAssignOut", "issuer"],
   "Accepted>Locked": ["lock", "relayer"],
   "Locked>Accepted": ["unlock", "issuer"],
-  "Accepted>PendingRedemption": ["requestRedemption", "relayer"],
-  "PendingRedemption>Redeemed": ["approveRedemption", "issuer"],
-  "PendingRedemption>Accepted": ["rejectRedemption", "issuer"],
+  // Redemption is the issuer's act: the bond's holder pays under the paperwork, then records it.
+  "Accepted>Redeemed": ["redeem", "issuer"],
   "Issued>Rejected": ["rejectAssignment", "relayer"],
 };
 // The event each call usually comes with, for its document reference.
 const EVENT_FOR = {
   accept: "Accepted", requestCredential: "CredentialRequested", rejectCredentialRequest: "CredentialRequestRejected",
   issueCredential: "CredentialIssued", cancelAssignOut: "AssignOutCancelled", issuerCancelAssignOut: "AssignOutCancelled",
-  lock: "Locked", unlock: "Unlocked", requestRedemption: "RedemptionRequested", approveRedemption: "Redeemed",
-  rejectRedemption: "RedemptionRejected", recordRotation: "PasskeyRotated", rejectAssignment: "AssignmentRejected",
+  lock: "Locked", unlock: "Unlocked", redeem: "Redeemed", recordRotation: "PasskeyRotated", rejectAssignment: "AssignmentRejected",
 };
 
 /**
@@ -319,7 +317,7 @@ export const publicInfo = () => (enabled ? {
 // ------------------------------------------------------------------ the sender
 
 const TARGET = { accept: 4, requestCredential: 2, rejectCredentialRequest: 1, issueCredential: 3, cancelAssignOut: 9,
-  issuerCancelAssignOut: 9, lock: 5, unlock: 4, requestRedemption: 6, approveRedemption: 7, rejectRedemption: 4,
+  issuerCancelAssignOut: 9, lock: 5, unlock: 4, redeem: 7,
   rejectAssignment: 10 };
 
 /** True when the chain already shows the op's effect, so it must not be sent again. */

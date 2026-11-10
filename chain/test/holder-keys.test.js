@@ -126,7 +126,7 @@ describe("holder device keys", () => {
       await expect(RL.cancelAssignOut(...c, await sign(reg, pk, A1, "cancelAssignOut", c))).to.emit(reg, "AssignOutCancelled");
     });
 
-    it("lock and redemption requests need the holder's signature too", async () => {
+    it("locking needs the holder's signature; redeeming is the issuer's alone", async () => {
       const { reg, I, RL } = await setup();
       await I.issueAssignment(BOND, A1, 1000, h("d"));
       const k = await enroll(reg, RL, A1);
@@ -134,8 +134,8 @@ describe("holder device keys", () => {
       await expect(RL.lock(BOND, A1, h("l"), { ...NOAUTH, r: 1n })).to.be.revertedWithCustomError(reg, "BadHolderSignature");
       await RL.lock(BOND, A1, h("l"), await sign(reg, k, A1, "lock", [BOND, A1, h("l")]));
       await I.unlock(BOND, A1, h("u"));
-      await expect(RL.requestRedemption(BOND, A1, h("q"), { ...NOAUTH, r: 1n })).to.be.revertedWithCustomError(reg, "BadHolderSignature");
-      await expect(RL.requestRedemption(BOND, A1, h("q"), await sign(reg, k, A1, "requestRedemption", [BOND, A1, h("q")]))).to.emit(reg, "RedemptionRequested");
+      await expect(RL.redeem(BOND, A1, h("paid"))).to.be.revertedWithCustomError(reg, "NotIssuer");
+      await expect(I.redeem(BOND, A1, h("paid"))).to.emit(reg, "Redeemed");
     });
   });
 

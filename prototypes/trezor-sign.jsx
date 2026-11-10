@@ -10,7 +10,7 @@ const FN_SAY = {
   reversePriorInstrument: "Reverse a prior instrument", issueAssignment: "Issue an assignment", replaceAssignment: "Replace an assignment",
   setFilingRef: "Record the UCC-3 filing", setDeliveryRef: "Record the certified mailing", rejectCredentialRequest: "Reject an access request",
   issueCredential: "Activate a new holder", issuerCancelAssignOut: "Cancel an assign-out", unlock: "Unlock a record",
-  recordRotation: "Record a passkey reissue", approveRedemption: "Approve a redemption", rejectRedemption: "Decline a redemption",
+  recordRotation: "Record a passkey reissue", redeem: "Record a redemption",
   suspendIssuer: "Suspend an issuer", reinstateIssuer: "Reinstate an issuer",
   clearHolderKey: "Reset a holder's device key",
 };

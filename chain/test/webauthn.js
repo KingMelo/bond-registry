@@ -6,7 +6,7 @@ const { ethers } = require("hardhat");
 
 const RP_ID = "holder.test";
 const NOAUTH = { authenticatorData: "0x", clientDataJSON: "", challengeIndex: 0, typeIndex: 0, r: 0, s: 0 };
-const HOLDER_FNS = ["accept", "assignOut", "rejectAssignment", "cancelAssignOut", "lock", "requestRedemption"];
+const HOLDER_FNS = ["accept", "assignOut", "rejectAssignment", "cancelAssignOut", "lock"];
 
 function newKey() {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -33,7 +33,6 @@ const ARGS = {
   accept: (a) => enc(["bytes32", "bytes32", "bytes32"], a),
   rejectAssignment: (a) => enc(["bytes32", "bytes32", "bytes32"], a),
   lock: (a) => enc(["bytes32", "bytes32", "bytes32"], a),
-  requestRedemption: (a) => enc(["bytes32", "bytes32", "bytes32"], a),
   cancelAssignOut: (a) => enc(["bytes32", "bytes32", "bytes32"], a),
   assignOut: (a) => enc(["bytes32", "bytes32", "bytes32", "uint128", "bytes32"], a),
   registerHolderKey: (a) => enc(["bytes32", "bytes32", "uint256", "uint256", "bytes32"], a),

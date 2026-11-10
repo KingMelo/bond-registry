@@ -390,50 +390,49 @@ describe("BondInterestRegistry", () => {
       await accepted(I, RL, A1, 100);
       await RL.lock(BOND, A1, h("n"));
       await expect(RL.assignOut(BOND, A1, C1, 1, h("d"))).to.be.revertedWithCustomError(reg, "WrongStatus");
-      await expect(RL.requestRedemption(BOND, A1, h("d"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+      await expect(I.redeem(BOND, A1, h("d"))).to.be.revertedWithCustomError(reg, "WrongStatus");
       await expect(I.replaceAssignment(BOND, A1, A2, h("d"))).to.be.revertedWithCustomError(reg, "WrongStatus");
       await expect(RL.lock(BOND, A1, h("n"))).to.be.revertedWithCustomError(reg, "WrongStatus");
     });
   });
 
   describe("redemption", () => {
-    it("request freezes; approve retires the units for good", async () => {
+    it("the issuer redeems a record in effect: its units are retired for good", async () => {
       const { reg, I, RL } = await setup();
       await accepted(I, RL, A1, 50000);
-      await expect(RL.requestRedemption(BOND, A1, h("req"))).to.emit(reg, "RedemptionRequested");
-      await expect(RL.assignOut(BOND, A1, C1, 1, h("d"))).to.be.revertedWithCustomError(reg, "WrongStatus");
-      await expect(RL.approveRedemption(BOND, A1, h("ok"))).to.be.revertedWithCustomError(reg, "NotIssuer");
-      await expect(I.approveRedemption(BOND, A1, h("ok"))).to.emit(reg, "Redeemed").withArgs(BOND, A1, 50000, h("ok"), await I.runner.getAddress());
+      await expect(RL.redeem(BOND, A1, h("paid"))).to.be.revertedWithCustomError(reg, "NotIssuer");
+      await expect(I.redeem(BOND, A1, h("paid"))).to.emit(reg, "Redeemed").withArgs(BOND, A1, 50000, h("paid"), await I.runner.getAddress());
       const t = await totals(reg);
       expect([t.live, t.redeemed, t.reconciled]).to.deep.equal([0n, 50000n, true]);
       expect(await status(reg, A1)).to.equal(S.Redeemed);
       expect((await reg.assignments(A1)).units).to.equal(50000n); // kept as history
+      await expect(I.redeem(BOND, A1, h("again"))).to.be.revertedWithCustomError(reg, "WrongStatus");
     });
 
-    it("a rejected request goes back to Accepted", async () => {
+    it("needs the payment document, and only from in effect", async () => {
       const { reg, I, RL } = await setup();
-      await accepted(I, RL, A1, 100);
-      await RL.requestRedemption(BOND, A1, h("req"));
-      await expect(I.rejectRedemption(BOND, A1, h("why"))).to.emit(reg, "RedemptionRejected");
-      expect(await status(reg, A1)).to.equal(S.Accepted);
+      await I.issueAssignment(BOND, A1, 100, h("d"));
+      await expect(I.redeem(BOND, A1, h("paid"))).to.be.revertedWithCustomError(reg, "WrongStatus"); // still Issued
+      await RL.accept(BOND, A1, h("a"));
+      await expect(I.redeem(BOND, A1, Z)).to.be.revertedWithCustomError(reg, "ZeroHash");
     });
 
     it("refused with pending children or zero units", async () => {
       const { reg, I, RL } = await setup();
       await accepted(I, RL, A1, 100);
       await RL.assignOut(BOND, A1, C1, 40, h("d"));
-      await expect(RL.requestRedemption(BOND, A1, h("r"))).to.be.revertedWithCustomError(reg, "PendingChildren");
+      await expect(I.redeem(BOND, A1, h("r"))).to.be.revertedWithCustomError(reg, "PendingChildren");
       await RL.assignOut(BOND, A1, C2, 60, h("d"));
       await RL.cancelAssignOut(BOND, C1, h("c"));
       await RL.cancelAssignOut(BOND, C2, h("c"));
-      await RL.requestRedemption(BOND, A1, h("r")); // all 100 back, nothing pending
+      await I.redeem(BOND, A1, h("r")); // all 100 back, nothing pending
     });
 
     it("refuses a record with nothing left that still waits on a child", async () => {
       const { reg, I, RL } = await setup();
       await accepted(I, RL, A1, 100);
       await RL.assignOut(BOND, A1, C1, 100, h("d"));
-      await expect(RL.requestRedemption(BOND, A1, h("r"))).to.be.revertedWithCustomError(reg, "ZeroUnits");
+      await expect(I.redeem(BOND, A1, h("r"))).to.be.revertedWithCustomError(reg, "ZeroUnits");
     });
   });
 
@@ -479,8 +478,7 @@ describe("BondInterestRegistry", () => {
     it("no function accepts a Redeemed, Superseded or Cancelled record", async () => {
       const { reg, I, RL } = await setup();
       await accepted(I, RL, A1, 100);
-      await RL.requestRedemption(BOND, A1, h("r"));
-      await I.approveRedemption(BOND, A1, h("ok"));
+      await I.redeem(BOND, A1, h("paid"));
       await accepted(I, RL, A2, 100);
       await I.replaceAssignment(BOND, A2, A3, h("d"));
       await RL.assignOut(BOND, id("none"), C1, 1, h("d")).catch(() => {});
@@ -488,9 +486,8 @@ describe("BondInterestRegistry", () => {
         await expect(RL.accept(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(RL.assignOut(BOND, t, C1, 1, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(RL.lock(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
-        await expect(RL.requestRedemption(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(I.unlock(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
-        await expect(I.approveRedemption(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
+        await expect(I.redeem(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(I.replaceAssignment(BOND, t, C2, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(I.setFilingRef(BOND, t, h("x"))).to.be.revertedWithCustomError(reg, "WrongStatus");
         await expect(I.setDeliveryRef(BOND, t, h("x"), 1)).to.be.revertedWithCustomError(reg, "WrongStatus");
@@ -537,7 +534,8 @@ describe("BondInterestRegistry", () => {
       this.timeout(600_000);
       const { reg, I, RL } = await setup();
       let seed = 20261108;
-      const rnd = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+      // The high bits: this generator's low bits repeat in short cycles (badly when n is a power of 2).
+      const rnd = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return Math.floor((seed / 2147483648) * n); };
       const ids = []; let next = 1, priors = 0;
       // Mostly recent records, so multi-step paths (accept, then redeem) actually happen.
       const anyId = () => (!ids.length ? id("none") : rnd(4) ? ids[Math.max(0, ids.length - 1 - rnd(6))] : ids[rnd(ids.length)]);
@@ -556,13 +554,10 @@ describe("BondInterestRegistry", () => {
         async () => { const x = anyId(); await I.setFilingRef(BOND, x, h("f")); return I.issueCredential(BOND, x, h("c")); },
         () => RL.lock(BOND, anyId(), h("l")),
         () => I.unlock(BOND, anyId(), h("u")),
-        () => RL.requestRedemption(BOND, anyId(), h("q")),
-        () => I.approveRedemption(BOND, anyId(), h("ok")),
-        async () => { const x = anyId(); await RL.requestRedemption(BOND, x, h("q")); return I.approveRedemption(BOND, x, h("ok")); },
+        () => I.redeem(BOND, anyId(), h("paid")),
         // A fresh record carried all the way to redemption, so every run retires something.
         async () => { const x = fresh(); await I.issueAssignment(BOND, x, amount(), h("d")); await RL.accept(BOND, x, h("a"));
-          await RL.requestRedemption(BOND, x, h("q")); return I.approveRedemption(BOND, x, h("ok")); },
-        () => I.rejectRedemption(BOND, anyId(), h("no")),
+          return I.redeem(BOND, x, h("paid")); },
         () => I.replaceAssignment(BOND, anyId(), fresh(), h("rp")),
         () => I.recordPriorInstrument(BOND, id("PN-" + priors++), amount(), h("p")),
         () => I.reversePriorInstrument(BOND, id("PN-" + rnd(priors + 1)), h("rv")),

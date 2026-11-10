@@ -230,8 +230,8 @@ const FN_LABEL = {
   replaceAssignment: "Replace assignment", setFilingRef: "Record UCC-3 filing", setDeliveryRef: "Record mailing",
   accept: "Took effect", rejectAssignment: "Rejected by holder", registerHolderKey: "Holder device key", rotateHolderKey: "Holder device key changed", clearHolderKey: "Holder device key reset", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
   issueCredential: "Issue credential", cancelAssignOut: "Cancel assign-out", issuerCancelAssignOut: "Cancel assign-out (issuer)",
-  lock: "Lock", unlock: "Unlock", recordRotation: "Record passkey rotation", requestRedemption: "Request redemption",
-  approveRedemption: "Approve redemption", rejectRedemption: "Reject redemption", suspendIssuer: "Suspend issuer",
+  lock: "Lock", unlock: "Unlock", recordRotation: "Record passkey rotation", redeem: "Redeemed",
+  suspendIssuer: "Suspend issuer",
   reinstateIssuer: "Reinstate issuer", unsupported: "No matching contract call",
 };
 

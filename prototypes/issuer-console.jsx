@@ -236,7 +236,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const [mail, setMail] = useState("");
   const [reason, setReason] = useState("");
-  const [recHash, setRecHash] = useState("");
   const [filing, setFiling] = useState("");
   const [filedBy, setFiledBy] = useState("assignor");
   const [docRef, setDocRef] = useState("");
@@ -306,7 +305,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (a.status === "CredentialRequested") out.push(a.filingRef
       ? ["Credential request", "Verify the requester is the named assignee, then mail the passkey."]
       : ["Credential request · UCC-3 pending", "Waiting on the assignor's UCC-3. Verify the requester meanwhile; after 30 days you may file it yourself."]);
-    if (a.status === "PendingRedemption") out.push(["Redemption", "Review the register, chain record and paperwork before approving."]);
     if (a.status === "Locked" && a.rotationRequested) out.push(["Passkey rotation", "Holder locked the record and asked for a new passkey."]);
     if (a.status === "Locked" && a.unlockRequested) out.push(a.lockKind === "pledge"
       ? ["Unlock request · pledge", "Needs the pledgee's signed release before you unlock."]
@@ -337,7 +335,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const patch = (id, fields) => setReg((r) => r.map((a) => (a.id === id ? { ...a, ...fields } : a)));
 
   const clearForms = () => {
-    setMail(""); setReason(""); setRecHash(""); setFiling(""); setFiledBy("assignor"); setDocRef("");
+    setMail(""); setReason(""); setFiling(""); setFiledBy("assignor"); setDocRef("");
     setIMail(""); setRpParty(""); setRpContact(""); setRpAddress(""); setRpDoc(null); setRpInstr(null);
   };
   const done = (m) => { clearForms(); setSheet(null); flash(m); };
@@ -422,21 +420,19 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     done("Credential lockout cleared.");
   }
 
-  function approveRedemption(a) {
-    if (!recHash.trim()) return;
-    patch(a.id, { status: "Redeemed" });
+  // Redemption is the issuer's act: pay the holder through the channel the paperwork sets out,
+  // then record it here with the payment confirmation. Terminal: the amount is retired for good.
+  const [rdDoc, setRdDoc] = useState(null);
+  function redeem(a) {
+    if (!rdDoc || a.status !== "Accepted" || pendingOf(a.id).length > 0 || a.units <= 0) return;
+    patch(a.id, { status: "Redeemed", redeemedOn: today(), redemptionDoc: rdDoc.name });
     // Retired for good: redeemed units never return to the issuable pool.
     setBonds((bs) => bs.map((b) => (b.id === a.bond ? { ...b, redeemed: b.redeemed + a.units } : b)));
-    emit(a.bond, a.id, "Redeemed", "ISSUER", recHash.trim());
-    done("Redeemed. This amount is retired and this record can never be acted on again.");
+    emit(a.bond, a.id, "Redeemed", "ISSUER", rdDoc.hash);
+    setRdDoc(null);
+    done("Redeemed. " + usd(a.units) + " is retired and this record can never be acted on again." + signDone);
   }
 
-  function rejectRedemption(a) {
-    if (!reason.trim()) return;
-    patch(a.id, { status: "Accepted" });
-    emit(a.bond, a.id, "RedemptionRejected", "ISSUER", "—");
-    done("Redemption declined. The record is back in effect.");
-  }
 
   function setFilingRef(a) {
     if (!filing.trim()) return;
@@ -1274,28 +1270,27 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               </div>
             )}
 
-            {a.status === "PendingRedemption" && (
+            {a.status === "Accepted" && (
               <div className="mt-5">
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Redemption</div>
-                <Note kind="warn">
-                  Approving is terminal. The contract will reject every future action on this
-                  record, including a second redemption, and the {usd(a.units)} is retired for
-                  good. Confirm payment has been made through the agreed channel first.
-                </Note>
-                <div className="mt-4">
-                  <Field label="Hash of the redemption receipt or release" value={recHash} onChange={setRecHash}
-                    placeholder="0x…" mono />
-                  <Button danger disabled={!recHash.trim()} onClick={() => approveRedemption(a)}>
-                    Approve redemption{signNote}
-                  </Button>
-                  <div className="mt-3">
-                    <Field label="Reason, if rejecting" value={reason} onChange={setReason}
-                      placeholder="Paperwork incomplete" hint="A hash of the reason memo goes on-chain." />
-                    <Button variant="quiet" disabled={!reason.trim()} onClick={() => rejectRedemption(a)}>
-                      Decline — back in effect
-                    </Button>
-                  </div>
-                </div>
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Record redemption</div>
+                {pending.length > 0 || a.units <= 0 ? (
+                  <Note>Redemption opens once this record's pending transfers take effect, are rejected or are cancelled.</Note>
+                ) : (
+                  <>
+                    <Note kind="warn">
+                      Once paid through the channel the paperwork sets out. Recording it is terminal:
+                      the contract refuses every later action on this record, and the {usd(a.units)} is
+                      retired for good.
+                    </Note>
+                    <div className="mt-4">
+                      <FileHash label="Payment confirmation" value={rdDoc} onChange={setRdDoc}
+                        hint="Only its SHA-256 is kept, and goes on-chain with the redemption." />
+                      <Button danger disabled={!rdDoc} onClick={() => redeem(a)}>
+                        Record redemption · {usd(a.units)}{signNote}
+                      </Button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
