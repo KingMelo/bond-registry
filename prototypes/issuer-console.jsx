@@ -226,7 +226,7 @@ export function Sheet({ title, children, onClose }) {
 /* ---------------- console ---------------- */
 
 export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssuerStatus }) {
-  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo, chainInfo, responseDays } =
+  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo, chainInfo, responseDays, stale } =
     useRegistry({ issuer: issuerId, onNotice: (m) => flash(m) });
   const [pickedBond, setActiveBond] = useState(null);
   const activeBond = bonds.some((b) => b.id === pickedBond) ? pickedBond : bonds[0]?.id || null;
@@ -619,6 +619,15 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
         button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid ${T.ink}; outline-offset: 1px; }
         input:focus, textarea:focus { border-color: ${T.ink} !important; }`}</style>
 
+      {stale && (
+        <div style={{ background: T.ink, color: T.paper, fontSize: 14, fontFamily: sans }}>
+          <div className="mx-auto flex items-center justify-between gap-3" style={{ maxWidth: 560, padding: "10px 18px" }}>
+            <span>A newer version of the console is live.</span>
+            <button onClick={() => window.location.reload()} style={{ fontFamily: sans, fontSize: 14, color: T.ink, background: T.paper,
+              border: "none", borderRadius: 2, padding: "6px 12px", cursor: "pointer", whiteSpace: "nowrap" }}>Reload</button>
+          </div>
+        </div>
+      )}
       <div className="mx-auto" style={{ maxWidth: 560, padding: "20px 18px 56px" }}>
         <div className="flex items-baseline justify-between">
           <div style={{ minWidth: 0 }}>

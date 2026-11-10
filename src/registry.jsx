@@ -7,6 +7,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const POLL_MS = 4000;
 
+// The build this page was loaded from; when the server answers from a newer one, the page offers a reload.
+let pageBuild = null;
+const staleListeners = new Set();
+export const onNewVersion = (fn) => { staleListeners.add(fn); return () => staleListeners.delete(fn); };
+
 async function call(method, url, body) {
   const res = await fetch(url, {
     method,
@@ -14,6 +19,8 @@ async function call(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
     credentials: "same-origin",
   });
+  const build = res.headers.get("x-registry-build");
+  if (build) { if (!pageBuild) pageBuild = build; else if (build !== pageBuild) staleListeners.forEach((fn) => fn()); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error || "Request failed (" + res.status + ").");
@@ -170,7 +177,10 @@ export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
     return () => clearInterval(t);
   }, [reload, adopt, scope]);
 
-  return { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload,
+  const [stale, setStale] = useState(false);
+  useEffect(() => onNewVersion(() => setStale(true)), []);
+
+  return { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, stale,
     issuerInfo: info.issuer, issuers: info.issuers, chainInfo: info.chain, responseDays: info.responseDays };
 }
 

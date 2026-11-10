@@ -129,6 +129,11 @@ const codeBox = page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}
 await codeBox.waitFor({ timeout: 20000 }).catch(() => {});
 ok(await codeBox.count() === 1, "the assignor's screen shows the new assignee's access code, once");
 await shot("6-assignee-code");
+// Back on the record, the list offers it again; it was already shown, so it says so.
+await page.getByRole("button", { name: "Back to my record" }).click().catch(() => {});
+const again = page.getByRole("button", { name: /transfer code/ });
+if (await again.count()) { await again.first().click(); await page.waitForTimeout(800); }
+ok(await page.getByText(/already shown/).count() > 0, "the transfer code can't be shown a second time from the list");
 const signs2 = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signs2 > signCount, "the device signed the assign-out (" + signs2 + " signatures)");
 

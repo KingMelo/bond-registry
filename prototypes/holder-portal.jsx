@@ -409,7 +409,7 @@ export default function HolderPortal() {
       return { token: s.token, assertions };
     } finally { setSigning(false); }
   };
-  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, chainInfo, responseDays } =
+  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, chainInfo, responseDays, stale } =
     useRegistry({ onNotice: (m) => flash(m), beforeCommit });
   // Every approved issuer shares this registry; each record names its issuer.
   const issuerOf = (rec) => {
@@ -463,6 +463,12 @@ export default function HolderPortal() {
   const [childIssued, setChildIssued] = useState(null);
   // The new assignee's access code, shown once on this screen once the assign-out is saved.
   const [childCode, setChildCode] = useState(null); // { code } | { error } | null while waiting
+  // The same, from the list of assign-outs: for when the assignor left that screen before it showed.
+  const [listCodes, setListCodes] = useState({});
+  async function showTransferCode(c) {
+    try { const r = await api.assigneeCode(session.current?.token, c.id); setListCodes((m) => ({ ...m, [c.id]: { code: r.code } })); }
+    catch (e) { setListCodes((m) => ({ ...m, [c.id]: { error: e.message } })); }
+  }
   useEffect(() => {
     if (view !== "childIssued" || !childIssued || childCode) return;
     let stop = false, tries = 0;
@@ -710,6 +716,15 @@ export default function HolderPortal() {
         button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid ${T.ink}; outline-offset: 1px; }
         input:focus, textarea:focus { border-color: ${T.ink} !important; }`}</style>
 
+      {stale && (
+        <div style={{ background: T.ink, color: T.paper, fontSize: 14, fontFamily: sans }}>
+          <div className="mx-auto flex items-center justify-between gap-3" style={{ maxWidth: 560, padding: "10px 18px" }}>
+            <span>A newer version of the registry is live.</span>
+            <button onClick={() => window.location.reload()} style={{ fontFamily: sans, fontSize: 14, color: T.ink, background: T.paper,
+              border: "none", borderRadius: 2, padding: "6px 12px", cursor: "pointer", whiteSpace: "nowrap" }}>Reload</button>
+          </div>
+        </div>
+      )}
       <div className="mx-auto" style={{ maxWidth: 560, padding: "20px 18px 56px" }}>
         <div className="flex items-baseline justify-between">
           <a href="/" style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontWeight: 500, textDecoration: "none", display: "block" }}>Interest Registry</a>
@@ -1021,6 +1036,21 @@ export default function HolderPortal() {
                   </span>
                   <Chip s={c.status} />
                 </div>
+                {["AwaitingCredential", "CredentialRequested"].includes(c.status) && (
+                  <div className="mt-3">
+                    {listCodes[c.id]?.code ? (
+                      <div>
+                        <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 4 }}>{c.party}'s transfer code, shown once: seal it and send it with your signed instrument</div>
+                        <div className="px-3 py-2 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, fontSize: 20, letterSpacing: "0.08em",
+                          color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>{listCodes[c.id].code}</div>
+                      </div>
+                    ) : listCodes[c.id]?.error ? (
+                      <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5 }}>{listCodes[c.id].error}</div>
+                    ) : (
+                      <Button variant="quiet" onClick={() => showTransferCode(c)}>Show {c.party}'s transfer code</Button>
+                    )}
+                  </div>
+                )}
                 {c.status === "AwaitingCredential" && open.status !== "PendingRedemption" && (
                   <div className="mt-3">
                     <Button variant="quiet" danger onClick={() => cancelAssignOut(c)}>

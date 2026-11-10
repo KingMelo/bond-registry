@@ -284,6 +284,9 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "1mb" }));
 app.disable("x-powered-by");
+// Which build is serving, so an open page can tell when a newer one is live and offer a reload.
+const BUILD = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_DEPLOYMENT_ID || String(Date.now());
+app.use((req, res, next) => { res.set("X-Registry-Build", BUILD); next(); });
 
 const version = async (c) => Number((await c.query("select version from meta where k = 'v'")).rows[0].version);
 const bump = (c) => c.query("update meta set version = version + 1 where k = 'v' returning version")
