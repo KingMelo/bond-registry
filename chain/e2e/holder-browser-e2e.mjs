@@ -107,12 +107,28 @@ const publicState = await call(H, "GET", "/api/state");
 ok(!JSON.stringify(publicState).includes("9407 1000"), "the public record list never carries the mail number");
 await shot("4-in-effect");
 
+// ---- assign out $10.40 from the screen: no code to type, the device signs it
+await page.getByRole("button", { name: "Assign out" }).click();
+ok(!(await page.getByText(/Demo code|6-digit/).count()), "the assign-out screen asks for no typed code");
+await page.getByLabel("Amount to assign").fill("10.40");
+await page.getByLabel("Legal name").fill("Company D, LLC");
+await page.getByLabel("Attention of").fill("M. Doe");
+await page.getByLabel("Mailing address").fill("Company D, LLC\n1 Main St\nDover, DE 19901");
+await page.locator('input[type="file"]').first().setInputFiles({ name: "assignment-to-company-d.pdf", mimeType: "application/pdf", buffer: Buffer.from("signed assignment") });
+await shot("5-assign-out");
+await page.getByRole("button", { name: "Create the assignment" }).click();
+let child = null;
+for (let i = 0; i < 30 && !child; i++) { await page.waitForTimeout(500); child = (await call(H, "GET", "/api/state")).reg.find((a) => a.parent === A1 && a.origin === "AssignOut"); }
+ok(child?.units === 1040 && child.status === "AwaitingCredential", "the $10.40 assign-out is saved (" + (child?.id || "none") + ")");
+const signs2 = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
+ok(signs2 > signCount, "the device signed the assign-out (" + signs2 + " signatures)");
+
 // ---- on-chain
 const t0 = Date.now(); let s;
 while (Date.now() - t0 < 90000) { s = await call(P, "GET", "/api/platform/chain"); if (!(s.counts.queued || s.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
 const id32 = (x) => ethers.keccak256(ethers.toUtf8Bytes(x));
 const k = await regC.holderKeys(id32(A1));
-ok(k.x !== 0n && k.nonce === 2n, "the chain holds the device key and counted 2 signatures from it");
+ok(k.x !== 0n && k.nonce === 3n, "the chain holds the device key and counted 3 signatures from it (" + k.nonce + ")");
 ok(Number((await regC.assignments(id32(A1))).status) === 4, "the chain shows A00001 in effect, by the holder's own signature");
 ok(!s.counts.failed, "no write failed (" + JSON.stringify(s.counts) + ")");
 

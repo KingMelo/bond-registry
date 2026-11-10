@@ -28,7 +28,6 @@ const sans = "'IBM Plex Sans', system-ui, sans-serif";
 const usd = dollars;
 
 const MAX_ATTEMPTS = 5;
-const STEP_UP_DEMO = "482913";
 
 // Children created by assignOut that are neither Accepted nor Cancelled.
 const PENDING = ["AwaitingCredential", "CredentialRequested", "Issued"];
@@ -446,8 +445,6 @@ export default function HolderPortal() {
   const [qId, setQId] = useState("");
   const [qKey, setQKey] = useState("");
   const [qErr, setQErr] = useState("");
-  const [stepUp, setStepUp] = useState("");
-  const [stepUpNeeded, setStepUpNeeded] = useState(false);
 
   // lock
   const [lockKind, setLockKind] = useState("pledge");
@@ -571,12 +568,6 @@ export default function HolderPortal() {
     flash("Rejected. " + usd(open.units) + (open.origin === "AssignOut" ? " goes back to the assignor's record." : " goes back to the bond."));
   }
 
-  function requestStepUp(next) {
-    setStepUpNeeded(true);
-    setStepUp("");
-    setView(next);
-  }
-
   function assignOut() {
     if (open.status !== "Accepted") return setAErr("Only a record that's in effect and unlocked can assign out.");
     const au = parseUnits(aUnits), u = au.units;
@@ -586,7 +577,6 @@ export default function HolderPortal() {
     if (!aContact.trim()) return setAErr("Name the person the assignment is addressed to.");
     if (!aAddress.trim()) return setAErr("Add a mailing address.");
     if (!aDoc) return setAErr("Add the signed assignment. Only its SHA-256 hash is kept.");
-    if (stepUp.trim() !== STEP_UP_DEMO) return setAErr("Enter the 6-digit code sent to your verified contact. Demo code: " + STEP_UP_DEMO);
     setAErr("");
 
     const seq = String(reg.filter((a) => a.bond === open.bond).length + 1).padStart(5, "0");
@@ -622,7 +612,6 @@ export default function HolderPortal() {
     emit(child.bond, child.id, "AssignedOut", "RELAYER", child.docHash);
     setChildIssued(child);
     setAUnits(""); setAParty(""); setAContact(""); setAPosition(""); setAAddress(""); setADoc(null);
-    setStepUp(""); setStepUpNeeded(false);
     setView("childIssued");
   }
 
@@ -914,7 +903,7 @@ export default function HolderPortal() {
 
             {open.status === "Accepted" && (
               <div className="mt-5 space-y-3">
-                <Button onClick={() => requestStepUp("assign")} disabled={open.units <= 0}>
+                <Button onClick={() => setView("assign")} disabled={open.units <= 0}>
                   Assign out
                 </Button>
                 <Button variant="quiet" onClick={() => setView("lockConfirm")}>Lock this record</Button>
@@ -1041,9 +1030,12 @@ export default function HolderPortal() {
             <DocDrop label="Signed assignment" value={aDoc} onChange={(v) => { setADoc(v); setAErr(""); }}
               hint="The assignment you signed to this party. It's hashed on this device; only the hash is kept and written on-chain." />
 
-            <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Confirm it's you</div>
-            <Field label="Code sent to your verified contact" value={stepUp} onChange={(v) => { setStepUp(v); setAErr(""); }}
-              placeholder="6 digits" mono hint={"Demo code: " + STEP_UP_DEMO} />
+            <div className="mb-4">
+              <Note>
+                Your phone or computer asks you to confirm with your face, fingerprint or device PIN.
+                That signature is what authorizes the transfer: the chain refuses it without one.
+              </Note>
+            </div>
 
             {aErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 16 }}>{aErr}</p>}
 
