@@ -16,5 +16,19 @@
     "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "guardian": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4"
   },
-  "explorer": "https://amoy.polygonscan.com/address/0x675d63626E40cA4aD10b8848Ae6493D4976892dB"
+  "explorer": "https://amoy.polygonscan.com/address/0x675d63626E40cA4aD10b8848Ae6493D4976892dB",
+  "roleHolders": {
+    "admin": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "platform": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "guardian": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
+    "issuerKJPII": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
+    "movedAt": "2026-11-11T01:44:17Z",
+    "note": "roles (above) are the constructor arguments. After the bond and its 20 prior instruments were re-anchored, governing roles and KJPII moved to the Amoy Safe (owner: the Trezor); the deployer keeps only RELAYER.",
+    "txs": {
+      "setIssuerAccount": "0xee08c9f1743d49cb491c917ad3b5f23a689a1c6b3914d1f28a5ce71c500173d9",
+      "renounceAdmin": "0xb2fb49fff1df97c042940b957548c87d5a4bc242ae84f48704a21f3a5e7c5afb"
+    }
+  },
+  "verified": "https://amoy.polygonscan.com/address/0x675d63626E40cA4aD10b8848Ae6493D4976892dB#code"
 }
