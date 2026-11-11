@@ -28,8 +28,14 @@ async function main() {
 
   // 1. The local build must be the code that is on-chain.
   const art = await artifacts.readArtifact("BondInterestRegistry");
-  const onChain = await ethers.provider.getCode(dep.address);
-  if (onChain.toLowerCase() !== art.deployedBytecode.toLowerCase())
+  let onChain = (await ethers.provider.getCode(dep.address)).toLowerCase();
+  // Immutables (v5's predecessor address) are written into the deployed code; the build leaves
+  // those bytes zero. Blank them in the on-chain copy before comparing.
+  const built = (await artifacts.getBuildInfo(NAME)).output.contracts["contracts/BondInterestRegistry.sol"].BondInterestRegistry;
+  for (const refs of Object.values(built.evm.deployedBytecode.immutableReferences || {}))
+    for (const { start, length } of refs)
+      onChain = onChain.slice(0, 2 + start * 2) + "0".repeat(length * 2) + onChain.slice(2 + (start + length) * 2);
+  if (onChain !== art.deployedBytecode.toLowerCase())
     throw new Error("The local build doesn't match the code at " + dep.address + "; check out the deploy commit (" + dep.commit + ").");
   console.log("Local build matches the deployed code at", dep.address);
 
