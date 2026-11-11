@@ -324,8 +324,12 @@ export function ChainWriting({ items, chainInfo, ink = "#1D2433", soft = "#5C647
 // ------------------------------------------------------------------ assignment IDs
 //
 // An assignment the issuer makes is <bond>-A00001, -A00002, …: each is tied to its original assignor
-// and secured party. An assign-out extends its parent's ID: A00001-1, A00001-2, and from A00001-1,
-// A00001-1-1. So every partial assignment reads as a branch of the issuer's assignment it came from.
+// and secured party. Every assign-out under it, however far down the chain, is A00001-1, A00001-2, …:
+// one dash, one count of how many times that assignment has been assigned out. Which record each
+// came from is its parent, kept on the record.
+
+/** The issuer-made assignment an ID belongs to: <bond>-A00001 for A00001 and A00001-7 alike. */
+export const rootId = (id) => String(id).replace(/(-A\d+)-\d+$/, "$1");
 
 /** The next issuer-made ID on a bond: one past the highest A-number in use (assign-outs don't count). */
 export function nextIssuedId(reg, bondId) {
@@ -334,9 +338,10 @@ export function nextIssuedId(reg, bondId) {
   return bondId + "-A" + String(n + 1).padStart(5, "0");
 }
 
-/** The next assign-out ID from a record: its ID plus "-<n>", one past the highest already used. */
+/** The next assign-out ID under the same issuer-made assignment: <root>-<n>, one past the highest in use. */
 export function nextChildId(reg, parentId) {
-  const re = new RegExp("^" + parentId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-(\\d+)$");
+  const root = rootId(parentId);
+  const re = new RegExp("^" + root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-(\\d+)$");
   const n = reg.map((a) => re.exec(a.id)?.[1]).filter(Boolean).reduce((m, x) => Math.max(m, Number(x)), 0);
-  return parentId + "-" + (n + 1);
+  return root + "-" + (n + 1);
 }

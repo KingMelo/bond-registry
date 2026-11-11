@@ -167,6 +167,8 @@ const child = { id: "PENS-0001-BD-A00001-1", bond: "PENS-0001-BD", parent: a1.id
   accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
 e = await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, { ...child, id: "PENS-0001-BD-A00009" }] }).then(() => null, (x) => x);
 ok(e?.status === 400, "an assign-out can't take an issuer-style ID (" + e?.status + ")");
+e = await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, { ...child, id: "PENS-0001-BD-A00001-1-1" }] }).then(() => null, (x) => x);
+ok(e?.status === 400, "nor a second dash: everything under A00001 is A00001-<n> (" + e?.status + ")");
 await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, child], events: [ev(a1.bond, child.id, "AssignedOut")] });
 ok(child.id === "PENS-0001-BD-A00001-1", "an assign-out from A00001 is numbered A00001-1");
 ok((await rec(child.id)).accessCode === "unused", "the assign-out made the assignee's transfer code");

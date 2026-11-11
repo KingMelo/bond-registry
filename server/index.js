@@ -603,9 +603,11 @@ if (APP === "holder") {
         throw new Reject(422, a.id + " is " + before.status + " and cannot be changed.");
       if (!relayerAllows(before, a))
         throw new Reject(403, "The holder portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
-      // An assign-out's ID extends its parent's: A00001-1, A00001-2, A00001-1-1, …
-      if (!before && !new RegExp("^" + String(a.parent || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-[1-9]\\d*$").test(String(a.id || "")))
-        throw new Reject(400, "An assignment made from " + a.parent + " is numbered " + a.parent + "-1, -2 and so on.");
+      // An assign-out is numbered under the issuer-made assignment it descends from, with one dash:
+      // A00001-1, A00001-2, … however far down the chain (its parent is kept on the record).
+      const root = String(a.parent || "").replace(/(-A\d+)-\d+$/, "$1");
+      if (!before && !new RegExp("^" + root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-[1-9]\\d*$").test(String(a.id || "")))
+        throw new Reject(400, "An assignment made from " + a.parent + " is numbered " + root + "-1, -2 and so on.");
       // Who may make this change, and which fields: a new assignee asking for access needs nobody's
       // session; everything else needs the session of the record's holder, or of the assignor for
       // their own assign-outs. Amounts are checked against the save as a whole, below.
