@@ -205,25 +205,29 @@ function EditRow({ label, value, canEdit, children, onConfirm, onCancel, editing
   );
 }
 
-/** The certified mailing of an assign-out, recorded by its assignor: mail number and date mailed. */
+/** The sender's delivery receipt for an assign-out, recorded by its assignor: mail number, date sent and the receipt. */
 function MailingRow({ rec, onSave }) {
   const [editing, setEditing] = useState(false);
   const [num, setNum] = useState("");
   const [on, setOn] = useState(isoToday());
+  const [doc, setDoc] = useState(null);
   const [err, setErr] = useState("");
-  const value = rec.deliveryRef ? "Mailed " + (rec.mailedOn || "") + " · recorded on-chain" : "Not recorded";
+  const value = rec.deliveryRef ? "Sent " + (rec.mailedOn || "") + " · recorded on-chain" : "Not recorded";
   return (
-    <EditRow label="Certified mailing" value={value} canEdit={!rec.deliveryRef && rec.status === "Issued"}
+    <EditRow label="Delivery receipt" value={value} canEdit={!rec.deliveryRef && rec.status === "Issued"}
       editing={editing} setEditing={(v) => { setEditing(v); setErr(""); }} err={err}
       onConfirm={() => {
         if (!num.trim()) return setErr("Enter the certified mail number.");
-        if (!on || on > isoToday()) return setErr("Enter the date it was mailed (not a future date).");
-        onSave({ instrumentMail: num.trim(), mailedOn: on }); setEditing(false);
+        if (!on || on > isoToday()) return setErr("Enter the date it was sent (not a future date).");
+        if (!doc) return setErr("Attach the certified mail receipt.");
+        onSave({ instrumentMail: num.trim(), mailedOn: on, mailingDoc: doc.hash, mailingFile: doc.name }); setEditing(false);
       }}>
       <Field label="Certified mail number" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="9407 1000 0000 0000 0000 00" mono
         hint="The one mailing with the signed instrument and the sealed transfer code. Only a hash of the number goes on-chain." />
-      <Field label="Date mailed" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }}
+      <Field label="Date sent" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }}
         hint={rec.party + " has 30 days from this date to accept or reject; after that it takes effect."} />
+      <DocDrop label="Certified mail receipt" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
+        hint="Hashed on this device; only the hash is kept and written on-chain, with the number and date." />
     </EditRow>
   );
 }
@@ -814,8 +818,8 @@ export default function HolderPortal() {
 
   function recordMailingOf(child, f) {
     setReg((r) => r.map((a) => (a.id === child.id ? { ...a, ...f } : a)));
-    emit(child.bond, child.id, "DeliveryRecorded", "HOLDER", "certified mail, mailed " + f.mailedOn);
-    flash("Mailing recorded. Confirm with your passkey; only a hash of the number goes on-chain, with the date.");
+    emit(child.bond, child.id, "DeliveryRecorded", "HOLDER", "sent " + f.mailedOn);
+    flash("Delivery receipt recorded: sent " + f.mailedOn + ". Confirm with your passkey; only hashes go on-chain, with the date.");
   }
 
   function recordReceipt(rec, f) {
@@ -1344,7 +1348,7 @@ export default function HolderPortal() {
                   <Note kind="warn">
                     <strong style={{ fontWeight: 600 }}>Keep it private.</strong> Write it on the access code page, seal it in its
                     own envelope, and send it with your signed instrument to {childIssued.party} in one certified
-                    mailing, then record its tracking number below. {childIssued.party} signs in at Holder access with
+                    mailing, then record its delivery receipt below. {childIssued.party} signs in at Holder access with
                     the assignment ID and this code, sets up their passkey, then accepts or rejects it. It works once:
                     their passkey replaces it. Until then you can show it again from your record.
                   </Note>

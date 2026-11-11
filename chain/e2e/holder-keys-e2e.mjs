@@ -307,22 +307,25 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
 
   // The assignor mails it and records the mailing: the mail number and date, signed with their passkey.
   let gr = await hrec(g.id);
-  e = await hsave(s1.token, phone, { reg: [{ ...gr, instrumentMail: "9407 1111", mailedOn: "2026-11-09" }] }).then(() => null, (x) => x);
+  e = await hsave(s1.token, phone, { reg: [{ ...gr, instrumentMail: "9407 1111", mailedOn: "2026-11-09", mailingDoc: H32() }] }).then(() => null, (x) => x);
   ok(e?.status === 403, "only its assignor records the mailing (" + e?.status + ")");
-  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 1111", mailedOn: "2999-01-01" }] }).then(() => null, (x) => x);
+  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 1111", mailedOn: "2999-01-01", mailingDoc: H32() }] }).then(() => null, (x) => x);
   ok(e?.status === 400, "not with a future date (" + e?.status + ")");
-  await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 2222 3333", mailedOn: "2026-11-09" }],
+  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 1111", mailedOn: "2026-11-09" }] }).then(() => null, (x) => x);
+  ok(e?.status === 400, "and not without the certified mail receipt (" + e?.status + ")");
+  const mdoc = H32();
+  await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 2222 3333", mailedOn: "2026-11-09", mailingDoc: mdoc, mailingFile: "ps3800.pdf" }],
     events: [ev(g.bond, g.id, "DeliveryRecorded", "mailed 2026-11-09")] });
   await settle();
   const C = await import(ROOT + "/server/chain.js");
   const onc = await regC.assignments(id32(g.id));
-  ok(onc.deliveryRef === C.deliveryRef(g.id, "9407 2222 3333", undefined) && (await regC.mailedAt(id32(g.id))) === BigInt(Date.parse("2026-11-09") / 1000),
+  ok(onc.deliveryRef === C.deliveryRef(g.id, "9407 2222 3333", undefined, mdoc) && (await regC.mailedAt(id32(g.id))) === BigInt(Date.parse("2026-11-09") / 1000),
     "the assignor's mailing is on-chain, and its date starts the assignee's 30 days");
   const db = new pg.Client({ connectionString: DB }); await db.connect();
   const fns = (await db.query("select fn, role from chain_ops where ref = $1", [g.id])).rows; await db.end();
   ok(fns.some((r) => r.fn === "recordMailing" && r.role === "relayer") && !fns.some((r) => r.fn === "setDeliveryRef"), "nothing went to the issuer's Safe for it");
   gr = await hrec(g.id);
-  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 9999", mailedOn: "2026-11-09" }] }).then(() => null, (x) => x);
+  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 9999", mailedOn: "2026-11-09", mailingDoc: H32() }] }).then(() => null, (x) => x);
   ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
   // A page that hasn't caught up (no deliveryRef, no mail number) isn't a second mailing.
   gr = await hrec(g.id);

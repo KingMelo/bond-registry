@@ -140,9 +140,11 @@ const again = page.getByRole("button", { name: /transfer code/ });
 if (await again.count()) { await again.first().click(); await page.waitForTimeout(800); }
 ok(await page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/).count() > 0, "the assignor can show the transfer code again from their record, until it's used");
 // The assignor records the certified mailing from their list: click Edit, fill it in, confirm.
-const mailRow = page.locator("div.mt-3", { has: page.getByText("Certified mailing", { exact: true }) }).first();
-await mailRow.getByRole("button", { name: "Edit" }).click();
-await page.getByLabel("Certified mail number").fill("9407 1000 0000 0000 0000 77");
+const childCard = page.locator("div.mb-2", { has: page.getByText(child.id + " · ", { exact: false }) }).first();
+await childCard.getByRole("button", { name: "Edit" }).click();
+await childCard.getByLabel("Certified mail number").fill("9407 1000 0000 0000 0000 77");
+ok(await childCard.getByLabel("Date sent").count() === 1, "the sender's delivery receipt asks for the date sent");
+await childCard.locator('input[type="file"]').setInputFiles({ name: "ps3800.pdf", mimeType: "application/pdf", buffer: Buffer.from("certified mail receipt") });
 await page.getByRole("button", { name: "Confirm with your passkey", exact: true }).click();
 let mailed = null;
 for (let i = 0; i < 30 && !mailed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.deliveryRef) mailed = r; }
@@ -212,12 +214,16 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   // The assignee records their delivery receipt from the review screen.
   const rcRow = p3.locator("div.mt-3", { has: p3.getByText("Delivery receipt", { exact: true }) }).first();
   await rcRow.getByRole("button", { name: "Edit" }).click();
+  ok(await p3.getByLabel("Date received").count() === 1 && await p3.getByLabel("Certified mail number on the receipt").inputValue() !== "",
+    "the assignee's delivery receipt asks for the date received, with the same certified mail number filled in");
   await p3.getByLabel("Certified mail number on the receipt").fill("9407-1000-0000-0000-0000-77");
   await p3.locator('input[type="file"]').first().setInputFiles({ name: "usps-delivered.pdf", mimeType: "application/pdf", buffer: Buffer.from("delivered") });
   await p3.getByRole("button", { name: "Confirm with your passkey", exact: true }).click();
   let got = null;
   for (let i = 0; i < 30 && !got; i++) { await p3.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.receiptRef) got = r; }
   ok(!!got && got.receiptMatches === true, "the assignee's delivery receipt is recorded, and its tracking number matches the assignor's mailing");
+  await p3.getByText("Received " + got?.receivedOn, { exact: false }).first().waitFor({ timeout: 10000 }).catch(() => {});
+  ok(await p3.getByText("Received " + got?.receivedOn, { exact: false }).count() > 0, "the assignee's receipt shows the date received");
   await p3.getByText(/tracking number matches the mailing/).waitFor({ timeout: 10000 }).catch(() => {});
   ok(await p3.getByText(/tracking number matches the mailing/).count() > 0, "the assignee sees the receipt recorded, matched to the mailing");
   if (SHOTS) await p3.screenshot({ path: SHOTS + "/7a-receipt.png", fullPage: true });

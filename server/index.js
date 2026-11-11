@@ -266,7 +266,7 @@ const REJECTION_MIN = 255;
 // notes that go with each move. Everything else on a record is the issuer's.
 const FILING_FIELDS = ["filingNumber", "filedBy", "filedOn", "filingDoc", "filingFile", "filingRef"];
 // An assign-out's certified mailing, recorded by its assignor; the assignee's delivery receipt, by the assignee.
-const MAILING_FIELDS = ["instrumentMail", "mailedOn", "deliveryRef"];
+const MAILING_FIELDS = ["instrumentMail", "mailedOn", "mailingDoc", "mailingFile", "deliveryRef"];
 const RECEIPT_FIELDS = ["receiptMail", "receivedOn", "receiptDoc", "receiptFile", "receiptRef", "receiptMatches"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
   "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...RECEIPT_FIELDS];
@@ -611,7 +611,7 @@ if (APP === "holder") {
         for (const k of FILING_FIELDS) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
       // Likewise a recorded mailing or receipt: a page that hasn't caught up isn't asking to change it.
       if (before?.deliveryRef && !("instrumentMail" in raw) && (a.mailedOn == null || a.mailedOn === before.mailedOn))
-        for (const k of ["deliveryRef", "mailedOn"]) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
+        for (const k of ["deliveryRef", "mailedOn", "mailingDoc", "mailingFile"]) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
       if (before?.receiptRef && (a.receivedOn == null || a.receivedOn === before.receivedOn))
         for (const k of RECEIPT_FIELDS) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
       const changed = before ? changedFields(before, a) : [];
@@ -631,7 +631,8 @@ if (APP === "holder") {
           if (before.status !== "Issued") throw new Reject(409, a.id + " has already been answered.");
           if (!String(a.instrumentMail || "").trim()) throw new Reject(400, "Enter the certified mail number.");
           const t = Date.parse(a.mailedOn || "");
-          if (!t || t > Date.now()) throw new Reject(400, "Enter the date it was mailed (not a future date).");
+          if (!t || t > Date.now()) throw new Reject(400, "Enter the date it was sent (not a future date).");
+          if (!chain.isHash(a.mailingDoc)) throw new Reject(400, "Attach the certified mail receipt. Only its SHA-256 is kept.");
           a.instrumentMail = String(a.instrumentMail).trim();
           if (before.receiptMail) a.receiptMatches = mailMatches({ instrumentMail: a.instrumentMail }, before.receiptMail);
           a.deliveredAt = new Date(t).toISOString(); // the response period runs from here
@@ -1203,9 +1204,17 @@ if (APP === "issuer") {
           if (!chain.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3 for " + a.id + ". Only its SHA-256 is kept.");
           a.filingNumber = String(a.filingNumber).trim();
         }
+        // The issuer's first mailing of a record: the mail number, the date sent and the certified mail receipt.
+        const firstMailing = !before?.data?.deliveryRef && (a.instrumentMail || a.passkeyMail);
+        if (firstMailing && (a.mailedOn || a.mailingDoc)) {
+          const t = Date.parse(a.mailedOn || "");
+          if (!t || t > Date.now()) throw new Reject(400, "Enter the date " + a.id + " was sent (not a future date).");
+          if (!chain.isHash(a.mailingDoc)) throw new Reject(400, "Attach the certified mail receipt for " + a.id + ". Only its SHA-256 is kept.");
+        }
         const n = chain.normalizeRecord(a);
-        // The response period runs from when the mailing is recorded.
-        n.deliveredAt = before?.data?.deliveredAt || (n.deliveryRef ? new Date().toISOString() : null);
+        // The response period runs from the date sent (or, without one, from when the mailing is recorded).
+        n.deliveredAt = before?.data?.deliveredAt
+          || (n.deliveryRef ? (firstMailing && Date.parse(a.mailedOn || "") ? new Date(Date.parse(a.mailedOn)).toISOString() : new Date().toISOString()) : null);
         // A receipt the assignee recorded first: check its tracking number against this mailing.
         if (before?.data?.receiptMail && (n.instrumentMail || n.passkeyMail)) n.receiptMatches = mailMatches(n, before.data.receiptMail);
         clean.push(n);

@@ -62,7 +62,9 @@ export const priorDoc = (bondDisplay, p) => ethers.keccak256(coder.encode(
 // With the filed copy's SHA-256 when the holder uploaded it (no paper, no record); older ones have the number alone.
 export const filingRef = (recordId, filingNumber, filingDoc) =>
   filingDoc ? tagged("filing", [recordId, filingNumber, filingDoc]) : tagged("filing", [recordId, filingNumber]);
-export const deliveryRef = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
+/** The sender's delivery receipt: the mail number(s) and, when attached, the mailing receipt's SHA-256. */
+export const deliveryRef = (recordId, instrumentMail, passkeyMail, mailingDoc) =>
+  tagged("delivery", [recordId, instrumentMail, passkeyMail, ...(mailingDoc ? [mailingDoc] : [])]);
 /** The assignee's delivery receipt: the tracking number on it, the date received and the receipt copy's SHA-256. */
 export const receiptRef = (recordId, receiptMail, receivedOn, receiptDoc) => tagged("receipt", [recordId, receiptMail, receivedOn, receiptDoc]);
 /** A YYYY-MM-DD date (or any date string) as unix seconds, never later than now. */
@@ -85,7 +87,7 @@ export function normalizeRecord(a) {
   const out = { ...a };
   if (out.filingNumber) out.filingRef = filingRef(out.id, out.filingNumber, out.filingDoc);
   else if (out.filingRef && !isHash(out.filingRef)) out.filingRef = null;
-  if (out.instrumentMail || out.passkeyMail) out.deliveryRef = deliveryRef(out.id, out.instrumentMail, out.passkeyMail);
+  if (out.instrumentMail || out.passkeyMail) out.deliveryRef = deliveryRef(out.id, out.instrumentMail, out.passkeyMail, out.mailingDoc);
   else if (out.deliveryRef && !isHash(out.deliveryRef)) out.deliveryRef = null;
   if (out.receiptMail && out.receivedOn && out.receiptDoc) out.receiptRef = receiptRef(out.id, out.receiptMail, out.receivedOn, out.receiptDoc);
   else if (out.receiptRef && !isHash(out.receiptRef)) out.receiptRef = null;

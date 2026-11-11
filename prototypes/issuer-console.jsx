@@ -240,6 +240,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const [filedBy, setFiledBy] = useState("assignor");
   const [docRef, setDocRef] = useState("");
   const [iMail, setIMail] = useState("");
+  const [iMailOn, setIMailOn] = useState(new Date().toISOString().slice(0, 10)); // the date sent
+  const [iMailDoc, setIMailDoc] = useState(null); // the certified mail receipt
   const [rpParty, setRpParty] = useState("");
   const [rpContact, setRpContact] = useState("");
   const [rpAddress, setRpAddress] = useState("");
@@ -459,15 +461,17 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     const needInstrument = a.origin !== "AssignOut" && !a.instrumentMail;
     const needPasskey = !a.passkeyMail;
     const mail = iMail.trim();
-    if (!mail || (!needInstrument && !needPasskey)) return;
-    const deliveryRef = "pending"; // the server sets the real hash from the tracking number
+    if (!mail || !iMailDoc || !iMailOn || (!needInstrument && !needPasskey)) return;
+    const deliveryRef = "pending"; // the server sets the real hash from the number and the receipt
     patch(a.id, {
       instrumentMail: needInstrument ? mail : a.instrumentMail,
       passkeyMail: needPasskey ? mail : a.passkeyMail,
+      mailedOn: iMailOn, mailingDoc: iMailDoc.hash, mailingFile: iMailDoc.name,
       deliveryRef,
     });
-    emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", deliveryRef);
-    done("Mailing recorded. Only its hash goes on-chain.");
+    emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", "sent " + iMailOn);
+    setIMail(""); setIMailDoc(null);
+    done("Delivery receipt recorded: sent " + iMailOn + ". Only hashes go on-chain; the 30 days run from the date sent." + signDone);
   }
 
   async function replaceAssignment(a) {
@@ -1385,14 +1389,16 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             {mailingMissing(a) && (
               <div className="mt-5">
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Record the mailing</div>
-                <Field label="Certified mail tracking number" value={iMail} onChange={setIMail}
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Delivery receipt</div>
+                <Field label="Certified mail number" value={iMail} onChange={setIMail}
                   placeholder="9407 1000 0000 0000 0000 00" mono
-                  hint={needInstrument
-                    ? "One mailing: the signed instrument and the sealed passkey document. Only a hash of the number goes on-chain."
-                    : "The mailing with the sealed passkey document. Only a hash of the number goes on-chain."} />
-                <Button variant="quiet" disabled={!iMail.trim()} onClick={() => recordMailing(a)}>
-                  Record mailing{signNote}
+                  hint="One mailing: the signed instrument and the sealed transfer code. Only a hash of the number goes on-chain." />
+                <Field label="Date sent" type="date" value={iMailOn} onChange={setIMailOn}
+                  hint={a.party + " has 30 days from this date to accept or reject; after that it takes effect."} />
+                <FileHash label="Certified mail receipt" value={iMailDoc} onChange={setIMailDoc}
+                  hint="Hashed in this browser; only its SHA-256 is kept and written on-chain with the number." />
+                <Button variant="quiet" disabled={!iMail.trim() || !iMailOn || !iMailDoc} onClick={() => recordMailing(a)}>
+                  Record delivery receipt{signNote}
                 </Button>
               </div>
             )}
