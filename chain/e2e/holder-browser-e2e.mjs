@@ -66,7 +66,7 @@ await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A1, passkey
 await icommit({ bonds: [{ ...(await st()).bonds[0], unassigned: TOTAL - 1_000_000 }], reg: [{ origin: "Issuer", parent: null, assignor: "Penson Trust", party: "Company A", contact: "D", position: "", address: "addr",
   status: "Issued", created: "Nov 9, 2026", accepted: null, filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null,
   id: A1, bond: "PENS-0001-BD", units: 1_000_000, issuedUnits: 1_000_000, docHash: H32() }] });
-await icommit({ reg: [{ ...(await st()).reg[0], instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01" }] });
+await icommit({ reg: [{ ...(await st()).reg[0], instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01", mailedOn: new Date().toISOString().slice(0, 10), mailingDoc: H32() }] });
 
 // ---- the browser, with a virtual passkey device (platform authenticator, face/fingerprint passes)
 const browser = await chromium.launch();

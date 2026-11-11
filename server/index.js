@@ -1206,15 +1206,15 @@ if (APP === "issuer") {
         }
         // The issuer's first mailing of a record: the mail number, the date sent and the certified mail receipt.
         const firstMailing = !before?.data?.deliveryRef && (a.instrumentMail || a.passkeyMail);
-        if (firstMailing && (a.mailedOn || a.mailingDoc)) {
+        if (firstMailing) {
           const t = Date.parse(a.mailedOn || "");
           if (!t || t > Date.now()) throw new Reject(400, "Enter the date " + a.id + " was sent (not a future date).");
           if (!chain.isHash(a.mailingDoc)) throw new Reject(400, "Attach the certified mail receipt for " + a.id + ". Only its SHA-256 is kept.");
         }
         const n = chain.normalizeRecord(a);
-        // The response period runs from the date sent (or, without one, from when the mailing is recorded).
+        // The response period runs from the date sent.
         n.deliveredAt = before?.data?.deliveredAt
-          || (n.deliveryRef ? (firstMailing && Date.parse(a.mailedOn || "") ? new Date(Date.parse(a.mailedOn)).toISOString() : new Date().toISOString()) : null);
+          || (n.deliveryRef && firstMailing ? new Date(Date.parse(a.mailedOn)).toISOString() : null);
         // A receipt the assignee recorded first: check its tracking number against this mailing.
         if (before?.data?.receiptMail && (n.instrumentMail || n.passkeyMail)) n.receiptMatches = mailMatches(n, before.data.receiptMail);
         clean.push(n);

@@ -93,7 +93,7 @@ const ACCESS_CODE = "7KQM-R4XW-9TPH-C2NV";
 await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: "PENS-0001-BD-A00001", passkey: ACCESS_CODE });
 await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 500000 }], reg: [{ ...base, id: "PENS-0001-BD-A00001", bond: "PENS-0001-BD", units: 500000, issuedUnits: 500000, docHash: H32() }],
   events: [ev("PENS-0001-BD", "PENS-0001-BD-A00001", "AssignmentIssued")] });
-await icommit({ reg: [{ ...(await rec("PENS-0001-BD-A00001")), instrumentMail: "RE 1", passkeyMail: "RE 2", deliveryRef: "pending" }] });
+await icommit({ reg: [{ ...(await rec("PENS-0001-BD-A00001")), instrumentMail: "RE 1", passkeyMail: "RE 2", deliveryRef: "pending", mailedOn: new Date().toISOString().slice(0, 10), mailingDoc: H32() }] });
 
 // Signs the oldest waiting item exactly as the Trezor would: the API's typed data, minus EIP712Domain.
 const TD = (td) => { const { EIP712Domain, ...types } = td.types; return types; };

@@ -115,7 +115,12 @@ async function issue(id, units, code) {
   await icommit({ bonds: [{ ...b, unassigned: b.unassigned - units }], reg: [{ ...base, id, bond: "PENS-0001-BD", units, issuedUnits: units, docHash: H32() }],
     events: [ev("PENS-0001-BD", id, "AssignmentIssued")] });
   const r = await rec(id);
-  await icommit({ reg: [{ ...r, instrumentMail: "9407 " + id.slice(-5), passkeyMail: "9407 " + id.slice(-5) }] });
+  if (id.endsWith("A00001")) {
+    const bad = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [],
+      reg: [{ ...r, instrumentMail: "9407 " + id.slice(-5), passkeyMail: "9407 " + id.slice(-5) }] });
+    ok(bad?.status === 400, "the issuer's mailing needs the date sent and the certified mail receipt (" + bad?.status + ")");
+  }
+  await icommit({ reg: [{ ...r, instrumentMail: "9407 " + id.slice(-5), passkeyMail: "9407 " + id.slice(-5), mailedOn: new Date().toISOString().slice(0, 10), mailingDoc: H32() }] });
 }
 const CODE1 = "7KQM-R4XW-9TPH-C2NV";
 await issue("PENS-0001-BD-A00001", 1_000_000, CODE1);

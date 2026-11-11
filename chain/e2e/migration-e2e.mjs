@@ -112,7 +112,7 @@ let b = (await st()).bonds[0];
 await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 1_000_000 }], reg: [{ origin: "Issuer", parent: null, assignor: "King-Joseph: Penson II",
   party: "Company A", contact: "D", position: "", address: "addr", status: "Issued", created: "Nov 10, 2026", accepted: null, filingRef: null,
   deliveryRef: null, instrumentMail: null, passkeyMail: null, id: A1, bond: "KJPII-0001-BD", units: 1_000_000, issuedUnits: 1_000_000, docHash: H32() }] });
-await icommit({ reg: [{ ...(await rec(A1)), instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01" }] });
+await icommit({ reg: [{ ...(await rec(A1)), instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01", mailedOn: new Date().toISOString().slice(0, 10), mailingDoc: H32() }] });
 ok(await approveAll(), "v4: the Trezor approved registration, anchoring, the prior instrument, the issue and the mailing");
 const phone = newDevice();
 const s1 = await holderSignIn(call, H, A1, CODE, phone);
