@@ -2,31 +2,19 @@
   "network": "amoy",
   "chainId": 80002,
   "contract": "BondInterestRegistry",
-  "version": 4,
-  "address": "0x912Ad9a2d0C005Dfd661366DD8799DD9Dd3fBAe1",
-  "deployTx": "0xef265db264ea5e4f3dae9d36bc977ad890825da46da8e0a37431df9e2600065b",
-  "block": 52460146,
-  "gasUsed": 4350047,
-  "deployedAt": "2026-11-10T03:52:46Z",
-  "changes": "v4 code, redeployed for a clean start: the bond and its 20 prior instruments, no assignments.",
+  "version": 5,
+  "address": "0x675d63626E40cA4aD10b8848Ae6493D4976892dB",
+  "deployTx": "0xcb9cc2fbf9ac6724dc2785548dd98206a1000d729f676fe21062d3ad4e05d2e7",
+  "block": 52537717,
+  "gasUsed": 5472958,
+  "deployedAt": "2026-11-11T01:25:36Z",
+  "changes": "v5: assign-outs open to the assignee at once; holder-recorded UCC-3, mailings and delivery receipts; issuer redemption; logChange for every other register change. Starts clean: it names v4a as its predecessor but copies nothing (import window closed in tx 0xfb7cf96e464f03f829169ea4da46e87ccf00a6d5d0e658e81005537ac0f3b5e1); the register re-anchors the bond and its prior instruments.",
+  "predecessor": "0x912Ad9a2d0C005Dfd661366DD8799DD9Dd3fBAe1",
   "roles": {
     "admin": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "platform": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
     "guardian": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4"
   },
-  "explorer": "https://amoy.polygonscan.com/address/0x912Ad9a2d0C005Dfd661366DD8799DD9Dd3fBAe1",
-  "roleHolders": {
-    "admin": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "platform": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "guardian": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "relayer": "0xfFd5E73941b3b3D47366BB1D5513A793633cd7D4",
-    "issuerKJPII": "0x3Dc5C7904e12fb1Fb991D686A50B7C921f55d272",
-    "movedAt": "2026-11-10T04:00:25Z",
-    "note": "roles (above) are the constructor arguments. After the bond and its prior instruments were replayed, governing roles and KJPII moved to the Amoy Safe (owner: the Trezor); the deployer keeps only RELAYER.",
-    "txs": {
-      "setIssuerAccount": "0xac92b94003d9065c3c29e2642dbceaf5c0f674a344c8d0710dab0a6d957779bb",
-      "renounceAdmin": "0x424fb1d9fa76c3f0a161785ae9992256ed9ed5172b34a9a5aaa1212a8bb1d5f1"
-    }
-  }
+  "explorer": "https://amoy.polygonscan.com/address/0x675d63626E40cA4aD10b8848Ae6493D4976892dB"
 }
