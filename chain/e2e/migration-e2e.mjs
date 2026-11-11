@@ -103,7 +103,7 @@ async function approveAll(ms = 120000) {
 }
 
 // ---- life on v4
-const TOTAL = 10_000_000_000, A1 = "KJPII-0001-BD-A00001", C1 = "KJPII-0001-BD-A00002", CODE = "7KQM-R4XW-9TPH-C2NV";
+const TOTAL = 10_000_000_000, A1 = "KJPII-0001-BD-A00001", C1 = "KJPII-0001-BD-A00001-1", CODE = "7KQM-R4XW-9TPH-C2NV";
 await icommit({ bonds: [{ id: "KJPII-0001-BD", title: "Series A", face: TOTAL, total: TOTAL, unassigned: TOTAL - 99_908_282, redeemed: 0,
   prior: [{ id: "P001", ref: "PN-2024-007", holder: "Old Holder", mail: "9407 1", units: 99_908_282, recordedOn: "Nov 8, 2026", reversed: false }],
   registered: "Nov 8, 2026", instrumentHash: H32(), ucc1: { number: "DE-1", office: "Delaware", date: "Nov 7, 2026", hash: H32(), file: "u.pdf" } }] });

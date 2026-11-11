@@ -162,10 +162,13 @@ ok((await hrec(a1.id)).status === "Accepted", "the holder's signed acknowledgeme
 
 // 4. Assign out $10.40 (signed by the assignor). It's open to the assignee at once.
 a1 = await hrec(a1.id);
-const child = { id: "PENS-0001-BD-A00002", bond: "PENS-0001-BD", parent: a1.id, origin: "AssignOut", assignor: "Company A", party: "Company D",
+const child = { id: "PENS-0001-BD-A00001-1", bond: "PENS-0001-BD", parent: a1.id, origin: "AssignOut", assignor: "Company A", party: "Company D",
   contact: "M", position: "", address: "addr", units: 1040, issuedUnits: 1040, status: "Issued", created: "Nov 9, 2026",
   accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
+e = await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, { ...child, id: "PENS-0001-BD-A00009" }] }).then(() => null, (x) => x);
+ok(e?.status === 400, "an assign-out can't take an issuer-style ID (" + e?.status + ")");
 await hsave(s1.token, phone, { reg: [{ ...a1, units: a1.units - 1040 }, child], events: [ev(a1.bond, child.id, "AssignedOut")] });
+ok(child.id === "PENS-0001-BD-A00001-1", "an assign-out from A00001 is numbered A00001-1");
 ok((await rec(child.id)).accessCode === "unused", "the assign-out made the assignee's transfer code");
 ok(!JSON.stringify(await call(H, "GET", "/api/state")).includes("accessCode"), "the public record list never carries it");
 const CODE2 = (await call(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: child.id })).code;
@@ -300,7 +303,7 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
 // 8b. It repeats: the holder of A00003 (in effect, on their new phone) assigns out in turn.
 {
   const a3 = await hrec("PENS-0001-BD-A00003");
-  const g = { id: "PENS-0001-BD-A00005", bond: "PENS-0001-BD", parent: a3.id, origin: "AssignOut", assignor: "Company A", party: "Company E",
+  const g = { id: "PENS-0001-BD-A00003-1", bond: "PENS-0001-BD", parent: a3.id, origin: "AssignOut", assignor: "Company A", party: "Company E",
     contact: "N", position: "", address: "addr", units: 2500, issuedUnits: 2500, status: "Issued", created: "Nov 10, 2026",
     accepted: null, docHash: H32(), filingRef: null, deliveryRef: null };
   await hsave(s3b.token, fresh, { reg: [{ ...a3, units: a3.units - 2500 }, g], events: [ev(a3.bond, g.id, "AssignedOut")] });

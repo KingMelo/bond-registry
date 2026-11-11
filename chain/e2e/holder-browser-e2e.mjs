@@ -140,6 +140,7 @@ await page.getByRole("button", { name: "Create the assignment" }).click();
 let child = null;
 for (let i = 0; i < 30 && !child; i++) { await page.waitForTimeout(500); child = (await call(H, "GET", "/api/state")).reg.find((a) => a.parent === A1 && a.origin === "AssignOut"); }
 ok(child?.units === 1040 && child.status === "Issued", "the $10.40 assign-out is saved, open to its assignee (" + (child?.id || "none") + ")");
+ok(child?.id === A1 + "-1", "the assign-out from A00001 is numbered A00001-1 (" + child?.id + ")");
 const codeBox = page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
 await codeBox.waitFor({ timeout: 20000 }).catch(() => {});
 ok(await codeBox.count() === 1, "the assignor's screen shows the new assignee's access code, once");

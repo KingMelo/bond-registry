@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
-import { ChainWriting, Spinner } from "../src/registry.jsx";
+import { ChainWriting, Spinner, nextChildId } from "../src/registry.jsx";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -771,9 +771,8 @@ export default function HolderPortal() {
     if (!aDoc) return setAErr("Add the signed assignment. Only its SHA-256 hash is kept.");
     setAErr("");
 
-    const seq = String(reg.filter((a) => a.bond === open.bond).length + 1).padStart(5, "0");
     const child = {
-      id: open.bond + "-A" + seq,
+      id: nextChildId(reg, open.id), // a branch of the record it comes from: A00001-1, A00001-1-1, …
       bond: open.bond,
       parent: open.id,
       origin: "AssignOut",

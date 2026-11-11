@@ -21,8 +21,9 @@ function contractFor(info) {
 }
 
 /** A bond display ID is the start of an assignment ID: KJPII-0001-BD-A00001 → KJPII-0001-BD. */
-export const bondOf = (displayId) => String(displayId).trim().toUpperCase().replace(/-A\d+$/, "");
-export const looksLikeRecord = (s) => /-A\d+$/i.test(String(s).trim());
+// An assignment ID: <bond>-A00001, or an assign-out's <bond>-A00001-1, -A00001-1-1, …
+export const bondOf = (displayId) => String(displayId).trim().toUpperCase().replace(/-A\d+(-\d+)*$/, "");
+export const looksLikeRecord = (s) => /-A\d+(-\d+)*$/i.test(String(s).trim());
 
 export async function readBond(info, displayId) {
   const { reg } = contractFor(info);

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { SignatureQueue } from "./trezor-sign.jsx";
-import { ChainWriting, Spinner } from "../src/registry.jsx";
+import { ChainWriting, Spinner, nextIssuedId } from "../src/registry.jsx";
 import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -478,9 +478,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   async function replaceAssignment(a) {
     if (!["Accepted", "Issued"].includes(a.status) || pendingOf(a.id).length > 0) return;
     if (!rpParty.trim() || !rpContact.trim() || !rpAddress.trim() || !rpDoc || !rpInstr) return;
-    const seq = String(reg.filter((x) => x.bond === a.bond).length + 1).padStart(5, "0");
+    const newId = nextIssuedId(reg, a.bond);
     const rec = {
-      bond: a.bond, id: a.bond + "-A" + seq, parent: a.id, origin: "Replacement",
+      bond: a.bond, id: newId, parent: a.id, origin: "Replacement",
       assignor: (bonds.find((b) => b.id === a.bond)?.assignor || issuerName) + " (replacement)",
       party: rpParty.trim(), contact: rpContact.trim(), position: "", address: rpAddress.trim(),
       units: a.units, issuedUnits: a.units, status: "Issued", created: today(), accepted: null,
@@ -544,9 +544,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!nUcc.trim() && nUccDoc) return setNErr("Enter the UCC-3 filing number.");
     if (nUccDoc && nUccDoc.hash === nDoc.hash) return setNErr("The instrument and the UCC-3 are the same file. Choose each document.");
     setNErr("");
-    const seq = String(scoped.length + 1).padStart(5, "0");
+    const newId = nextIssuedId(reg, activeBond);
     const rec = {
-      bond: activeBond, id: activeBond + "-A" + seq, parent: null, origin: "Issuer", assignor: bond.assignor || issuerName,
+      bond: activeBond, id: newId, parent: null, origin: "Issuer", assignor: bond.assignor || issuerName,
       party: nParty.trim(), contact: nContact.trim(), position: nPosition.trim(), address: nAddress.trim(),
       units: u, issuedUnits: u, status: "Issued", created: today(), accepted: null,
       docHash: nDoc.hash, docFile: nDoc.name,

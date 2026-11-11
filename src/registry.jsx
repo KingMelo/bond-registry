@@ -320,3 +320,23 @@ export function ChainWriting({ items, chainInfo, ink = "#1D2433", soft = "#5C647
     </div>
   );
 }
+
+// ------------------------------------------------------------------ assignment IDs
+//
+// An assignment the issuer makes is <bond>-A00001, -A00002, …: each is tied to its original assignor
+// and secured party. An assign-out extends its parent's ID: A00001-1, A00001-2, and from A00001-1,
+// A00001-1-1. So every partial assignment reads as a branch of the issuer's assignment it came from.
+
+/** The next issuer-made ID on a bond: one past the highest A-number in use (assign-outs don't count). */
+export function nextIssuedId(reg, bondId) {
+  const n = reg.filter((a) => a.bond === bondId).map((a) => /-A(\d+)$/.exec(a.id)?.[1]).filter(Boolean)
+    .reduce((m, x) => Math.max(m, Number(x)), 0);
+  return bondId + "-A" + String(n + 1).padStart(5, "0");
+}
+
+/** The next assign-out ID from a record: its ID plus "-<n>", one past the highest already used. */
+export function nextChildId(reg, parentId) {
+  const re = new RegExp("^" + parentId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-(\\d+)$");
+  const n = reg.map((a) => re.exec(a.id)?.[1]).filter(Boolean).reduce((m, x) => Math.max(m, Number(x)), 0);
+  return parentId + "-" + (n + 1);
+}
