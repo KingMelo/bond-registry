@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { SignatureQueue } from "./trezor-sign.jsx";
+import { ChainWriting, Spinner } from "../src/registry.jsx";
 import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -139,10 +140,10 @@ function TextBtn({ children, onClick }) {
 export function ChainLink({ s }) {
   if (!s) return null;
   const color = s.tone === "bad" ? T.red : s.tone === "good" ? T.ink : T.inkSoft;
-  const text = <span style={{ color }}>{s.label}</span>;
+  const text = <span style={{ color }}>{s.busy && <Spinner color={color} />}{s.label}</span>;
   return s.href ? (
     <a href={s.href} target="_blank" rel="noreferrer" style={{ color, textDecoration: "underline", textUnderlineOffset: 2 }}>
-      {s.label}{s.tone === "good" ? " · view" : ""}
+      {s.busy && <Spinner color={color} />}{s.label}{s.tone === "good" ? " · view" : ""}
     </a>
   ) : text;
 }
@@ -736,6 +737,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
         )}
 
         {extra && extra[2]()}
+
+        {/* Everything of this issuer's on its way to the chain. */}
+        <ChainWriting chainInfo={chainInfo} ink={T.ink} soft={T.inkSoft} wash={T.wash}
+          items={[...reg, ...bonds]} signHint={issuerInfo?.safe ? "approve on the Approvals tab" : undefined} />
 
         {/* ============ bonds ============ */}
         {tab === "bonds" && (

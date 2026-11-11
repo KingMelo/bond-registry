@@ -727,6 +727,12 @@ export function startWorker(pool, log = console) {
   return { stop: () => { stopped = true; clearInterval(timer); }, tick };
 }
 
+/** When the chain queue last changed (ms): a page polling the register refreshes when it moves. */
+export async function chainStamp(pool) {
+  if (!enabled) return 0;
+  return Number((await pool.query("select coalesce(floor(extract(epoch from max(updated_at)) * 1000), 0)::bigint as t from chain_ops where contract = $1", [CONTRACT])).rows[0].t);
+}
+
 /** Puts a failed op (and everything held behind it) back in the queue. */
 export async function retry(pool, seq) {
   const op = (await pool.query("select * from chain_ops where seq = $1 and status = 'failed' and contract = $2", [seq, CONTRACT])).rows[0];

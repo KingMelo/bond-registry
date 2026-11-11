@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
+import { ChainWriting, Spinner } from "../src/registry.jsx";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -292,8 +293,8 @@ function OnChain({ rec, info }) {
   if (!st) return null;
   const color = st.tone === "bad" ? T.red : st.tone === "good" ? T.ink : T.inkSoft;
   return st.href
-    ? <a href={st.href} target="_blank" rel="noreferrer" style={{ color, textDecoration: "underline", textUnderlineOffset: 2 }}>{st.label}{st.tone === "good" ? " · view" : ""}</a>
-    : <span style={{ color }}>{st.label}</span>;
+    ? <a href={st.href} target="_blank" rel="noreferrer" style={{ color, textDecoration: "underline", textUnderlineOffset: 2 }}>{st.busy && <Spinner color={color} />}{st.label}{st.tone === "good" ? " · view" : ""}</a>
+    : <span style={{ color }}>{st.busy && <Spinner color={color} />}{st.label}</span>;
 }
 
 function Note({ children, kind = "quiet" }) {
@@ -910,6 +911,12 @@ export default function HolderPortal() {
             </button>
           ))}
         </div>
+
+        {/* What the signed-in holder just did, on its way to the chain. */}
+        {inHolder && open && (
+          <ChainWriting chainInfo={chainInfo} ink={T.ink} soft={T.inkSoft} wash={T.wash}
+            items={reg.filter((a) => a.id === open.id || a.parent === open.id)} />
+        )}
 
         {/* ============ holder access ============ */}
         {tab === "access" && !view && (

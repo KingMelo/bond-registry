@@ -100,6 +100,17 @@ await page.getByRole("button", { name: /^Accept: confirm with your passkey/ }).c
 let saved = null;
 for (let i = 0; i < 30 && !saved; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1); if (r.status === "Accepted") saved = r; }
 ok(saved?.effective === "holder", "the holder's confirmation, signed on the device, is saved");
+// The preloader: the page shows the write on its way, then that it landed, without a reload.
+{
+  const seen = { busy: false, done: false };
+  for (let i = 0; i < 60 && !seen.done; i++) {
+    if (await page.getByText(/to the blockchain…/).count()) { seen.busy = true; if (SHOTS) await page.screenshot({ path: SHOTS + "/3b-writing.png" }); }
+    if (await page.getByText("Recorded on-chain ✓").count()) seen.done = true;
+    else await page.waitForTimeout(250);
+  }
+  ok(seen.done, "the page says when the confirmation is recorded on-chain, without a reload" + (seen.busy ? " (after showing it being written)" : ""));
+  if (SHOTS) await page.screenshot({ path: SHOTS + "/3c-recorded.png" });
+}
 const signCount = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signCount >= 2, "the device signed the key registration and the confirmation (" + signCount + " signatures)");
 await page.getByText("Signed with your device key").waitFor({ timeout: 10000 }).catch(() => {});

@@ -538,14 +538,15 @@ function cleanRecord(raw) {
 
 if (APP === "holder") {
   app.get("/api/state", wrap(async (req, res) => {
-    const v = await version(pool);
-    if (req.query.since && Number(req.query.since) === v) return res.json({ version: v, unchanged: true });
+    // Unchanged only if neither the register nor the chain queue moved: a write landing on-chain shows too.
+    const [v, cs] = await Promise.all([version(pool), chain.chainStamp(pool)]);
+    if (req.query.since && Number(req.query.since) === v && Number(req.query.chain) === cs) return res.json({ version: v, chainStamp: cs, unchanged: true });
     const filter = "b.review = 'approved' and b.issuer_id in (select id from issuers where status = any($1))";
     const [state, issuers] = await Promise.all([
       readState(filter, [PUBLIC_STATUSES]),
       pool.query("select id, code, legal_name, status from issuers where status = any($1) order by code", [PUBLIC_STATUSES]),
     ]);
-    res.json({ version: v, ...state,
+    res.json({ version: v, chainStamp: cs, ...state,
       issuers: issuers.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status })) });
   }));
 
@@ -1157,10 +1158,11 @@ if (APP === "issuer") {
 
   app.get("/api/state", wrap(async (req, res) => {
     const m = await membership(req, req.query.issuer);
-    const v = await version(pool);
-    if (req.query.since && Number(req.query.since) === v) return res.json({ version: v, unchanged: true });
+    // Unchanged only if neither the register nor the chain queue moved: a write landing on-chain shows too.
+    const [v, cs] = await Promise.all([version(pool), chain.chainStamp(pool)]);
+    if (req.query.since && Number(req.query.since) === v && Number(req.query.chain) === cs) return res.json({ version: v, chainStamp: cs, unchanged: true });
     const state = await readState("b.issuer_id = $1", [m.id]);
-    res.json({ version: v, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role, trusted: m.trusted, safe: m.safe_address || null } });
+    res.json({ version: v, chainStamp: cs, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role, trusted: m.trusted, safe: m.safe_address || null } });
   }));
 
   app.post("/api/commit", wrap(async (req, res) => {
