@@ -279,7 +279,7 @@ export async function queueRecordChanges(c, { app, before, after, events, authFo
     const auth = authFor ? await authFor(op) : null;
     if (auth) op.args.push(auth);
     else if (op.fn === "accept") op.args.push(holderKeys.NOAUTH);
-    else Object.assign(op, { status: "failed", error: op.fn + " needs the holder's device signature, and none came with it." });
+    else Object.assign(op, { status: "failed", error: op.fn + " needs the assignee's device signature, and none came with it." });
     delete op.signer;
   }
   await queue(c, ops);
@@ -304,9 +304,9 @@ function replayOps(a) {
   if (a.status === "Accepted") ops.push(a.effective === "deemed"
     ? { bond: a.bond, ref: a.id, fn: "accept", args: [B, A, tagged("action", [a.id, "accept", "replay", ""]), holderKeys.NOAUTH], role: "relayer" }
     : { bond: a.bond, ref: a.id, fn: "unsupported", args: [], role: "relayer", status: "failed",
-        error: `${a.id} took effect with the holder's signature on the old contract; it can't be replayed without it.` });
+        error: `${a.id} took effect with the assignee's signature on the old contract; it can't be replayed without it.` });
   if (a.status === "Rejected") ops.push({ bond: a.bond, ref: a.id, fn: "unsupported", args: [], role: "relayer", status: "failed",
-    error: `${a.id} was rejected with the holder's signature on the old contract; it can't be replayed without it.` });
+    error: `${a.id} was rejected with the assignee's signature on the old contract; it can't be replayed without it.` });
   return ops;
 }
 

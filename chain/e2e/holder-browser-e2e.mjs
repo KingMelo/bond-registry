@@ -78,7 +78,15 @@ const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
   protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
 const shot = async (name) => SHOTS && page.screenshot({ path: SHOTS + "/" + name + ".png", fullPage: true });
 
-await page.goto(H + "/holder");
+{
+  const r = await fetch(H + "/holder", { redirect: "manual" });
+  ok(r.status === 301 && r.headers.get("location") === "/assignee", "the old /holder address redirects to /assignee");
+}
+await page.goto(H + "/assignee");
+{
+  const left = (await page.locator("body").innerText()).split("\n").filter((l) => /\bholders?\b/i.test(l));
+  ok(await page.getByRole("button", { name: "Assignee access" }).count() === 1 && !left.length, "the portal says assignee, never holder" + (left.length ? ": " + left.join(" | ") : ""));
+}
 await page.getByLabel("Assignment ID").fill(A1);
 await page.getByRole("button", { name: "Continue" }).click();
 await page.getByLabel("Transfer code").fill(CODE);
@@ -189,7 +197,7 @@ const p2 = await other.newPage();
 const cdp2 = await other.newCDPSession(p2);
 await cdp2.send("WebAuthn.enable");
 await cdp2.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
-await p2.goto(H + "/holder");
+await p2.goto(H + "/assignee");
 await p2.getByLabel("Assignment ID").fill(A1);
 await p2.getByRole("button", { name: "Continue" }).click();
 await p2.getByRole("button", { name: "Sign in with your passkey" }).waitFor({ timeout: 10000 });
@@ -213,7 +221,7 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   const cdp3 = await ctx3.newCDPSession(p3);
   await cdp3.send("WebAuthn.enable");
   await cdp3.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
-  await p3.goto(H + "/holder");
+  await p3.goto(H + "/assignee");
   ok(!(await p3.getByRole("button", { name: "Request access" }).count()), "there's no Request access tab");
   await p3.getByLabel("Assignment ID").fill(child.id);
   await p3.getByRole("button", { name: "Continue" }).click();
@@ -258,7 +266,7 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
 {
   const t1 = Date.now();
   while (Date.now() - t1 < 60000) { const q = await call(P, "GET", "/api/platform/chain"); if (!(q.counts.queued || q.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
-  await page.goto(H + "/holder");
+  await page.goto(H + "/assignee");
   await page.getByRole("button", { name: "Verify" }).click();
   const box = page.getByLabel("Assignment or bond ID");
   await box.fill("PENS-0001-BD");

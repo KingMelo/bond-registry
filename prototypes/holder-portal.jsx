@@ -402,7 +402,7 @@ function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
             {r.status === "Redeemed" ? "This record was redeemed. " + usd(r.units) + " was paid out and retired."
               : r.status === "Superseded" ? "This record is closed. Its amount moved to another record."
               : r.status === "Cancelled" ? "This assign-out was cancelled. Its amount went back to the assignor."
-              : r.status === "Rejected" ? "The holder rejected this assignment. Its amount went back " + (r.origin === "AssignOut" ? "to the assignor's record." : "to the bond.")
+              : r.status === "Rejected" ? "The assignee rejected this assignment. Its amount went back " + (r.origin === "AssignOut" ? "to the assignor's record." : "to the bond.")
               : "This record holds " + usd(r.units) + (r.bond ? " of bond " + r.bond.id : "") + "."}
           </p>
           <Rows data={[
@@ -416,7 +416,7 @@ function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
             ["UCC-3 filing", !r.filingRef ? "Not recorded"
               : mine?.filingNumber ? mine.filingNumber + (filingRefOf(mine.id, mine.filingNumber, mine.filingDoc) === r.filingRef ? " · matches the chain ✓" : " · doesn't match the chain")
               : "Recorded on-chain"],
-            ["Certified mailing", r.deliveryRef ? "Recorded on-chain" + (r.mailedAt ? ", mailed " + utcDay(r.mailedAt) : "") + " (the tracking number is shown only to the holder)" : "Not recorded"],
+            ["Certified mailing", r.deliveryRef ? "Recorded on-chain" + (r.mailedAt ? ", mailed " + utcDay(r.mailedAt) : "") + " (the tracking number is shown only to the assignee)" : "Not recorded"],
             ["Delivery receipt", r.receiptRef ? "Recorded on-chain by the assignee, received " + utcDay(r.receivedAt)
               + (mine ? (mine.receiptRef === r.receiptRef ? " · matches the register ✓" : " · doesn't match the register") : "")
               + (mine?.receiptMatches === true ? " · its tracking number matches the recorded mailing ✓" : mine?.receiptMatches === false ? " · its tracking number differs from the recorded mailing" : "") : "Not recorded"],
@@ -568,7 +568,7 @@ export default function HolderPortal() {
     return b ? ((u / b.total) * 100).toFixed(6) + "%" : "—";
   };
   const [tab, setTab] = useState(() => {
-    // The front page links straight to a tab: /holder#verify.
+    // The front page links straight to a tab: /assignee#verify.
     const h = typeof window !== "undefined" ? window.location.hash.slice(1) : "";
     return h === "verify" ? "verify" : "access";
   });
@@ -874,7 +874,7 @@ export default function HolderPortal() {
 
 
   // "Request access" is held back until its use case is defined.
-  const tabs = [["access", "Holder access"], ["verify", "Verify"]];
+  const tabs = [["access", "Assignee access"], ["verify", "Verify"]];
   const inHolder = view && tab === "access";
 
   if (!ready) return <Loading error={error} />;
@@ -1354,7 +1354,7 @@ export default function HolderPortal() {
                   <Note kind="warn">
                     <strong style={{ fontWeight: 600 }}>Keep it private.</strong> Write it on the access code page, seal it in its
                     own envelope, and send it with your signed instrument to {childIssued.party} in one certified
-                    mailing, then record its delivery receipt below. {childIssued.party} signs in at Holder access with
+                    mailing, then record its delivery receipt below. {childIssued.party} signs in at Assignee access with
                     the assignment ID and this code, sets up their passkey, then accepts or rejects it. It works once:
                     their passkey replaces it. Until then you can show it again from your record.
                   </Note>

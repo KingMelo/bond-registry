@@ -9,10 +9,10 @@ const FN_SAY = {
   registerIssuer: "Register the issuer", anchorBond: "Anchor the bond", recordPriorInstrument: "Record a prior instrument",
   reversePriorInstrument: "Reverse a prior instrument", issueAssignment: "Issue an assignment", replaceAssignment: "Replace an assignment",
   setFilingRef: "Record the UCC-3 filing", setDeliveryRef: "Record the certified mailing", rejectCredentialRequest: "Reject an access request",
-  issueCredential: "Activate a new holder", issuerCancelAssignOut: "Cancel an assign-out", unlock: "Unlock a record",
+  issueCredential: "Activate a new assignee", issuerCancelAssignOut: "Cancel an assign-out", unlock: "Unlock a record",
   recordRotation: "Record a passkey reissue", redeem: "Record a redemption",
   suspendIssuer: "Suspend an issuer", reinstateIssuer: "Reinstate an issuer",
-  clearHolderKey: "Reset a holder's device key",
+  clearHolderKey: "Reset a assignee's device key",
   pause: "Freeze the registry contract (for a move to a new version)", unpause: "Unfreeze the registry contract",
 };
 export const sayFn = (fn) => FN_SAY[fn] || fn;

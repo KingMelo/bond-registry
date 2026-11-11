@@ -587,7 +587,7 @@ if (APP === "holder") {
    */
   async function holderSave(c, body, mode, req) {
     const { bonds = [], reg = [], events = [] } = body || {};
-    if (bonds.length) throw new Reject(403, "The holder portal cannot change bonds.");
+    if (bonds.length) throw new Reject(403, "The assignee portal cannot change bonds.");
     const session = readToken(body?.token);
     const clean = [], units = [];
     for (const raw of reg) {
@@ -602,7 +602,7 @@ if (APP === "holder") {
       if (before && TERMINAL.includes(before.status))
         throw new Reject(422, a.id + " is " + before.status + " and cannot be changed.");
       if (!relayerAllows(before, a))
-        throw new Reject(403, "The holder portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
+        throw new Reject(403, "The assignee portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
       // An assign-out is numbered under the issuer-made assignment it descends from, with one dash:
       // A00001-1, A00001-2, … however far down the chain (its parent is kept on the record).
       const root = String(a.parent || "").replace(/(-A\d+)-\d+$/, "$1");
@@ -665,7 +665,7 @@ if (APP === "holder") {
         }
         if (before && changed.some((k) => !may.includes(k))) throw new Reject(403, "You can't change " + changed.filter((k) => !may.includes(k)).join(", ") + " on " + a.id + ".");
         // The assignor can only cancel an assign-out; the parent of a new holder only closes when emptied.
-        if (role === "assignor" && before && a.status !== before.status && a.status !== "Cancelled") throw new Reject(403, "Only the new holder can do that.");
+        if (role === "assignor" && before && a.status !== before.status && a.status !== "Cancelled") throw new Reject(403, "Only the new assignee can do that.");
         if (role === "assignor" && before && a.status === "Cancelled" && activeKey(before))
           throw new Reject(409, a.party + " has already claimed " + a.id + "; only they can accept or reject it now.");
         if (role === "holder" && before?.origin === "AssignOut" && a.status === "Cancelled") throw new Reject(403, "The assignee can reject it, not cancel it.");
@@ -716,7 +716,7 @@ if (APP === "holder") {
     let next = 0;
     const authFor = async (op) => {
       if (op.signer === "$SESSION" && session) { op.signer = session.id; op.args = op.args.map((x) => (x === "$SIGNER_ID" ? chain.id32(session.id) : x)); }
-      if (!session || op.signer !== session.id) throw new Reject(403, "Only the holder of " + op.signer + " can sign this.");
+      if (!session || op.signer !== session.id) throw new Reject(403, "Only the assignee of " + op.signer + " can sign this.");
       const data = (await c.query("select data from assignments where id = $1", [op.signer])).rows[0]?.data;
       const key = activeKey(data);
       if (!key) throw new Reject(409, "Set up your device first: sign in again and confirm with your phone or computer.");
@@ -1280,7 +1280,7 @@ if (APP === "issuer") {
   app.post("/api/issuer/holder-key/clear", wrap(async (req, res) => {
     await recordAccess(req);
     const { id, reason } = req.body || {};
-    if (!String(reason || "").trim()) throw new Reject(400, "Say how you verified the holder, for the record.");
+    if (!String(reason || "").trim()) throw new Reject(400, "Say how you verified the assignee, for the record.");
     await tx(async (c) => {
       const row = (await c.query("select bond, data from assignments where id = $1 for update", [id])).rows[0];
       if (!row) throw new Reject(404, "No such record.");
@@ -1539,9 +1539,9 @@ if (APP === "platform") {
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", APP);
 // The holder site's front page: the public landing with the Holder and
-// Issuer sign-in buttons. The holder portal itself lives at /holder.
+// Issuer sign-in buttons. The assignee portal itself lives at /assignee (it was /holder; old links redirect).
 if (APP === "holder") {
-  const ISSUER_URL = process.env.ISSUER_URL || "https://registrar-production-1538.up.railway.app";
+  const ISSUER_URL = process.env.ISSUER_URL || "https://issuer.omni-stance.com";
   const esc = (v) => String(v).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
   let home = null;
   const sendHome = async (req, res, next) => {
@@ -1555,6 +1555,8 @@ if (APP === "holder") {
   };
   app.get("/", sendHome);
   app.get("/home.html", sendHome);
+  // The portal was at /holder: old links and bookmarks land on /assignee (the browser keeps any #tab).
+  app.get(["/holder", "/holder/*"], (req, res) => res.redirect(301, "/assignee" + req.originalUrl.slice("/holder".length)));
 }
 app.use(express.static(dir, { index: false }));
 app.get("*", (req, res) => res.sendFile(path.join(dir, "index.html")));

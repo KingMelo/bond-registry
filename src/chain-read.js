@@ -82,15 +82,15 @@ const CHANGE_SAY = Object.fromEntries([["details", "Name, contact or address cor
 const SAY = {
   RegisterChanged: "Register entry changed", ReceiptRecorded: "Delivery receipt recorded by the assignee",
   AssignmentIssued: "Issued by the issuer", Accepted: "Took effect", AssignedOut: "Assigned out",
-  AssignOutCancelled: "Assign-out cancelled", CredentialRequested: "New holder requested access",
-  CredentialRequestRejected: "Access request rejected", CredentialIssued: "New holder activated by the issuer",
-  Locked: "Locked by the holder", Unlocked: "Unlocked by the issuer", PasskeyRotated: "Passkey reissued",
+  AssignOutCancelled: "Assign-out cancelled", CredentialRequested: "New assignee requested access",
+  CredentialRequestRejected: "Access request rejected", CredentialIssued: "New assignee activated by the issuer",
+  Locked: "Locked by the assignee", Unlocked: "Unlocked by the issuer", PasskeyRotated: "Passkey reissued",
   RedemptionRequested: "Redemption requested", Redeemed: "Redeemed and retired", RedemptionRejected: "Redemption declined",
   AssignmentReplaced: "Replaced by a new record", Superseded: "Closed (superseded)", FilingRecorded: "UCC-3 filing recorded",
   DeliveryRecorded: "Certified mailing recorded", BondAnchored: "Bond anchored",
   PriorInstrumentRecorded: "Prior instrument recorded", PriorInstrumentReversed: "Prior instrument reversed",
-  AssignmentRejected: "Rejected by the holder",
-  HolderKeyRegistered: "Holder's device key registered", HolderKeyCleared: "Holder's device key reset by the issuer",
+  AssignmentRejected: "Rejected by the assignee",
+  HolderKeyRegistered: "Assignee's device key registered", HolderKeyCleared: "Assignee's device key reset by the issuer",
 };
 
 /**

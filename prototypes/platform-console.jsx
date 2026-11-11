@@ -89,7 +89,7 @@ function PlatformAuth({ needsSetup, onDone }) {
       {mode === "signin" && (
         <div>
           <Heading>Sign in</Heading>
-          <Lede>For platform staff. Issuers use the issuer console; holders use the public registry.</Lede>
+          <Lede>For platform staff. Issuers use the issuer console; assignees use the public registry.</Lede>
           <Field label="Email" value={f.email} onChange={set("email")} placeholder="you@example.com" autoComplete="email" />
           <Field label="Password" value={f.password} onChange={set("password")} type="password" autoComplete="current-password" />
           <ErrorText>{err}</ErrorText>
@@ -170,10 +170,10 @@ function BondFigures({ b }) {
     <Rows data={[
       ["Total", usd(b.total)],
       ["Prior instruments", b.priorCount ? usd(b.priorUnits) + " · " + b.priorCount + (b.priorCount === 1 ? " note" : " notes") : "None"],
-      ["Assigned to holders", usd(b.assigned)],
+      ["Assigned to assignees", usd(b.assigned)],
       ["Redeemed and retired", usd(b.redeemed)],
       ["Unassigned", usd(b.unassigned)],
-      ["Holder records", b.allRecords ? b.liveRecords + " live of " + b.allRecords : "None"],
+      ["Assignee records", b.allRecords ? b.liveRecords + " live of " + b.allRecords : "None"],
       ["Registered", b.registered || "—"],
       b.reviewer && ["Reviewed", day(b.reviewedAt) + " by " + b.reviewer],
       b.review === "rejected" && b.reviewNote && ["Reason given", b.reviewNote],
@@ -227,9 +227,9 @@ function BondReviewCard({ b, onDone }) {
 const FN_LABEL = {
   registerIssuer: "Register issuer", anchorBond: "Anchor bond", recordPriorInstrument: "Record prior instrument",
   reversePriorInstrument: "Reverse prior instrument", issueAssignment: "Issue assignment", assignOut: "Assign out",
-  replaceAssignment: "Replace assignment", setFilingRef: "Record UCC-3 filing", setDeliveryRef: "Record mailing", logChange: "Log a register change", recordFiling: "Holder UCC-3",
-  accept: "Took effect", rejectAssignment: "Rejected by holder", registerHolderKey: "Holder device key", pause: "Freeze contract", importIssuer: "Copy issuer", importBond: "Copy bond",
-  importPrior: "Copy prior instrument", importRecord: "Copy record", finishImport: "Finish the copy", rotateHolderKey: "Holder device key changed", clearHolderKey: "Holder device key reset", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
+  replaceAssignment: "Replace assignment", setFilingRef: "Record UCC-3 filing", setDeliveryRef: "Record mailing", logChange: "Log a register change", recordFiling: "Assignee UCC-3",
+  accept: "Took effect", rejectAssignment: "Rejected by assignee", registerHolderKey: "Assignee device key", pause: "Freeze contract", importIssuer: "Copy issuer", importBond: "Copy bond",
+  importPrior: "Copy prior instrument", importRecord: "Copy record", finishImport: "Finish the copy", rotateHolderKey: "Assignee device key changed", clearHolderKey: "Assignee device key reset", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
   issueCredential: "Issue credential", cancelAssignOut: "Cancel assign-out", issuerCancelAssignOut: "Cancel assign-out (issuer)",
   lock: "Lock", unlock: "Unlock", recordRotation: "Record passkey rotation", redeem: "Redeemed",
   suspendIssuer: "Suspend issuer",
@@ -300,7 +300,7 @@ function ChainPanel({ me, flash }) {
           <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 6 }}>Move to a new contract version</div>
           <p style={{ fontSize: 14, color: T.inkSoft, lineHeight: 1.6, margin: "0 0 10px", maxWidth: "62ch" }}>
             Step one is freezing this contract, so the new version can copy everything it holds
-            (records, holders' device keys, prior instruments) exactly. Once frozen, nothing more is
+            (records, assignees' device keys, prior instruments) exactly. Once frozen, nothing more is
             written here; the registry waits until the new version is deployed and has copied it.
             {openWrites > 0 && " First, " + openWrites + " open write(s) must finish or be fixed."}
           </p>
@@ -492,8 +492,8 @@ export default function PlatformApp() {
         <div>
           <Heading>Bond directory</Heading>
           <Lede>
-            Every bond on the platform, with its units accounted for. Holder names and contact details stay
-            between issuers and their holders and are not shown here.
+            Every bond on the platform, with its units accounted for. Assignee names and contact details stay
+            between issuers and their assignees and are not shown here.
           </Lede>
           <div className="flex flex-wrap gap-3 mb-4">
             <div style={{ flex: "1 1 200px" }}>
@@ -515,7 +515,7 @@ export default function PlatformApp() {
           </div>
           <div style={{ fontSize: 13, color: T.inkSoft, marginBottom: 12, fontVariantNumeric: "tabular-nums" }}>
             {shown.length} {shown.length === 1 ? "bond" : "bonds"} · {usd(shown.reduce((t, b) => t + b.total, 0))} total ·{" "}
-            {usd(shown.reduce((t, b) => t + b.assigned, 0))} assigned to holders
+            {usd(shown.reduce((t, b) => t + b.assigned, 0))} assigned to assignees
           </div>
           {shown.length === 0 && <Note>No bonds match these filters.</Note>}
           {shown.map((b) => {

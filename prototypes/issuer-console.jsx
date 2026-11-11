@@ -307,14 +307,14 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const queueItems = (a) => {
     const out = [];
-    if (a.credLocked) out.push(["Credential lockout", "Holder failed 5 passkey attempts. Verify identity before clearing."]);
+    if (a.credLocked) out.push(["Credential lockout", "Assignee failed 5 passkey attempts. Verify identity before clearing."]);
     if (a.status === "CredentialRequested") out.push(a.filingRef
       ? ["Credential request", "Verify the requester is the named assignee, then mail the passkey."]
       : ["Credential request · UCC-3 pending", "Waiting on the assignor's UCC-3. Verify the requester meanwhile; after 30 days you may file it yourself."]);
-    if (a.status === "Locked" && a.rotationRequested) out.push(["Passkey rotation", "Holder locked the record and asked for a new passkey."]);
+    if (a.status === "Locked" && a.rotationRequested) out.push(["Passkey rotation", "Assignee locked the record and asked for a new passkey."]);
     if (a.status === "Locked" && a.unlockRequested) out.push(a.lockKind === "pledge"
       ? ["Unlock request · pledge", "Needs the pledgee's signed release before you unlock."]
-      : ["Unlock request", "Verify the holder's identity before you unlock."]);
+      : ["Unlock request", "Verify the assignee's identity before you unlock."]);
     if (mailingMissing(a)) out.push(["Mailing not recorded", "Record the certified mailing's tracking number."]);
     return out;
   };
@@ -427,7 +427,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!keyNote.trim()) return;
     try { await api.clearDeviceKey(issuerId, a.id, keyNote.trim()); await reload(); } catch (e) { return flash(e.message); }
     setKeyNote("");
-    done("Device key reset. The holder sets up a new device at their next sign-in" + (issuerInfo?.safe ? "; approve the reset in Approvals." : "."));
+    done("Device key reset. The assignee sets up a new device at their next sign-in" + (issuerInfo?.safe ? "; approve the reset in Approvals." : "."));
   }
 
   async function unlockCredential(a) {
@@ -536,7 +536,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     const nu = parseUnits(nUnits), u = nu.units;
     if (nu.error) return setNErr(nu.error);
     if (u > bond.unassigned) return setNErr("Unassigned balance is " + usd(bond.unassigned) + ".");
-    if (!nParty.trim()) return setNErr("Enter the holder's legal name.");
+    if (!nParty.trim()) return setNErr("Enter the assignee's legal name.");
     if (!nContact.trim()) return setNErr("Name the person the instrument is addressed to.");
     if (!nAddress.trim()) return setNErr("Add a mailing address — both documents go by certified post.");
     if (!nDoc) return setNErr("Add the signed assignment instrument. Only its SHA-256 hash is kept.");
@@ -694,7 +694,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <h1 style={{ fontFamily: serif, fontSize: 25, color: T.ink, lineHeight: 1.25 }}>Awaiting your signature</h1>
             <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, margin: "8px 0 18px", maxWidth: "62ch" }}>
               Across every bond. {issuerInfo?.safe ? "Issuer actions go on-chain only once your Safe signs them" : "Issuer actions are signed by the platform for now"} — the relayer
-              can never activate a holder, unlock a record, or end an interest.
+              can never activate a assignee, unlock a record, or end an interest.
             </p>
             {chainInfo && <SignatureQueue load={loadSigning} submit={submitSig} T={T} sans={sans} serif={serif} onCount={setToSign} onDone={reload} />}
 
@@ -871,7 +871,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <Field label="Amount" value={nUnits} onChange={setNUnits} placeholder="30,000.00" mono
               hint={unitsHint(nUnits, bond.total)} />
 
-            <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Holder</div>
+            <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Assignee</div>
             <Field label="Legal name" value={nParty} onChange={setNParty} placeholder="Company F, LLC" />
             <Field label="Attention of" value={nContact} onChange={setNContact} placeholder="Full name" />
             <Field label="Position" value={nPosition} onChange={setNPosition} placeholder="Managing Member" />
@@ -997,7 +997,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <p style={{ color: T.inkSoft, fontSize: 13, lineHeight: 1.6, marginBottom: 10, maxWidth: "62ch" }}>
               Promissory notes and other instruments issued before this registry. Note who holds each one
               and its mailing receipt or tracking number. It takes its amount off the bond; there is no
-              passkey or approval. Holder names stay in this console and never reach the public registry.
+              passkey or approval. Assignee names stay in this console and never reach the public registry.
             </p>
             {bond.prior.length > 0 && (
               <div className="mb-3" style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
@@ -1034,7 +1034,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <div className="px-3 pt-3 pb-1 mb-6" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
               <Field label="Instrument identifier" value={pRef} onChange={(v) => { setPRef(v); setPErr(""); }}
                 placeholder="PN-2024-007" />
-              <Field label="Holder" value={pHolder} onChange={(v) => { setPHolder(v); setPErr(""); }}
+              <Field label="Assignee" value={pHolder} onChange={(v) => { setPHolder(v); setPErr(""); }}
                 placeholder="Company or person who holds it" />
               <Field label="Mailing receipt or tracking number (optional)" value={prMail} onChange={(v) => { setPrMail(v); setPErr(""); }}
                 placeholder="9407 1000 0000 0000 0000 00" mono />
@@ -1135,7 +1135,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
           <Rows data={[
             ["Bond", sheet.bond],
             ["Instrument", sheet.entry.ref],
-            ["Holder", sheet.entry.holder || "—"],
+            ["Assignee", sheet.entry.holder || "—"],
             ["Mailing", sheet.entry.mail || "—"],
             ["Amount", usd(sheet.entry.units)],
             ["Recorded", sheet.entry.recordedOn],
@@ -1186,7 +1186,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <div className="mb-4"><Chip s={a.status} /></div>
 
             <Rows data={[
-              ["Holder", a.party],
+              ["Assignee", a.party],
               ["Attention of", a.contact],
               ["Position", a.position || "—"],
               ["Assignor", a.assignor],
@@ -1196,7 +1196,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               pending.length > 0 && ["Pending transfers", pending.length + " · " + usd(pending.reduce((t, c) => t + c.units, 0))],
               ["Created", a.created],
               a.status === "Issued" && ["Takes effect", effectiveDate(a, responseDays)
-                ? effectiveDate(a, responseDays) + " unless the holder rejects it"
+                ? effectiveDate(a, responseDays) + " unless the assignee rejects it"
                 : responseDays + " days after the mailing is recorded, unless rejected"],
               a.status === "Rejected" && ["Rejected", (a.rejectedOn ? a.rejectedOn + ": " : "") + (a.rejectionReason || "")],
               a.status !== "Issued" && a.status !== "Rejected" && ["In effect since", a.effectiveOn || a.accepted || "—"],
@@ -1204,8 +1204,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               ["Document hash", (a.docFile ? a.docFile + " · " : "") + shortHash(a.docHash)],
               ["UCC-3 filing", a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "") : a.filingRef ? shortHash(a.filingRef) : "Not yet filed"],
               ["Delivery ref", a.deliveryRef ? shortHash(a.deliveryRef) : "—"],
-              ["Holder's device key", a.deviceKey?.fingerprint ? a.deviceKey.fingerprint + (a.deviceKey.since ? " · since " + a.deviceKey.since : "")
-                : a.deviceKey?.cleared ? "Reset " + a.deviceKey.cleared + " · waiting for the holder's new device" : "Not set up yet"],
+              ["Assignee's device key", a.deviceKey?.fingerprint ? a.deviceKey.fingerprint + (a.deviceKey.since ? " · since " + a.deviceKey.since : "")
+                : a.deviceKey?.cleared ? "Reset " + a.deviceKey.cleared + " · waiting for the assignee's new device" : "Not set up yet"],
               chainInfo && ["On-chain", <ChainLink s={chainStatus(a, chainInfo)} />],
               ...(a.instrumentMail && a.passkeyMail && a.instrumentMail !== a.passkeyMail
                 ? [["Instrument mail", a.instrumentMail], ["Passkey mail", a.passkeyMail]]
@@ -1217,8 +1217,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             {a.credLocked && (
               <div className="mt-4">
                 <Note kind="warn">
-                  Credential locked after 5 failed passkey attempts. Verify the holder's identity
-                  before clearing it — a lockout can be a holder who mistyped, or someone guessing.
+                  Credential locked after 5 failed passkey attempts. Verify the assignee's identity
+                  before clearing it — a lockout can be a assignee who mistyped, or someone guessing.
                   Clearing is recorded in the register only; the credential never touches the chain.
                 </Note>
                 <div className="mt-3">
@@ -1233,7 +1233,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               <div className="mt-5">
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Transfer code</div>
                 <Note>
-                  {a.party} claims this assign-out at Holder access with the assignment ID and this
+                  {a.party} claims this assign-out at Assignee access with the assignment ID and this
                   transfer code, then accepts or rejects it with their passkey. The code works once;
                   it's available here until they use it.
                 </Note>
@@ -1251,17 +1251,17 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             {a.deviceKey?.fingerprint && !TERMINAL.includes(a.status) && (
               <div className="mt-5">
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Holder lost their device?</div>
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Assignee lost their device?</div>
                 <Note kind="caution">
-                  Only after verifying the holder's identity. Resetting clears their device key on-chain;
+                  Only after verifying the assignee's identity. Resetting clears their device key on-chain;
                   they set up a new device at their next sign-in, usually with a new access code you mail
                   them. Nothing their old device signed can be used again.
                 </Note>
                 <div className="mt-3">
-                  <Field label="How you verified the holder" value={keyNote} onChange={setKeyNote}
+                  <Field label="How you verified the assignee" value={keyNote} onChange={setKeyNote}
                     placeholder="e.g. photo ID and callback to the number on file" />
                   <Button variant="quiet" danger disabled={!keyNote.trim()} onClick={() => resetDeviceKey(a)}>
-                    Reset the holder's device key{signNote}
+                    Reset the assignee's device key{signNote}
                   </Button>
                 </div>
               </div>
@@ -1413,7 +1413,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Certified mailing</div>
                 <Note>
                   Not recorded yet. {a.assignor} mails the instrument and the transfer code to {a.party} and records the
-                  mail number and date at Holder access, signed with their passkey. The 30 days run from that date.
+                  mail number and date at Assignee access, signed with their passkey. The 30 days run from that date.
                   Nothing for you to do here.
                 </Note>
               </div>
@@ -1424,7 +1424,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>UCC-3 filing</div>
                 {isChild ? (
                   <Note>
-                    Not recorded yet. An assign-out's UCC-3 is its assignor's: {a.assignor} records it at Holder access,
+                    Not recorded yet. An assign-out's UCC-3 is its assignor's: {a.assignor} records it at Assignee access,
                     with the filing number and the filed copy, signed with their passkey. Nothing for you to do here.
                   </Note>
                 ) : (
@@ -1458,7 +1458,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                         hint="The court order, certificate or other paper behind the replacement. Hashed here; not uploaded." />
                       <FileHash label="Signed replacement instrument" value={rpInstr} onChange={setRpInstr}
                         hint="Its SHA-256 goes on-chain as the new record's document." />
-                      <Field label="Rightful holder's legal name" value={rpParty} onChange={setRpParty} placeholder="Estate of …" />
+                      <Field label="Rightful assignee's legal name" value={rpParty} onChange={setRpParty} placeholder="Estate of …" />
                       <Field label="Attention of" value={rpContact} onChange={setRpContact} placeholder="Full name" />
                       <Area label="Mailing address" value={rpAddress} onChange={setRpAddress}
                         placeholder={"Legal name\nAttn: name, position\nStreet\nCity, State ZIP"} />
