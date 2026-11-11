@@ -206,23 +206,23 @@ ok((await hrec(a1.id)).units === 1_000_000, "the rejected $10.40 is back on A000
 e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: child.id });
 ok(e?.status === 404, "once used, the transfer code is gone for the issuer too (" + e?.status + ")");
 
-// 5b. The holder records their own UCC-3 with the filed copy; nothing waits on the issuer.
+// 5b. The UCC-3 for an assignment the issuer made is the issuer's: the holder can't record it.
 {
   a1 = await hrec(a1.id);
+  e = await hsave(s1.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-2026-0417", filingDoc: H32() }] }).then(() => null, (x) => x);
+  ok(e?.status === 403, "the holder can't record the UCC-3 for the assignment they were given (" + e?.status + ")");
+  const r1 = await rec(a1.id);
+  e = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [], reg: [{ ...r1, filingNumber: "UCC3-2026-0417" }] });
+  ok(e?.status === 400, "the issuer's UCC-3 needs the filed copy attached (" + e?.status + ")");
   const doc = H32();
-  e = await hsave(s1.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-2026-0417" }] }).then(() => null, (x) => x);
-  ok(e?.status === 400, "a UCC-3 needs the filed copy attached (" + e?.status + ")");
-  await hsave(s1.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-2026-0417", filingDoc: doc, filingFile: "ucc3.pdf", filedOn: "Nov 10, 2026", filedBy: "Company A" }],
+  await icommit({ reg: [{ ...(await rec(a1.id)), filingNumber: "UCC3-2026-0417", filingDoc: doc, filingFile: "ucc3.pdf", filedOn: "Nov 10, 2026", filedBy: "Penson Trust" }],
     events: [ev(a1.bond, a1.id, "FilingRecorded", "UCC3-2026-0417")] });
   await settle();
   const want = (await import(ROOT + "/server/chain.js")).filingRef(a1.id, "UCC3-2026-0417", doc);
-  ok((await regC.assignments(id32(a1.id))).filingRef === want, "the holder's UCC-3 is on-chain (number and filed copy), signed by their passkey");
+  ok((await regC.assignments(id32(a1.id))).filingRef === want, "the issuer's UCC-3 is on-chain (number and filed copy)");
   const db = new pg.Client({ connectionString: DB }); await db.connect();
   const ops = (await db.query("select fn, role from chain_ops where ref = $1", [a1.id])).rows; await db.end();
-  ok(ops.some((r) => r.fn === "recordFiling" && r.role === "relayer") && !ops.some((r) => r.fn === "setFilingRef"), "and nothing went to the issuer to sign for it");
-  a1 = await hrec(a1.id);
-  e = await hsave(s1.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-OTHER", filingDoc: H32() }] }).then(() => null, (x) => x);
-  ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
+  ok(ops.some((r) => r.fn === "setFilingRef" && r.role === "issuer") && !ops.some((r) => r.fn === "recordFiling"), "written as the issuer's act, not the holder's");
 }
 
 // 6. Lock, issuer unlocks. Holders don't request redemption through the registry: refused.
@@ -328,6 +328,19 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
   gr = await hrec(g.id);
   await hsave(s3b.token, fresh, { reg: [{ ...gr, deliveryRef: null, mailedOn: undefined }] });
   ok((await hrec(g.id)).deliveryRef === onc.deliveryRef, "a page that hasn't caught up doesn't undo or repeat the mailing");
+
+  // The assignor records the UCC-3 for the assign-out they made, signed with their passkey; once.
+  gr = await hrec(g.id);
+  const gdoc = H32();
+  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, filingNumber: "UCC3-2026-0555" }] }).then(() => null, (x) => x);
+  ok(e?.status === 400, "an assign-out's UCC-3 needs the filed copy attached (" + e?.status + ")");
+  await hsave(s3b.token, fresh, { reg: [{ ...gr, filingNumber: "UCC3-2026-0555", filingDoc: gdoc, filingFile: "ucc3.pdf", filedOn: "Nov 11, 2026", filedBy: "Company A" }],
+    events: [ev(g.bond, g.id, "FilingRecorded", "UCC3-2026-0555")] });
+  await settle();
+  ok((await regC.assignments(id32(g.id))).filingRef === C.filingRef(g.id, "UCC3-2026-0555", gdoc), "the assignor's UCC-3 for their assign-out is on-chain, signed with their passkey");
+  gr = await hrec(g.id);
+  e = await hsave(s3b.token, fresh, { reg: [{ ...gr, filingNumber: "UCC3-OTHER", filingDoc: H32() }] }).then(() => null, (x) => x);
+  ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
 }
 
 // 8c. The assignee records their own delivery receipt (the issuer mailed A00003): once, with their passkey.
@@ -360,7 +373,7 @@ console.log("queue:", JSON.stringify(sum.counts), sum.failed.length ? JSON.strin
 ok(!sum.counts.failed && !sum.counts.queued && !sum.counts.sent, "every write confirmed (" + sum.counts.confirmed + ")");
 for (const a of (await st()).reg) ok((await onchain(a.id)) === a.status, `${a.id}: chain ${await onchain(a.id)} · register ${a.status}`);
 const nonce = (await regC.holderKeys(id32("PENS-0001-BD-A00001"))).nonce;
-ok(nonce === 5n, "A00001's key signed 5 times on-chain: register key, acknowledge, assign out, UCC-3, lock (" + nonce + ")");
+ok(nonce === 4n, "A00001's key signed 4 times on-chain: register key, acknowledge, assign out, lock (" + nonce + ")");
 
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");
 for (const c of procs) c.kill();

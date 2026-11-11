@@ -1159,9 +1159,7 @@ export default function HolderPortal() {
             {(open.receiptRef || !TERMINAL.includes(open.status)) && (
               <ReceiptRow rec={open} knownMail={myMail && myMail.id === open.id ? myMail.instrumentMail || myMail.passkeyMail : null} onSave={(f) => recordReceipt(open, f)} />
             )}
-            {!open.filingNumber && !open.filingRef && !TERMINAL.includes(open.status) && (
-              <UccForm onSave={(f) => recordUcc(open, f)} />
-            )}
+
 
             <div style={{ fontFamily: serif, fontSize: 18, color: T.ink, margin: "22px 0 10px" }}>
               Chain of authority

@@ -103,15 +103,14 @@ ok(saved?.effective === "holder", "the holder's confirmation, signed on the devi
 const signCount = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signCount >= 2, "the device signed the key registration and the confirmation (" + signCount + " signatures)");
 await page.getByText("Signed with your device key").waitFor({ timeout: 10000 }).catch(() => {});
-// The holder records their own UCC-3: the number and the filed copy, signed with the passkey.
-await page.getByLabel("Filing number").fill("UCC3-2026-0417");
-await page.locator("div.mt-3", { has: page.getByText("Record your UCC-3", { exact: true }) }).locator('input[type="file"]').setInputFiles({ name: "ucc3-ack.pdf", mimeType: "application/pdf", buffer: Buffer.from("filed ucc-3") });
-await page.getByRole("button", { name: /^Record UCC-3: confirm with your passkey/ }).click();
+// The UCC-3 for the assignment the issuer gave is the issuer's: no form for it on the holder's record.
+ok(!(await page.getByText("Record your UCC-3", { exact: true }).count()), "the holder isn't asked for the UCC-3 of the assignment they were given");
+const ucc3Doc = H32();
+await icommit({ reg: [{ ...(await st()).reg.find((a) => a.id === A1), filingNumber: "UCC3-2026-0417", filingDoc: ucc3Doc, filingFile: "ucc3-ack.pdf", filedOn: "Nov 11, 2026", filedBy: "Penson Trust" }] });
 let filed = null;
-for (let i = 0; i < 30 && !filed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1); if (r.filingNumber) filed = r; }
-ok(filed?.filedBy === "Company A" && /^0x[0-9a-f]{64}$/.test(filed.filingRef || ""), "the holder's UCC-3 is saved, with its reference");
-await page.getByText("UCC3-2026-0417 · filed by Company A").first().waitFor({ timeout: 10000 }).catch(() => {});
-ok(await page.getByText("UCC3-2026-0417 · filed by Company A").count() > 0, "the holder sees the UCC-3 filing number");
+for (let i = 0; i < 30 && !filed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1); if (r.filingRef && /^0x/.test(r.filingRef)) filed = r; }
+await page.getByText("UCC3-2026-0417 · filed by Penson Trust").first().waitFor({ timeout: 15000 }).catch(() => {});
+ok(await page.getByText("UCC3-2026-0417 · filed by Penson Trust").count() > 0, "the holder sees the issuer's UCC-3 filing number");
 ok(await page.getByText(/9407 1000 0000 0000 0000 01/).count() > 0, "the signed-in holder sees their certified mail number");
 const publicState = await call(H, "GET", "/api/state");
 ok(!JSON.stringify(publicState).includes("9407 1000"), "the public record list never carries the mail number");
@@ -148,6 +147,14 @@ await page.getByRole("button", { name: "Confirm with your passkey", exact: true 
 let mailed = null;
 for (let i = 0; i < 30 && !mailed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.deliveryRef) mailed = r; }
 ok(!!mailed && !!mailed.mailedOn, "the assignor's certified mailing is recorded, with its date (" + mailed?.mailedOn + ")");
+// The assignor records the UCC-3 for the assign-out they made, from their list.
+await page.getByRole("button", { name: "Record the UCC-3 for this assignment" }).click();
+await page.getByLabel("Filing number").fill("UCC3-2026-0555");
+await page.locator("div.mt-3", { has: page.getByText(/^Record your UCC-3 for/) }).locator('input[type="file"]').setInputFiles({ name: "ucc3-child.pdf", mimeType: "application/pdf", buffer: Buffer.from("child ucc-3") });
+await page.getByRole("button", { name: /^Record UCC-3: confirm with your passkey/ }).click();
+let childUcc = null;
+for (let i = 0; i < 30 && !childUcc; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.filingRef && /^0x/.test(r.filingRef)) childUcc = r; }
+ok(childUcc?.filingNumber === "UCC3-2026-0555" && childUcc.filedBy === "Company A", "the assignor records the UCC-3 for their assign-out, with its reference");
 const signs2 = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signs2 > signCount, "the device signed the assign-out (" + signs2 + " signatures)");
 
@@ -156,8 +163,9 @@ const t0 = Date.now(); let s;
 while (Date.now() - t0 < 90000) { s = await call(P, "GET", "/api/platform/chain"); if (!(s.counts.queued || s.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
 const id32 = (x) => ethers.keccak256(ethers.toUtf8Bytes(x));
 const k = await regC.holderKeys(id32(A1));
-ok(k.x !== 0n && k.nonce === 5n, "the chain holds the device key and counted 5 signatures from it: key, accept, UCC-3, assign-out, mailing (" + k.nonce + ")");
-ok((await regC.assignments(id32(A1))).filingRef === filed.filingRef, "the chain holds the holder's UCC-3 reference");
+ok(k.x !== 0n && k.nonce === 5n, "the chain holds the device key and counted 5 signatures from it: key, accept, assign-out, mailing, the assign-out's UCC-3 (" + k.nonce + ")");
+ok(!!filed && (await regC.assignments(id32(A1))).filingRef === filed.filingRef, "the chain holds the issuer's UCC-3 reference");
+ok((await regC.assignments(id32(child.id))).filingRef === childUcc?.filingRef, "and the assignor's UCC-3 for the assign-out");
 ok(Number((await regC.assignments(id32(A1))).status) === 4, "the chain shows A00001 in effect, by the holder's own signature");
 ok(!s.counts.failed, "no write failed (" + JSON.stringify(s.counts) + ")");
 

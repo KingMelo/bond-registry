@@ -246,6 +246,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const [rpDoc, setRpDoc] = useState(null); // the supporting document (court order, certificate…)
   const [rpInstr, setRpInstr] = useState(null); // the signed replacement instrument
   const [nDoc, setNDoc] = useState(null); // the signed assignment instrument
+  const [nUcc, setNUcc] = useState(""); // the UCC-3 filing number, if filed already
+  const [nUccDoc, setNUccDoc] = useState(null); // the filed UCC-3 (acknowledgment copy)
+  const [uccDoc, setUccDoc] = useState(null); // the same, recorded later from the record
 
   const [nUnits, setNUnits] = useState("");
   const [nParty, setNParty] = useState("");
@@ -443,12 +446,13 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   }
 
 
+  // The UCC-3 for an assignment the issuer made: its number and the filed copy (only its hash is kept).
   function setFilingRef(a) {
-    if (!filing.trim()) return;
-    const filingRef = "pending"; // the server sets the real hash from the filing number
-    patch(a.id, { filingRef, filingNumber: filing.trim(), filedBy });
-    emit(a.bond, a.id, "FilingRecorded", "ISSUER", filingRef);
-    done("UCC-3 filing reference recorded.");
+    if (!filing.trim() || !uccDoc) return;
+    patch(a.id, { filingNumber: filing.trim(), filingDoc: uccDoc.hash, filingFile: uccDoc.name, filedOn: today(), filedBy: issuerName });
+    emit(a.bond, a.id, "FilingRecorded", "ISSUER", filing.trim());
+    setUccDoc(null);
+    done("UCC-3 " + filing.trim() + " recorded. Its hash goes on-chain with the filed copy's." + signDone);
   }
 
   function recordMailing(a) {
@@ -531,6 +535,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!nContact.trim()) return setNErr("Name the person the instrument is addressed to.");
     if (!nAddress.trim()) return setNErr("Add a mailing address — both documents go by certified post.");
     if (!nDoc) return setNErr("Add the signed assignment instrument. Only its SHA-256 hash is kept.");
+    if (nUcc.trim() && !nUccDoc) return setNErr("Add the filed UCC-3 too, or leave the UCC-3 blank and record it later.");
+    if (!nUcc.trim() && nUccDoc) return setNErr("Enter the UCC-3 filing number.");
+    if (nUccDoc && nUccDoc.hash === nDoc.hash) return setNErr("The instrument and the UCC-3 are the same file. Choose each document.");
     setNErr("");
     const seq = String(scoped.length + 1).padStart(5, "0");
     const rec = {
@@ -539,13 +546,15 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
       units: u, issuedUnits: u, status: "Issued", created: today(), accepted: null,
       docHash: nDoc.hash, docFile: nDoc.name,
       filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null,
+      ...(nUcc.trim() ? { filingNumber: nUcc.trim(), filingDoc: nUccDoc.hash, filingFile: nUccDoc.name, filedOn: today(), filedBy: issuerName } : {}),
     };
     let passkey;
     try { passkey = await newPasskey(rec.id); } catch (e) { return setNErr(e.message); }
     setReg((r) => [rec, ...r]);
     setBonds((bs) => bs.map((b) => (b.id === activeBond ? { ...b, unassigned: b.unassigned - u } : b)));
     emit(activeBond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
-    setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress(""); setNDoc(null);
+    if (rec.filingNumber) emit(activeBond, rec.id, "FilingRecorded", "ISSUER", rec.filingNumber);
+    setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress(""); setNDoc(null); setNUcc(""); setNUccDoc(null);
     setTab("records");
     flash(rec.id + " issued. Mail the instrument and passkey document together by certified post, then record the tracking number.");
     showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".");
@@ -863,6 +872,12 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
             <FileHash label="Signed assignment instrument" value={nDoc} onChange={(v) => { setNDoc(v); setNErr(""); }}
               hint="No paper, no record: the instrument is hashed in this browser and only its SHA-256 is kept and written on-chain." />
 
+            <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>UCC-3</div>
+            <Field label="UCC-3 filing number" value={nUcc} onChange={(v) => { setNUcc(v); setNErr(""); }} placeholder="e.g. 2026 4417 0091" mono
+              hint="If it's filed already. Otherwise leave it blank and record it on the assignment once it is." />
+            <FileHash label="Filed UCC-3 (acknowledgment copy)" value={nUccDoc} onChange={(v) => { setNUccDoc(v); setNErr(""); }}
+              hint="Hashed in this browser; only its SHA-256 is kept and written on-chain with the filing number." />
+
             {nErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 14 }}>{nErr}</p>}
 
             <Button disabled={!approved || !bondLive} onClick={issueAssignment}>Issue{signNote}</Button>
@@ -872,9 +887,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             <div className="mt-4">
               <Note kind="caution">
-                After issuing: mail the signed instrument and the sealed passkey document together
-                in one certified mailing and record its tracking number. Then file the UCC-3 and
-                record its reference.
+                After issuing: mail the signed instrument and the sealed transfer code together
+                in one certified mailing and record its tracking number. If the UCC-3 isn't filed yet,
+                record it on the assignment once it is.
               </Note>
             </div>
           </div>
@@ -1393,13 +1408,22 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               </div>
             )}
 
-            {!a.filingRef && !TERMINAL.includes(a.status) && (
+            {!a.filingRef && !a.filingNumber && !TERMINAL.includes(a.status) && (
               <div className="mt-5">
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>UCC-3 filing</div>
-                <Note>
-                  Not recorded yet. The UCC-3 is the holder's: {a.party} records it at Holder access, with the filing
-                  number and the filed copy, signed with their passkey. Nothing for you to do here.
-                </Note>
+                {isChild ? (
+                  <Note>
+                    Not recorded yet. An assign-out's UCC-3 is its assignor's: {a.assignor} records it at Holder access,
+                    with the filing number and the filed copy, signed with their passkey. Nothing for you to do here.
+                  </Note>
+                ) : (
+                  <>
+                    <Field label="UCC-3 filing number" value={filing} onChange={setFiling} placeholder="e.g. 2026 4417 0091" mono />
+                    <FileHash label="Filed UCC-3 (acknowledgment copy)" value={uccDoc} onChange={setUccDoc}
+                      hint="Hashed in this browser; only its SHA-256 is kept and written on-chain with the filing number." />
+                    <Button variant="quiet" disabled={!filing.trim() || !uccDoc} onClick={() => setFilingRef(a)}>Record UCC-3{signNote}</Button>
+                  </>
+                )}
               </div>
             )}
 

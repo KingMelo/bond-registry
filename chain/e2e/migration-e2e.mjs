@@ -164,12 +164,11 @@ const sAgain = await holderPasskeySignIn(call, H, A1, phone); // the passkey set
 ok(!!sAgain.token && !sAgain.enroll, "the holder signs in on v5 and isn't asked to set up the device again");
 const c1 = await hrec(C1); a1 = await hrec(A1);
 await holderSave(call, H, sAgain.token, phone, { reg: [{ ...c1, status: "Cancelled" }, { ...a1, units: a1.units + 1040 }], events: [ev(a1.bond, C1, "AssignOutCancelled")] });
-a1 = await hrec(A1);
-await holderSave(call, H, sAgain.token, phone, { reg: [{ ...a1, filingNumber: "UCC3-2026-0417", filingDoc: H32(), filingFile: "ucc3.pdf", filedOn: "Nov 10, 2026", filedBy: a1.party }],
-  events: [ev(a1.bond, A1, "FilingRecorded", "UCC3-2026-0417")] });
-ok(await approveAll(), "after the move: the holder cancelled and recorded their UCC-3 with the same device");
-ok(Number((await v5.assignments(id32(C1))).status) === 9 && (await v5.holderKeys(id32(A1))).nonce === 5n, "v5 recorded the holder's cancel and UCC-3 (counter now 5)");
-ok((await v5.assignments(id32(A1))).filingRef === (await rec(A1)).filingRef, "the holder's UCC-3 reference is on v5");
+await icommit({ reg: [{ ...(await rec(A1)), filingNumber: "UCC3-2026-0417", filingDoc: H32(), filingFile: "ucc3.pdf", filedOn: "Nov 10, 2026", filedBy: "King-Joseph: Penson II" }],
+  events: [ev("KJPII-0001-BD", A1, "FilingRecorded", "UCC3-2026-0417")] });
+ok(await approveAll(), "after the move: the holder cancelled with the same device, and the issuer's UCC-3 went through the Safe");
+ok(Number((await v5.assignments(id32(C1))).status) === 9 && (await v5.holderKeys(id32(A1))).nonce === 4n, "v5 recorded the holder's cancel (counter now 4)");
+ok((await v5.assignments(id32(A1))).filingRef === (await rec(A1)).filingRef, "the issuer's UCC-3 reference is on v5");
 const failed = (await db.query("select fn, ref, error from chain_ops where status = 'failed'")).rows;
 ok(!failed.length, "no write failed" + (failed.length ? ": " + JSON.stringify(failed) : ""));
 const st5 = await st();

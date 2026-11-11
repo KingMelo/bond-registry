@@ -269,7 +269,7 @@ const FILING_FIELDS = ["filingNumber", "filedBy", "filedOn", "filingDoc", "filin
 const MAILING_FIELDS = ["instrumentMail", "mailedOn", "deliveryRef"];
 const RECEIPT_FIELDS = ["receiptMail", "receivedOn", "receiptDoc", "receiptFile", "receiptRef", "receiptMatches"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
-  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...FILING_FIELDS, ...RECEIPT_FIELDS];
+  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...RECEIPT_FIELDS];
 const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -648,7 +648,10 @@ if (APP === "holder") {
           a.receiptMatches = mailMatches(before, a.receiptMail);
         }
         // The holder's UCC-3: once, with the filed copy attached (only its hash is kept).
+        // The UCC-3: the issuer records it for assignments it issues; a holder records it only for an
+        // assign-out they made, never for the assignment they were given.
         if (before && changed.some((k) => FILING_FIELDS.includes(k))) {
+          if (role !== "assignor") throw new Reject(403, "The UCC-3 for " + a.id + " is recorded by " + (before.origin === "AssignOut" ? "its assignor" : "the issuer") + ".");
           if (before.filingRef || before.filingNumber) throw new Reject(409, "A UCC-3 is already recorded for " + a.id + ".");
           if (!String(a.filingNumber || "").trim()) throw new Reject(400, "Enter the UCC-3 filing number.");
           if (!chain.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3. Only its SHA-256 is kept.");
@@ -1195,6 +1198,11 @@ if (APP === "issuer") {
         const before = (await c.query("select bond, data from assignments where id = $1", [a.id])).rows[0];
         if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
         needsDocument(before, a);
+        // A UCC-3 the issuer records comes with the filed copy (only its hash is kept).
+        if (a.filingNumber && a.filingNumber !== before?.data?.filingNumber) {
+          if (!chain.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3 for " + a.id + ". Only its SHA-256 is kept.");
+          a.filingNumber = String(a.filingNumber).trim();
+        }
         const n = chain.normalizeRecord(a);
         // The response period runs from when the mailing is recorded.
         n.deliveredAt = before?.data?.deliveredAt || (n.deliveryRef ? new Date().toISOString() : null);
