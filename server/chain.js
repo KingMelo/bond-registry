@@ -63,8 +63,8 @@ export const priorDoc = (bondDisplay, p) => ethers.keccak256(coder.encode(
 export const filingRef = (recordId, filingNumber, filingDoc) =>
   filingDoc ? tagged("filing", [recordId, filingNumber, filingDoc]) : tagged("filing", [recordId, filingNumber]);
 export const deliveryRef = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
-/** The assignee's delivery receipt: the date received and the receipt copy's SHA-256. */
-export const receiptRef = (recordId, receivedOn, receiptDoc) => tagged("receipt", [recordId, receivedOn, receiptDoc]);
+/** The assignee's delivery receipt: the tracking number on it, the date received and the receipt copy's SHA-256. */
+export const receiptRef = (recordId, receiptMail, receivedOn, receiptDoc) => tagged("receipt", [recordId, receiptMail, receivedOn, receiptDoc]);
 /** A YYYY-MM-DD date (or any date string) as unix seconds, never later than now. */
 export const dateSecs = (d) => String(Math.floor(Math.min(Date.parse(d) || Date.now(), Date.now()) / 1000));
 // Register changes the contract keeps no state for are logged with logChange: the kind of change,
@@ -87,7 +87,7 @@ export function normalizeRecord(a) {
   else if (out.filingRef && !isHash(out.filingRef)) out.filingRef = null;
   if (out.instrumentMail || out.passkeyMail) out.deliveryRef = deliveryRef(out.id, out.instrumentMail, out.passkeyMail);
   else if (out.deliveryRef && !isHash(out.deliveryRef)) out.deliveryRef = null;
-  if (out.receivedOn && out.receiptDoc) out.receiptRef = receiptRef(out.id, out.receivedOn, out.receiptDoc);
+  if (out.receiptMail && out.receivedOn && out.receiptDoc) out.receiptRef = receiptRef(out.id, out.receiptMail, out.receivedOn, out.receiptDoc);
   else if (out.receiptRef && !isHash(out.receiptRef)) out.receiptRef = null;
   delete out.tx; // transaction hashes come from chain_ops, never from a client
   return out;

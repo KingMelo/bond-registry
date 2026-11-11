@@ -333,20 +333,24 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
 // 8c. The assignee records their own delivery receipt (the issuer mailed A00003): once, with their passkey.
 {
   let a3 = await hrec("PENS-0001-BD-A00003");
-  e = await hsave(s3b.token, fresh, { reg: [{ ...a3, receivedOn: "2026-11-10" }] }).then(() => null, (x) => x);
+  e = await hsave(s3b.token, fresh, { reg: [{ ...a3, receiptMail: "9407 A00003", receivedOn: "2026-11-10" }] }).then(() => null, (x) => x);
   ok(e?.status === 400, "a receipt needs the receipt attached (" + e?.status + ")");
   const doc = H32();
-  await hsave(s3b.token, fresh, { reg: [{ ...a3, receivedOn: "2026-11-10", receiptDoc: doc, receiptFile: "green-card.pdf" }],
+  e = await hsave(s3b.token, fresh, { reg: [{ ...a3, receivedOn: "2026-11-10", receiptDoc: doc }] }).then(() => null, (x) => x);
+  ok(e?.status === 400, "and the tracking number on it (" + e?.status + ")");
+  await hsave(s3b.token, fresh, { reg: [{ ...a3, receiptMail: "9407-00003", receivedOn: "2026-11-10", receiptDoc: doc, receiptFile: "green-card.pdf" }],
     events: [ev(a3.bond, a3.id, "ReceiptRecorded", "received 2026-11-10")] });
   await settle();
   const C = await import(ROOT + "/server/chain.js");
   const rc = await regC.receipts(id32(a3.id));
-  ok(rc.ref === C.receiptRef(a3.id, "2026-11-10", doc) && rc.receivedAt === BigInt(Date.parse("2026-11-10") / 1000),
-    "the assignee's delivery receipt is on-chain, signed with their passkey");
+  ok(rc.ref === C.receiptRef(a3.id, "9407-00003", "2026-11-10", doc) && rc.receivedAt === BigInt(Date.parse("2026-11-10") / 1000),
+    "the assignee's delivery receipt is on-chain (tracking number, date, receipt), signed with their passkey");
+  const mine3 = await hrec(a3.id);
+  ok(mine3.receiptMatches === true && !("receiptMail" in mine3), "its tracking number matches the issuer's mailing, and stays out of the public register");
   a3 = await hrec(a3.id);
-  e = await hsave(s3b.token, fresh, { reg: [{ ...a3, receivedOn: "2026-11-11", receiptDoc: H32() }] }).then(() => null, (x) => x);
+  e = await hsave(s3b.token, fresh, { reg: [{ ...a3, receiptMail: "1", receivedOn: "2026-11-11", receiptDoc: H32() }] }).then(() => null, (x) => x);
   ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
-  e = await hsave(s1.token, phone, { reg: [{ ...a3, receivedOn: "2026-11-10", receiptDoc: H32() }] }).then(() => null, (x) => x);
+  e = await hsave(s1.token, phone, { reg: [{ ...a3, receiptMail: "1", receivedOn: "2026-11-10", receiptDoc: H32() }] }).then(() => null, (x) => x);
   ok(e && e.status >= 400, "nobody else can record it (" + e?.status + ")");
 }
 

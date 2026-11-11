@@ -140,10 +140,11 @@ await page.getByRole("button", { name: "Back to my record" }).click().catch(() =
 const again = page.getByRole("button", { name: /transfer code/ });
 if (await again.count()) { await again.first().click(); await page.waitForTimeout(800); }
 ok(await page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/).count() > 0, "the assignor can show the transfer code again from their record, until it's used");
-// The assignor records the certified mailing of the assign-out, from their list.
-await page.getByRole("button", { name: "Record the certified mailing" }).click();
+// The assignor records the certified mailing from their list: click Edit, fill it in, confirm.
+const mailRow = page.locator("div.mt-3", { has: page.getByText("Certified mailing", { exact: true }) }).first();
+await mailRow.getByRole("button", { name: "Edit" }).click();
 await page.getByLabel("Certified mail number").fill("9407 1000 0000 0000 0000 77");
-await page.getByRole("button", { name: /^Record mailing: confirm with your passkey/ }).click();
+await page.getByRole("button", { name: "Confirm with your passkey", exact: true }).click();
 let mailed = null;
 for (let i = 0; i < 30 && !mailed; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.deliveryRef) mailed = r; }
 ok(!!mailed && !!mailed.mailedOn, "the assignor's certified mailing is recorded, with its date (" + mailed?.mailedOn + ")");
@@ -201,12 +202,17 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   await p3.getByRole("button", { name: "Set up device key" }).click();
   await p3.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
   // The assignee records their delivery receipt from the review screen.
-  await p3.getByText("Record your delivery receipt", { exact: true }).waitFor({ timeout: 10000 });
+  const rcRow = p3.locator("div.mt-3", { has: p3.getByText("Delivery receipt", { exact: true }) }).first();
+  await rcRow.getByRole("button", { name: "Edit" }).click();
+  await p3.getByLabel("Certified mail number on the receipt").fill("9407-1000-0000-0000-0000-77");
   await p3.locator('input[type="file"]').first().setInputFiles({ name: "usps-delivered.pdf", mimeType: "application/pdf", buffer: Buffer.from("delivered") });
-  await p3.getByRole("button", { name: /^Record receipt: confirm with your passkey/ }).click();
+  await p3.getByRole("button", { name: "Confirm with your passkey", exact: true }).click();
   let got = null;
   for (let i = 0; i < 30 && !got; i++) { await p3.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === child.id); if (r?.receiptRef) got = r; }
-  ok(!!got, "the assignee's delivery receipt is recorded, signed with their passkey");
+  ok(!!got && got.receiptMatches === true, "the assignee's delivery receipt is recorded, and its tracking number matches the assignor's mailing");
+  await p3.getByText(/tracking number matches the mailing/).waitFor({ timeout: 10000 }).catch(() => {});
+  ok(await p3.getByText(/tracking number matches the mailing/).count() > 0, "the assignee sees the receipt recorded, matched to the mailing");
+  if (SHOTS) await p3.screenshot({ path: SHOTS + "/7a-receipt.png", fullPage: true });
   await p3.getByRole("button", { name: "Reject this assignment" }).click();
   const why = p3.getByLabel(/Reason for rejecting/);
   await why.fill("Not the amount we agreed.");

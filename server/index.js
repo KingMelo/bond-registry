@@ -48,7 +48,7 @@ const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain",
   // Kept by the server only: the holder's device key and when the mailing went out.
   "holder", "deliveredAt"];
 // Contact details and mail numbers stay out of the public holder portal.
-const HOLDER_HIDDEN = ["address", "instrumentMail", "passkeyMail", "requestedContact"];
+const HOLDER_HIDDEN = ["address", "instrumentMail", "passkeyMail", "receiptMail", "requestedContact"];
 // Issuer codes that would be confusing or are kept for the platform.
 const RESERVED_CODES = ["ADMIN", "TEST", "DEMO", "NULL", "ROOT", "SYSTEM"];
 // Issuers whose records the public registry shows. A suspended issuer's history stays verifiable.
@@ -267,7 +267,7 @@ const REJECTION_MIN = 255;
 const FILING_FIELDS = ["filingNumber", "filedBy", "filedOn", "filingDoc", "filingFile", "filingRef"];
 // An assign-out's certified mailing, recorded by its assignor; the assignee's delivery receipt, by the assignee.
 const MAILING_FIELDS = ["instrumentMail", "mailedOn", "deliveryRef"];
-const RECEIPT_FIELDS = ["receivedOn", "receiptDoc", "receiptFile", "receiptRef"];
+const RECEIPT_FIELDS = ["receiptMail", "receivedOn", "receiptDoc", "receiptFile", "receiptRef", "receiptMatches"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
   "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...FILING_FIELDS, ...RECEIPT_FIELDS];
 const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "address", "instrumentMail", "passkeyMail", "requestedContact"];
@@ -520,6 +520,13 @@ function needsDocument(before, a) {
     throw new Reject(400, "Attach the signed assignment instrument for " + a.id + ". Only its SHA-256 hash is kept.");
 }
 
+/** Whether the tracking number on a receipt is one the sender recorded (spacing and case aside); null before any mailing is. */
+function mailMatches(rec, receiptMail) {
+  const norm = (x) => String(x || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  const sent = [rec?.instrumentMail, rec?.passkeyMail].map(norm).filter(Boolean);
+  return sent.length ? sent.includes(norm(receiptMail)) : null;
+}
+
 function cleanRecord(raw) {
   const a = { ...raw };
   for (const k of SECRET_KEYS) delete a[k];
@@ -626,6 +633,7 @@ if (APP === "holder") {
           const t = Date.parse(a.mailedOn || "");
           if (!t || t > Date.now()) throw new Reject(400, "Enter the date it was mailed (not a future date).");
           a.instrumentMail = String(a.instrumentMail).trim();
+          if (before.receiptMail) a.receiptMatches = mailMatches({ instrumentMail: a.instrumentMail }, before.receiptMail);
           a.deliveredAt = new Date(t).toISOString(); // the response period runs from here
           changed.push("deliveryRef");
         }
@@ -635,6 +643,9 @@ if (APP === "holder") {
           const t = Date.parse(a.receivedOn || "");
           if (!t || t > Date.now()) throw new Reject(400, "Enter the date you received it (not a future date).");
           if (!chain.isHash(a.receiptDoc)) throw new Reject(400, "Attach the delivery receipt. Only its SHA-256 is kept.");
+          if (!String(a.receiptMail || "").trim()) throw new Reject(400, "Enter the certified mail number on the receipt.");
+          a.receiptMail = String(a.receiptMail).trim();
+          a.receiptMatches = mailMatches(before, a.receiptMail);
         }
         // The holder's UCC-3: once, with the filed copy attached (only its hash is kept).
         if (before && changed.some((k) => FILING_FIELDS.includes(k))) {
@@ -804,7 +815,7 @@ if (APP === "holder") {
     const session = needSession(req.body?.token);
     const d = (await pool.query("select data from assignments where id = $1", [session.id])).rows[0]?.data;
     if (!d) throw new Reject(404, "No such record.");
-    res.json({ id: d.id, instrumentMail: d.instrumentMail || null, passkeyMail: d.passkeyMail || null });
+    res.json({ id: d.id, instrumentMail: d.instrumentMail || null, passkeyMail: d.passkeyMail || null, receiptMail: d.receiptMail || null });
   }));
 
   // The assignor's view of their new assignee's transfer code, to deliver with the signed
@@ -1187,6 +1198,8 @@ if (APP === "issuer") {
         const n = chain.normalizeRecord(a);
         // The response period runs from when the mailing is recorded.
         n.deliveredAt = before?.data?.deliveredAt || (n.deliveryRef ? new Date().toISOString() : null);
+        // A receipt the assignee recorded first: check its tracking number against this mailing.
+        if (before?.data?.receiptMail && (n.instrumentMail || n.passkeyMail)) n.receiptMatches = mailMatches(n, before.data.receiptMail);
         clean.push(n);
       }
       for (const e of events) if (!review.has(e.bond)) throw new Reject(403, "That event belongs to another issuer.");

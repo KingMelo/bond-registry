@@ -69,7 +69,7 @@ const tagged = (kind, values) => keccak256(AbiCoder.defaultAbiCoder().encode(
 export const filingRefOf = (recordId, filingNumber, filingDoc) =>
   filingDoc ? tagged("filing", [recordId, filingNumber, filingDoc]) : tagged("filing", [recordId, filingNumber]);
 export const deliveryRefOf = (recordId, instrumentMail, passkeyMail) => tagged("delivery", [recordId, instrumentMail, passkeyMail]);
-export const receiptRefOf = (recordId, receivedOn, receiptDoc) => tagged("receipt", [recordId, receivedOn, receiptDoc]);
+export const receiptRefOf = (recordId, receiptMail, receivedOn, receiptDoc) => tagged("receipt", [recordId, receiptMail, receivedOn, receiptDoc]);
 
 export const nameFor = (hash, candidates) => candidates.find((c) => id32(c) === hash) || null;
 

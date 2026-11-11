@@ -175,46 +175,83 @@ function UccForm({ forWhom, onSave }) {
 const utcDay = (sec) => new Date(sec * 1000).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
 const isoToday = () => new Date().toISOString().slice(0, 10);
 
-/** The assignor records the certified mailing of an assign-out they made: mail number and date mailed. */
-function MailingForm({ forWhom, onSave }) {
-  const [num, setNum] = useState("");
-  const [on, setOn] = useState(isoToday());
-  const [err, setErr] = useState("");
+/**
+ * One line of the record you can fill in place: it shows what's recorded; Edit opens its fields right
+ * there; Confirm signs it with your passkey. Once recorded it's on-chain and can't be edited again.
+ */
+function EditRow({ label, value, canEdit, children, onConfirm, onCancel, editing, setEditing, err }) {
   return (
     <div className="mt-3 px-3 py-3" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
-      <div style={{ fontFamily: serif, fontSize: 16, color: T.ink, marginBottom: 8 }}>Record the certified mailing to {forWhom}</div>
-      <Field label="Certified mail number" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="9407 1000 0000 0000 0000 00" mono
-        hint="The one mailing with the signed instrument and the sealed transfer code. Only a hash of the number goes on-chain." />
-      <Field label="Date mailed" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }}
-        hint={forWhom + " has 30 days from this date to accept or reject; after that it takes effect."} />
-      {err && <p style={{ color: T.red, fontSize: 14, margin: "0 0 10px" }}>{err}</p>}
-      <Button onClick={() => {
-        if (!num.trim()) return setErr("Enter the certified mail number.");
-        if (!on || on > isoToday()) return setErr("Enter the date it was mailed (not a future date).");
-        onSave({ instrumentMail: num.trim(), mailedOn: on });
-      }}>Record mailing: confirm with your passkey</Button>
+      <div className="flex justify-between items-baseline gap-3">
+        <span style={{ fontSize: 14, color: T.inkSoft }}>{label}</span>
+        <span className="flex items-baseline gap-3" style={{ fontSize: 14, color: T.ink, textAlign: "right" }}>
+          <span>{value}</span>
+          {canEdit && !editing && (
+            <button onClick={() => setEditing(true)} style={{ ...linkStyle, fontSize: 14, background: "none", border: "none", padding: 0, cursor: "pointer" }}>Edit</button>
+          )}
+        </span>
+      </div>
+      {editing && (
+        <div className="mt-3">
+          {children}
+          {err && <p style={{ color: T.red, fontSize: 14, margin: "0 0 10px" }}>{err}</p>}
+          <div className="flex gap-3">
+            <Button onClick={onConfirm}>Confirm with your passkey</Button>
+            <Button variant="quiet" onClick={() => { setEditing(false); onCancel?.(); }}>Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/** The assignee records their delivery receipt: the date received and the receipt (only its SHA-256 is kept). */
-function ReceiptForm({ onSave }) {
+/** The certified mailing of an assign-out, recorded by its assignor: mail number and date mailed. */
+function MailingRow({ rec, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [num, setNum] = useState("");
+  const [on, setOn] = useState(isoToday());
+  const [err, setErr] = useState("");
+  const value = rec.deliveryRef ? "Mailed " + (rec.mailedOn || "") + " · recorded on-chain" : "Not recorded";
+  return (
+    <EditRow label="Certified mailing" value={value} canEdit={!rec.deliveryRef && rec.status === "Issued"}
+      editing={editing} setEditing={(v) => { setEditing(v); setErr(""); }} err={err}
+      onConfirm={() => {
+        if (!num.trim()) return setErr("Enter the certified mail number.");
+        if (!on || on > isoToday()) return setErr("Enter the date it was mailed (not a future date).");
+        onSave({ instrumentMail: num.trim(), mailedOn: on }); setEditing(false);
+      }}>
+      <Field label="Certified mail number" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="9407 1000 0000 0000 0000 00" mono
+        hint="The one mailing with the signed instrument and the sealed transfer code. Only a hash of the number goes on-chain." />
+      <Field label="Date mailed" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }}
+        hint={rec.party + " has 30 days from this date to accept or reject; after that it takes effect."} />
+    </EditRow>
+  );
+}
+
+/** The assignee's delivery receipt: the tracking number on it, the date received and the receipt (only its SHA-256 is kept). */
+function ReceiptRow({ rec, knownMail, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [num, setNum] = useState("");
   const [on, setOn] = useState(isoToday());
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState("");
+  const value = !rec.receiptRef ? "Not recorded"
+    : "Received " + (rec.receivedOn || "") + (rec.receiptMatches === true ? " · tracking number matches the mailing ✓"
+      : rec.receiptMatches === false ? " · tracking number differs from the recorded mailing" : "");
   return (
-    <div className="mt-3 px-3 py-3" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white }}>
-      <div style={{ fontFamily: serif, fontSize: 16, color: T.ink, marginBottom: 8 }}>Record your delivery receipt</div>
-      <Field label="Date received" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }} />
-      <DocDrop label="Delivery receipt (USPS confirmation or signed return receipt)" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
-        hint="Hashed on this device; only the hash is kept and written on-chain, with the date." />
-      {err && <p style={{ color: T.red, fontSize: 14, margin: "0 0 10px" }}>{err}</p>}
-      <Button onClick={() => {
+    <EditRow label="Delivery receipt" value={value} canEdit={!rec.receiptRef && !TERMINAL.includes(rec.status)}
+      editing={editing} setEditing={(v) => { setEditing(v); setErr(""); if (v && !num && knownMail) setNum(knownMail); }} err={err}
+      onConfirm={() => {
+        if (!num.trim()) return setErr("Enter the certified mail number on the receipt.");
         if (!on || on > isoToday()) return setErr("Enter the date you received it (not a future date).");
         if (!doc) return setErr("Attach the delivery receipt.");
-        onSave({ receivedOn: on, receiptDoc: doc.hash, receiptFile: doc.name });
-      }}>Record receipt: confirm with your passkey</Button>
-    </div>
+        onSave({ receiptMail: num.trim(), receivedOn: on, receiptDoc: doc.hash, receiptFile: doc.name }); setEditing(false);
+      }}>
+      <Field label="Certified mail number on the receipt" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="9407 1000 0000 0000 0000 00" mono />
+      <Field label="Date received" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }} />
+      <DocDrop label="Delivery receipt (USPS confirmation or signed return receipt)" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
+        hint="Hashed on this device; only the hash is kept and written on-chain, with the tracking number and date." />
+    </EditRow>
   );
 }
 
@@ -284,7 +321,7 @@ function VerifyChain(props) {
 }
 
 function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
-  const { readRecord, readBond, history, nameFor, looksLikeRecord, when, filingRefOf, receiptRefOf } = lib;
+  const { readRecord, readBond, history, nameFor, looksLikeRecord, when, filingRefOf } = lib;
   const start = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") || "" : "";
   const [q, setQ] = useState(start);
   const [busy, setBusy] = useState(false);
@@ -376,7 +413,8 @@ function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
               : "Recorded on-chain"],
             ["Certified mailing", r.deliveryRef ? "Recorded on-chain" + (r.mailedAt ? ", mailed " + utcDay(r.mailedAt) : "") + " (the tracking number is shown only to the holder)" : "Not recorded"],
             ["Delivery receipt", r.receiptRef ? "Recorded on-chain by the assignee, received " + utcDay(r.receivedAt)
-              + (mine?.receiptDoc ? (receiptRefOf(mine.id, mine.receivedOn, mine.receiptDoc) === r.receiptRef ? " · matches the register ✓" : " · doesn't match the register") : "") : "Not recorded"],
+              + (mine ? (mine.receiptRef === r.receiptRef ? " · matches the register ✓" : " · doesn't match the register") : "")
+              + (mine?.receiptMatches === true ? " · its tracking number matches the recorded mailing ✓" : mine?.receiptMatches === false ? " · its tracking number differs from the recorded mailing" : "") : "Not recorded"],
             ["Last changed", when(r.updatedAt)],
             ["Document fingerprint", shortHash(r.docHash)],
           ]} />
@@ -767,7 +805,6 @@ export default function HolderPortal() {
   // The holder records a UCC-3: on their own record, or on an assign-out they made. Saved like any
   // other change, so their passkey signs it and it goes on-chain with the filed copy's hash.
   const [uccFor, setUccFor] = useState(null);
-  const [mailFor, setMailFor] = useState(null);
   function recordUcc(rec, f) {
     const by = open.party; // whoever is signed in filed it: the holder, for their record or an assign-out they made
     setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, ...f, filedBy: by } : a)));
@@ -987,9 +1024,7 @@ export default function HolderPortal() {
               ["Certified mailing", mailSay(open)],
               open.deliveryRef && ["Delivery ref", open.deliveryRef],
             ]} />
-            {open.deliveryRef && !open.receiptRef && (
-              <div className="mt-4"><ReceiptForm onSave={(f) => recordReceipt(open, f)} /></div>
-            )}
+            <ReceiptRow rec={open} knownMail={myMail && myMail.id === open.id ? myMail.instrumentMail || myMail.passkeyMail : null} onSave={(f) => recordReceipt(open, f)} />
 
             <div className="mt-5 space-y-3">
               <Button onClick={confirmNow}>Accept: confirm with your passkey</Button>
@@ -1117,13 +1152,12 @@ export default function HolderPortal() {
                 open.filingRef && ["UCC-3 filing ref", shortHash(open.filingRef)],
                 ["Certified mailing", mailSay(open)],
                 ["Delivery ref", open.deliveryRef ? shortHash(open.deliveryRef) : "—"],
-                ["Delivery receipt", open.receiptRef ? "Received " + (open.receivedOn || "") + " · " + shortHash(open.receiptRef) : "Not recorded"],
                 chainInfo && ["On-chain", <OnChain rec={open} info={chainInfo} />],
               ]} />
             </div>
 
-            {!open.receiptRef && open.deliveryRef && !TERMINAL.includes(open.status) && (
-              <ReceiptForm onSave={(f) => recordReceipt(open, f)} />
+            {(open.receiptRef || !TERMINAL.includes(open.status)) && (
+              <ReceiptRow rec={open} knownMail={myMail && myMail.id === open.id ? myMail.instrumentMail || myMail.passkeyMail : null} onSave={(f) => recordReceipt(open, f)} />
             )}
             {!open.filingNumber && !open.filingRef && !TERMINAL.includes(open.status) && (
               <UccForm onSave={(f) => recordUcc(open, f)} />
@@ -1191,12 +1225,9 @@ export default function HolderPortal() {
                     )}
                   </div>
                 )}
-                {c.status === "Issued" && !c.deliveryRef && (
-                  mailFor === c.id ? <MailingForm forWhom={c.party} onSave={(f) => { recordMailingOf(c, f); setMailFor(null); }} />
-                    : <div className="mt-3"><Button variant="quiet" onClick={() => setMailFor(c.id)}>Record the certified mailing</Button></div>
-                )}
-                {c.deliveryRef && (
-                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8 }}>Mailed{c.mailedOn ? " " + c.mailedOn : ""} · recorded{c.receiptRef ? " · " + c.party + " confirmed receipt" + (c.receivedOn ? " " + c.receivedOn : "") : ""}</div>
+                {(c.status === "Issued" || c.deliveryRef) && <MailingRow rec={c} onSave={(f) => recordMailingOf(c, f)} />}
+                {c.receiptRef && (
+                  <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 8 }}>{c.party} recorded receipt{c.receivedOn ? " " + c.receivedOn : ""}{c.receiptMatches === false ? " · tracking number differs from your mailing" : c.receiptMatches ? " · tracking number matches ✓" : ""}</div>
                 )}
                 {!c.filingNumber && !c.filingRef && !TERMINAL.includes(c.status) && (
                   uccFor === c.id ? <UccForm forWhom={c.party} onSave={(f) => { recordUcc(c, f); setUccFor(null); }} />
@@ -1315,11 +1346,12 @@ export default function HolderPortal() {
                   <Note kind="warn">
                     <strong style={{ fontWeight: 600 }}>Keep it private.</strong> Write it on the access code page, seal it in its
                     own envelope, and send it with your signed instrument to {childIssued.party} in one certified
-                    mailing, and keep the tracking number for the issuer. {childIssued.party} signs in at Holder access with
+                    mailing, then record its tracking number below. {childIssued.party} signs in at Holder access with
                     the assignment ID and this code, sets up their passkey, then accepts or rejects it. It works once:
-                    their own access code replaces it, and this one stops working. Until then you can show it again
-                    from your record.
+                    their passkey replaces it. Until then you can show it again from your record.
                   </Note>
+                  {(() => { const cur = reg.find((x) => x.id === childIssued.id) || childIssued;
+                    return <MailingRow rec={cur} onSave={(f) => recordMailingOf(cur, f)} />; })()}
                 </>
               )}
             </div>

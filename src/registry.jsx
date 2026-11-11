@@ -87,6 +87,9 @@ export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
 
   const synced = useRef({ version: 0, reg: new Map(), bonds: new Map(), events: new Set() });
   const latest = useRef({ reg, bonds, events });
+  // After a save, the server's copy carries what only it works out (on-chain references, matches):
+  // the next poll takes the whole state, once nothing local is waiting to be saved.
+  const refetch = useRef(false);
   latest.current = { reg, bonds, events };
   const busy = useRef(false);
   const notice = useRef(onNotice);
@@ -148,6 +151,7 @@ export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
       setBonds((cur) => settleAll(cur, sentBonds, revs.bonds, s.bonds));
       newEvents.forEach((e) => s.events.add(e.eid));
       s.version = version;
+      refetch.current = true;
     } catch (e) {
       await reload().catch(() => {});
       notice.current?.(e.status === 409
@@ -167,13 +171,14 @@ export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
     const t = setInterval(async () => {
       if (busy.current) return;
       try {
-        const s = await call("GET", stateUrl(synced.current.version));
+        const full = refetch.current;
+        const s = await call("GET", stateUrl(full ? null : synced.current.version));
         if (s.unchanged || busy.current) return;
         const { reg: r, bonds: b, events: ev } = latest.current;
         const pending = r.some((a) => synced.current.reg.get(a.id) !== a) ||
           b.some((x) => synced.current.bonds.get(x.id) !== x) ||
           ev.some((e) => !synced.current.events.has(e.eid));
-        if (!pending) adopt(s);
+        if (!pending) { adopt(s); if (full) refetch.current = false; }
       } catch { /* try again next tick */ }
     }, POLL_MS);
     return () => clearInterval(t);
