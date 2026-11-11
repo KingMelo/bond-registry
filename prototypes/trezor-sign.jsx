@@ -16,6 +16,8 @@ const FN_SAY = {
   pause: "Freeze the registry contract (for a move to a new version)", unpause: "Unfreeze the registry contract",
 };
 export const sayFn = (fn) => FN_SAY[fn] || fn;
+/** What one approval does: a single write, or each write a batch carries, in order. */
+const sayItem = (it) => (it.calls && it.calls.length > 1 ? it.calls.map((c) => sayFn(c.fn)).join(" + ") : sayFn(it.fn));
 
 let connect = null;
 async function trezor() {
@@ -82,8 +84,8 @@ export function SignatureQueue({ load, submit, T, sans, serif, onDone, onCount }
       const { signature } = await signOnTrezor(item);
       await submit(item.seq, signature);
       const next = items.find((x) => x.seq !== item.seq);
-      setMsg("Approved: " + sayFn(item.fn) + " (" + item.ref + "). It's being sent to the chain; it appears under Recently approved once it's in."
-        + (next ? " Next in line: " + sayFn(next.fn) + ", Safe nonce " + next.nonce + ". It's a separate approval." : ""));
+      setMsg("Approved: " + sayItem(item) + " (" + item.ref + "). It's being sent to the chain; it appears under Recently approved once it's in."
+        + (next ? " Next in line: " + sayItem(next) + ", Safe nonce " + next.nonce + ". It's a separate approval." : ""));
       await refresh(); onDone && onDone();
     } catch (e) { setErr(e.message); setMsg(""); } finally { setBusy(false); }
   }
@@ -99,12 +101,14 @@ export function SignatureQueue({ load, submit, T, sans, serif, onDone, onCount }
       {items.map((it, i) => (
         <div key={it.seq} className="flex justify-between items-center gap-3 py-2" style={{ borderTop: "1px solid " + T.rule, fontSize: 14 }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ color: T.ink }}>{sayFn(it.fn)}</div>
+            <div style={{ color: T.ink }}>{sayItem(it)}</div>
+            {it.calls?.length > 1 && <div style={{ fontSize: 12, color: T.inkSoft }}>One approval for {it.calls.length} writes, made together in one transaction.</div>}
             <div style={{ fontSize: 12, color: T.inkSoft, wordBreak: "break-all" }}>
               {i + 1} of {items.length} · {it.ref} · Safe nonce {it.nonce}{it.signedBy.length ? " · signed, being sent" : ""}
             </div>
             {i === 0 && <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2, wordBreak: "break-all" }}>
-              On your Trezor, check: verifying contract {short(it.safe)} (your Safe), to {short(it.typedData.message.to)} (the registry), nonce {it.nonce}.</div>}
+              On your Trezor, check: verifying contract {short(it.safe)} (your Safe), to {short(it.typedData.message.to)}
+              {it.typedData.message.operation === 1 ? " (Safe's MultiSend, which makes each write in turn), operation 1" : " (the registry)"}, nonce {it.nonce}.</div>}
           </div>
           {i === 0 ? (
             <button disabled={busy} onClick={() => approve(it)}

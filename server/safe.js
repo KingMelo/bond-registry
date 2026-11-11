@@ -26,10 +26,27 @@ const TYPES = {
   ],
 };
 
-/** A plain call from the Safe to `to`, with no gas refunds: the platform pays the gas itself. */
-export function buildSafeTx({ safe, chainId, to, data, nonce }) {
+/**
+ * Safe's MultiSendCallOnly (v1.4.1, the same address on every chain Safe supports): runs several
+ * calls from the Safe in one transaction, so its owners approve them once. Any failure reverts all.
+ */
+export const MULTISEND = ethers.getAddress(process.env.CHAIN_MULTISEND || "0x9641d764fc13c8B624c04430C7356C1C7C8102e2");
+const MULTISEND_IFACE = new ethers.Interface(["function multiSend(bytes transactions) payable"]);
+
+/** The data for one Safe transaction that makes each of `calls` ({ to, data }) in turn. */
+export function multiSendData(calls) {
+  const packed = ethers.concat(calls.map((c) => ethers.solidityPacked(
+    ["uint8", "address", "uint256", "uint256", "bytes"], [0, c.to, 0, ethers.dataLength(c.data), c.data])));
+  return MULTISEND_IFACE.encodeFunctionData("multiSend", [packed]);
+}
+
+/**
+ * A Safe transaction with no gas refunds (the platform pays the gas itself): a plain call to `to`,
+ * or, with operation 1, a delegate call to MultiSendCallOnly for a batch.
+ */
+export function buildSafeTx({ safe, chainId, to, data, nonce, operation = 0 }) {
   const message = {
-    to, value: "0", data, operation: 0, safeTxGas: "0", baseGas: "0", gasPrice: "0",
+    to, value: "0", data, operation, safeTxGas: "0", baseGas: "0", gasPrice: "0",
     gasToken: ethers.ZeroAddress, refundReceiver: ethers.ZeroAddress, nonce: String(nonce),
   };
   const domain = { chainId: Number(chainId), verifyingContract: safe };

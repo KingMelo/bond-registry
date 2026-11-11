@@ -29,6 +29,7 @@
 //   deliveryRef    keccak256(abi.encode("BondInterestRegistry/delivery/v1", record, instrument mail no., passkey mail no.))
 //   other docs     the document's SHA-256 when there is one; otherwise
 //                  keccak256(abi.encode("BondInterestRegistry/action/v1", record, function, event id, note))
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -118,6 +119,10 @@ export const SCHEMA = `
   alter table chain_ops add column if not exists safe text;
   alter table chain_ops add column if not exists safe_tx jsonb;
   alter table chain_ops add column if not exists signatures jsonb not null default '[]';
+  -- Writes queued by one save share a batch; a Safe approves a run of them as one transaction,
+  -- and the first write of the run lists the others it carries.
+  alter table chain_ops add column if not exists batch text;
+  alter table chain_ops add column if not exists batched jsonb;
   create index if not exists chain_ops_open on chain_ops (status, seq);
   create index if not exists chain_ops_ref on chain_ops (ref, seq);
 `;
@@ -139,9 +144,10 @@ const mailedOn = (a) => {
 export async function queueOps(c, ops) { if (enabled) await queue(c, ops); }
 
 async function queue(c, ops) {
+  const batch = ops.length > 1 ? crypto.randomUUID() : null;
   for (const o of ops) {
-    await c.query("insert into chain_ops (bond, ref, fn, args, role, status, error, contract) values ($1, $2, $3, $4, $5, $6, $7, $8)",
-      [o.bond ?? null, o.ref, o.fn, JSON.stringify(o.args), o.role, o.status || "queued", o.error || null, CONTRACT]);
+    await c.query("insert into chain_ops (bond, ref, fn, args, role, status, error, contract, batch) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+      [o.bond ?? null, o.ref, o.fn, JSON.stringify(o.args), o.role, o.status || "queued", o.error || null, CONTRACT, batch]);
   }
 }
 
@@ -456,12 +462,14 @@ async function issuerAccount(pool, issuerId, fallback) {
 export async function awaitingSignature(pool, safe) {
   if (!enabled || !safe) return [];
   const rows = (await pool.query(
-    "select seq, bond, ref, fn, safe_tx, signatures, created_at from chain_ops where contract = $1 and status = 'signing' and safe = $2 order by seq",
+    "select seq, bond, ref, fn, safe_tx, signatures, batched, created_at from chain_ops where contract = $1 and status = 'signing' and safe = $2 order by seq",
     [CONTRACT, ethers.getAddress(safe)])).rows;
   if (!rows.length) return [];
   const st = await safeLib.safeState(provider(), safe);
   return rows.map((r) => ({
     seq: Number(r.seq), bond: r.bond, ref: r.ref, fn: r.fn, createdAt: r.created_at,
+    // One approval for several writes: each call it carries, in order (the first is this one).
+    calls: r.batched?.length ? [{ fn: r.fn, ref: r.ref }, ...r.batched.map((b) => ({ fn: b.fn, ref: b.ref }))] : [{ fn: r.fn, ref: r.ref }],
     safe: r.safe_tx.safe, nonce: Number(r.safe_tx.message.nonce), owners: st.owners, threshold: st.threshold,
     signedBy: (r.signatures || []).map((x) => x.signer),
     typedData: safeLib.typedDataFor(r.safe_tx),
@@ -616,11 +624,32 @@ export function startWorker(pool, log = console) {
    * An op whose role is held by a Safe: prepare the Safe transaction and wait for owner signatures,
    * then submit it. The platform's key only pays the gas; the Safe checks the signatures.
    */
+  // Whether Safe's MultiSendCallOnly is on this chain (checked once): without it, one approval per write.
+  let multiSendOk = null;
+  const canBatch = async () => (multiSendOk ??= (await provider.getCode(safeLib.MULTISEND).catch(() => "0x")) !== "0x");
+
+  /** The writes right behind `op` in its lane, from the same save and for the same Safe: approved with it. */
+  async function batchFor(op, safe) {
+    if (!op.batch || !(await canBatch())) return [];
+    const next = (await pool.query(`select * from chain_ops where contract = $1 and status = 'queued' and seq > $2
+      and bond is not distinct from $3 order by seq limit 20`, [CONTRACT, op.seq, op.bond])).rows;
+    const out = [];
+    for (const n of next) {
+      if (n.batch !== op.batch || (await safeFor(pool, n)) !== safe) break; // the run ends at the first that isn't
+      if (await alreadyDone(reg, { ...n, args: await resolveArgs(n) }, wallet.address)) break; // let it confirm on its own
+      out.push(n);
+    }
+    return out;
+  }
+
   async function handleSafe(op, opx, safe) {
     const data = iface.encodeFunctionData(op.fn, opx.args);
+    const confirmBatch = (txHash, block) => Promise.all((op.batched || []).map((b) => pool.query(
+      "update chain_ops set status = 'confirmed', tx = $2, block = $3, safe = $4, note = $5, updated_at = now() where seq = $1 and status = 'queued'",
+      [b.seq, txHash, block, safe, "approved with #" + op.seq])));
     if (op.status === "sent" && op.tx) {
       const r = await provider.getTransactionReceipt(op.tx);
-      if (r && r.status === 1) return mark(op, { status: "confirmed", block: r.blockNumber });
+      if (r && r.status === 1) { await confirmBatch(op.tx, r.blockNumber); return mark(op, { status: "confirmed", block: r.blockNumber }); }
       if (!r && Date.now() - new Date(op.updated_at).getTime() < 10 * 60_000) return;
       // Reverted or dropped: fall through and decide from the chain.
     }
@@ -632,14 +661,23 @@ export function startWorker(pool, log = console) {
       const other = (await pool.query("select 1 from chain_ops where contract = $1 and status = 'signing' and safe = $2 and seq <> $3",
         [CONTRACT, safe, op.seq])).rows.length;
       if (other) return;
-      // Dry run as the Safe: a refusal is caught before anyone is asked to sign.
+      // Dry run as the Safe: a refusal is caught before anyone is asked to sign. (The rest of a batch
+      // depends on this one, so it's checked as a whole just before it's executed.)
       try { await provider.call({ from: safe, to: CONTRACT, data }); }
       catch (e) {
         const why = revertReason(e) || e.shortMessage || e.message;
         return mark(op, { status: "failed", error: "The contract would refuse " + op.fn + " from the Safe: " + why, safe });
       }
-      const stx = safeLib.buildSafeTx({ safe, chainId: (await provider.getNetwork()).chainId, to: CONTRACT, data, nonce: st.nonce });
-      return mark(op, { status: "signing", safe, safe_tx: JSON.stringify(stx), signatures: "[]", note: "waiting for " + st.threshold + " signature(s)" });
+      const chainId = (await provider.getNetwork()).chainId;
+      const more = await batchFor(op, safe);
+      const stx = more.length
+        ? safeLib.buildSafeTx({ safe, chainId, to: safeLib.MULTISEND, operation: 1, nonce: st.nonce,
+            data: safeLib.multiSendData([{ to: CONTRACT, data }, ...(await Promise.all(more.map(async (n) =>
+              ({ to: CONTRACT, data: iface.encodeFunctionData(n.fn, await resolveArgs(n)) }))))]) })
+        : safeLib.buildSafeTx({ safe, chainId, to: CONTRACT, data, nonce: st.nonce });
+      return mark(op, { status: "signing", safe, safe_tx: JSON.stringify(stx), signatures: "[]",
+        batched: more.length ? JSON.stringify(more.map((n) => ({ seq: Number(n.seq), fn: n.fn, ref: n.ref }))) : null,
+        note: "waiting for " + st.threshold + " signature(s)" + (more.length ? " · one approval for " + (more.length + 1) + " writes" : "") });
     }
 
     const valid = (op.signatures || []).filter((x) => st.owners.includes(x.signer));
@@ -659,7 +697,7 @@ export function startWorker(pool, log = console) {
     await mark(op, { status: "sent", tx: tx.hash, attempts: op.attempts + 1 });
     const r = await waitReceipt(tx.hash);
     if (!r) return;
-    if (r.status === 1) return mark(op, { status: "confirmed", block: r.blockNumber });
+    if (r.status === 1) { await confirmBatch(tx.hash, r.blockNumber); return mark(op, { status: "confirmed", block: r.blockNumber }); }
     await mark(op, { status: "failed", error: "The Safe transaction reverted on-chain" });
   }
 

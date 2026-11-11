@@ -40,6 +40,8 @@ const relayerAddr = new ethers.Wallet(KEYS.relayer).address;
 const regArt = JSON.parse(fs.readFileSync(ROOT + "/chain/artifacts/contracts/BondInterestRegistry.sol/BondInterestRegistry.json", "utf8"));
 const regC = await dep(regArt, relayerAddr, PLATFORM_SAFE, relayerAddr, relayerAddr, ethers.ZeroAddress);  // platform role on the Safe from the start
 const CONTRACT = await regC.getAddress();
+// Safe's MultiSendCallOnly, so one approval can carry several writes (on Amoy and Polygon, Safe's own deployment).
+const MULTISEND = await (await dep(JSON.parse(fs.readFileSync(ROOT + "/chain/artifacts/contracts/test/MultiSendCallOnly.sol/MultiSendCallOnly.json", "utf8")))).getAddress();
 console.log("registry", CONTRACT, "issuer Safe", ISSUER_SAFE, "platform Safe", PLATFORM_SAFE);
 
 execSync(`psql -h 127.0.0.1 -p 54329 -U postgres -q -c "drop database if exists sfe" -c "create database sfe"`);
@@ -48,7 +50,7 @@ process.on("exit", () => procs.forEach((c) => c.kill())); // stop the servers ev
 const start = (app, port, extra = {}) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
     ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CHAIN_CONTRACT: CONTRACT, CHAIN_EXPLORER: "http://explorer.test", CHAIN_RPC_URL: RPC,
-    CHAIN_PLATFORM_SAFE: PLATFORM_SAFE, CHAIN_ID: "31337", HOLDER_RP_ID: RP_ID, HOLDER_ORIGIN: ORIGIN, ...extra } });
+    CHAIN_PLATFORM_SAFE: PLATFORM_SAFE, CHAIN_MULTISEND: MULTISEND, CHAIN_ID: "31337", HOLDER_RP_ID: RP_ID, HOLDER_ORIGIN: ORIGIN, ...extra } });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; process.env.VERBOSE && process.stdout.write("[" + app + "] " + d); if (out.includes("listening")) res(c); });
   c.stderr.on("data", (d) => process.stdout.write("[" + app + " err] " + d));
@@ -91,7 +93,10 @@ const base = { origin: "Issuer", parent: null, assignor: "Penson Trust", party: 
 let b = await bondNow();
 const ACCESS_CODE = "7KQM-R4XW-9TPH-C2NV";
 await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: "PENS-0001-BD-A00001", passkey: ACCESS_CODE });
-await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 500000 }], reg: [{ ...base, id: "PENS-0001-BD-A00001", bond: "PENS-0001-BD", units: 500000, issuedUnits: 500000, docHash: H32() }],
+// Issued with its UCC-3 in the same save: one approval for both.
+const UCC3_DOC = H32();
+await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 500000 }], reg: [{ ...base, id: "PENS-0001-BD-A00001", bond: "PENS-0001-BD", units: 500000, issuedUnits: 500000, docHash: H32(),
+  filingNumber: "UCC3-2026-0417", filingDoc: UCC3_DOC, filingFile: "ucc3.pdf", filedOn: "Nov 11, 2026", filedBy: "Penson Trust" }],
   events: [ev("PENS-0001-BD", "PENS-0001-BD-A00001", "AssignmentIssued")] });
 await icommit({ reg: [{ ...(await rec("PENS-0001-BD-A00001")), instrumentMail: "RE 1", passkeyMail: "RE 2", deliveryRef: "pending", mailedOn: new Date().toISOString().slice(0, 10), mailingDoc: H32() }] });
 
@@ -129,7 +134,7 @@ const iss32 = ethers.keccak256(ethers.toUtf8Bytes("PENS"));
 ok(!!(await waitFor(async () => (await regC.issuers(iss32)).account === ISSUER_SAFE)), "the issuer is registered on-chain with its Safe as its account");
 
 // 2. Every issuer action now waits on the issuer's Safe; sign them one at a time until the queue empties.
-const signedFns = [];
+const signedFns = [], approvals = [];
 for (let n = 0; n < 12; n++) {
   const q = await waitFor(async () => {
     const x = await issuerQueue(); if (x.items.length) return x;
@@ -145,11 +150,23 @@ for (let n = 0; n < 12; n++) {
   }
   const sig = await new ethers.Wallet(KEYS.owner).signTypedData(td.domain, TD(td), td.message);
   await call(I, "POST", "/api/issuer/sign", { issuer: issuerId, seq: it.seq, signature: sig });
-  signedFns.push(it.fn);
+  signedFns.push(...it.calls.map((c) => c.fn)); approvals.push({ fns: it.calls.map((c) => c.fn), op: td.message.operation, to: td.message.to });
   await waitFor(async () => (await db.query("select status from chain_ops where seq = $1", [it.seq])).rows[0].status === "confirmed", 30000);
 }
 console.log("signed through the issuer's Safe:", signedFns.join(", "));
 ok(signedFns.includes("anchorBond") && signedFns.includes("issueAssignment") && signedFns.includes("setDeliveryRef"), "anchor, issue and the mailing each went through the Safe");
+console.log("approvals:", approvals.map((a) => a.fns.join("+")).join(" | "));
+const both = approvals.find((a) => a.fns.join() === "issueAssignment,setFilingRef");
+ok(!!both && both.op === 1 && both.to === MULTISEND, "issuing and its UCC-3 were one approval, made together through MultiSend");
+ok(approvals.some((a) => a.fns[0] === "anchorBond" && a.fns.includes("recordPriorInstrument")), "anchoring the bond and its prior instrument were one approval too");
+ok(approvals.find((a) => a.fns.includes("setDeliveryRef"))?.fns.length === 1, "the mailing, saved separately, is its own approval");
+{
+  const C = await import(ROOT + "/server/chain.js");
+  const a1c = await regC.assignments(ethers.keccak256(ethers.toUtf8Bytes("PENS-0001-BD-A00001")));
+  ok(Number(a1c.status) !== 0 && a1c.filingRef === C.filingRef("PENS-0001-BD-A00001", "UCC3-2026-0417", UCC3_DOC), "on-chain: the assignment and its UCC-3, from the one approval");
+  const st2 = (await db.query("select fn, status, tx from chain_ops where contract = $1 and fn in ('issueAssignment','setFilingRef') order by seq", [CONTRACT])).rows;
+  ok(st2.length === 2 && st2.every((r) => r.status === "confirmed") && st2[0].tx === st2[1].tx, "both writes confirmed, in the same transaction");
+}
 
 // 3. The holder accepts with their own device: no Safe signature, and the relayer only pays gas.
 const phone = newDevice();
@@ -168,7 +185,7 @@ ok(ops.filter((o) => ["registerIssuer"].includes(o.fn)).every((o) => o.safe === 
 const t = await regC.bondTotals(id32("PENS-0001-BD"));
 ok(Number(t[0]) === TOTAL && Number(t[1]) === 942887 && Number(t[3]) === TOTAL - 942887 - 500000, "bond totals on-chain match the register");
 const sNonce = await new ethers.Contract(ISSUER_SAFE, ["function nonce() view returns (uint256)"], provider).nonce();
-ok(Number(sNonce) === signedFns.length, "the issuer's Safe executed exactly the " + signedFns.length + " approved transactions");
+ok(Number(sNonce) === approvals.length, "the issuer's Safe executed exactly the " + approvals.length + " approved transactions, for " + signedFns.length + " writes");
 
 await db.end();
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");
