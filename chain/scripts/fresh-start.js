@@ -17,7 +17,7 @@ async function main() {
   console.log(`${network.name} · ${dep.address} · predecessor ${pred} · from ${me.address}`);
   if (pred !== ethers.ZeroAddress) {
     const p = new ethers.Contract(pred, ["function paused() view returns (bool)"], ethers.provider);
-    if (!(await p.paused())) throw new Error("The predecessor isn't paused.");
+    if (!(await p.paused())) console.log("  the predecessor isn't paused yet; nothing is copied from it, so freeze it whenever convenient");
   }
   if (await reg.migrating()) {
     const tx = await reg.finishImport();

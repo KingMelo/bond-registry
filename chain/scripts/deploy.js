@@ -4,6 +4,7 @@
 //   RELAYER_ADDRESS   the platform's signing key for holder actions
 //   GUARDIAN_ADDRESS  can pause in an emergency
 //   PREDECESSOR       the contract this one replaces (it copies that one's state); unset for none
+//   ALLOW_UNPAUSED=1    deploy before the predecessor is frozen (only for a successor that copies nothing)
 //   WRITE_DEPLOYMENT=1  record it in deployments/<network>.json (in the job's copy; commit it after)
 // Any that are unset fall back to the deployer, which is only sensible on a testnet.
 const fs = require("fs"), path = require("path");
@@ -24,8 +25,10 @@ async function main() {
   // A successor only makes sense once its predecessor is frozen: nothing can change on it after the copy.
   if (predecessor !== ethers.ZeroAddress) {
     const p = new ethers.Contract(predecessor, ["function paused() view returns (bool)"], ethers.provider);
-    if (!(await p.paused())) throw new Error("The predecessor " + predecessor + " isn't paused. Freeze it first.");
-    console.log("Predecessor is paused.");
+    if (await p.paused()) console.log("Predecessor is paused.");
+    // A successor that copies nothing (fresh-start.js) can go first; the old one is frozen after.
+    else if (process.env.ALLOW_UNPAUSED) console.log("Predecessor isn't paused; going ahead (ALLOW_UNPAUSED: nothing is copied from it).");
+    else throw new Error("The predecessor " + predecessor + " isn't paused. Freeze it first.");
   }
   const R = await ethers.getContractFactory("BondInterestRegistry");
   const reg = await R.deploy(roles.admin, roles.platform, roles.relayer, roles.guardian, predecessor);
