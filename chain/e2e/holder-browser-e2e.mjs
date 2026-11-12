@@ -97,6 +97,26 @@ await shot("2-device-setup");
 ok(true, "the mailed code opens the record and asks to set up the device");
 await page.getByRole("button", { name: "Set up device key" }).click();
 await page.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
+// The first-time tour: offered once the passkey is set up; this assignee takes it, step by step.
+{
+  await page.getByRole("button", { name: "Show me around" }).waitFor({ timeout: 10000 });
+  ok(await page.getByRole("button", { name: "Skip, I've done this before" }).count() === 1, "after the passkey, the tour is offered, with a way to skip it");
+  await page.getByRole("button", { name: "Show me around" }).click();
+  const titles = [];
+  for (let n = 0; n < 10; n++) {
+    const dlg = page.getByRole("dialog");
+    await dlg.waitFor({ timeout: 5000 }).catch(() => {});
+    if (!(await dlg.count())) break;
+    titles.push((await dlg.locator("div").nth(2).innerText().catch(() => "")).trim());
+    if (n === 3 && SHOTS) { await page.waitForTimeout(700); await page.screenshot({ path: SHOTS + "/3a-tour.png" }); }
+    const btn = dlg.getByRole("button", { name: /^(Next|Done)$/ });
+    if (!(await btn.count())) break;
+    await btn.click();
+    await page.waitForTimeout(150);
+  }
+  ok(titles.length === 7 && !(await page.getByRole("dialog").count()), "the tour walks through 7 tips and closes (" + titles.join(" / ") + ")");
+  ok(await page.evaluate(() => localStorage.getItem("assignee-tour-seen")) === "1", "the device remembers the tour was seen");
+}
 ok(!(await page.getByRole("heading", { name: "Your access code" }).count()), "no personal code: the passkey is the key");
 const creds = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials;
 ok(creds.length === 1 && creds[0].rpId === "localhost", "the device made one passkey for this site");
@@ -245,6 +265,9 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   ok(true, "the assignee opens the assign-out with the transfer code and is asked for a passkey");
   await p3.getByRole("button", { name: "Set up device key" }).click();
   await p3.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
+  // Not their first assignment: they skip the tour.
+  await p3.getByRole("button", { name: "Skip, I've done this before" }).click();
+  ok(!(await p3.getByRole("dialog").count()), "the tour can be skipped");
   // The assignee records their delivery receipt from the review screen.
   const rcRow = p3.locator("div.mt-3", { has: p3.getByText("Delivery receipt", { exact: true }) }).first();
   await rcRow.getByRole("button", { name: "Edit" }).click();

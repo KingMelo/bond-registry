@@ -261,6 +261,88 @@ function ReceiptRow({ rec, knownMail, onSave }) {
   );
 }
 
+// ---------------------------------------------------------------- the first-time tour
+// A short guided tour of the review screen for a new assignee, offered right after they set up their
+// passkey. Each tip spotlights one part of the screen ([data-tour="…"]); Esc or "Skip tour" ends it.
+const TOUR_SEEN = "assignee-tour-seen";
+const tourSeen = () => { try { return localStorage.getItem(TOUR_SEEN) === "1"; } catch { return false; } };
+const markTourSeen = () => { try { localStorage.setItem(TOUR_SEEN, "1"); } catch { /* fine without it */ } };
+
+function TourOffer({ onStart, onSkip }) {
+  const seen = tourSeen();
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Tour" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(20,24,30,0.55)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ background: T.white, borderRadius: 3, maxWidth: 380, width: "100%", padding: "20px 20px 16px", fontFamily: sans, boxShadow: "0 8px 30px rgba(0,0,0,0.25)" }}>
+        <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, marginBottom: 6 }}>Your passkey is set up</div>
+        <p style={{ fontSize: 14, color: T.inkSoft, lineHeight: 1.55, margin: "0 0 16px" }}>
+          {seen ? "You've taken the tour on this device before. Skip it, or take it again:"
+            : "First assignment here? A quick tour shows what to check, how to record your delivery receipt, and how to accept or reject. It takes about a minute."}
+        </p>
+        <div className="space-y-3">
+          {seen ? <Button onClick={onSkip}>Skip, I've done this before</Button> : <Button onClick={onStart}>Show me around</Button>}
+          {seen ? <Button variant="quiet" onClick={onStart}>Show me around</Button> : <Button variant="quiet" onClick={onSkip}>Skip, I've done this before</Button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Tour({ steps, onClose }) {
+  const [i, setI] = useState(0);
+  const [rect, setRect] = useState(null);
+  const [tipH, setTipH] = useState(200);
+  const tipRef = useRef(null);
+  useEffect(() => { if (tipRef.current) setTipH(tipRef.current.offsetHeight); });
+  const step = steps[i], last = i === steps.length - 1;
+  const next = () => (last ? onClose() : setI(i + 1));
+  useEffect(() => {
+    const el = step.target ? document.querySelector('[data-tour="' + step.target + '"]') : null;
+    if (!el) { setRect(null); return undefined; }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    const update = () => setRect(el.getBoundingClientRect());
+    update();
+    const t1 = setTimeout(update, 250), t2 = setTimeout(update, 600);
+    window.addEventListener("resize", update); window.addEventListener("scroll", update, true);
+    return () => { clearTimeout(t1); clearTimeout(t2); window.removeEventListener("resize", update); window.removeEventListener("scroll", update, true); };
+  }, [i]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); else if (e.key === "ArrowRight") next(); else if (e.key === "ArrowLeft" && i) setI(i - 1); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  const vw = typeof window !== "undefined" ? window.innerWidth : 400, vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const width = Math.min(340, vw - 32), pad = 6;
+  let tip;
+  if (rect) {
+    // Below the spotlight if it fits, else above it; never off screen.
+    const room = tipH + pad + 20;
+    const top = rect.bottom + room < vh ? rect.bottom + pad + 10 : rect.top - room > 0 ? rect.top - pad - 10 - tipH : vh - tipH - 16;
+    tip = { left: Math.max(16, Math.min(rect.left + rect.width / 2 - width / 2, vw - width - 16)), top: Math.max(16, Math.min(top, vh - tipH - 16)) };
+  } else tip = { left: (vw - width) / 2, top: Math.max(16, vh / 2 - tipH / 2) };
+  return (
+    <div role="dialog" aria-modal="true" aria-label={"Tour, step " + (i + 1) + " of " + steps.length} style={{ position: "fixed", inset: 0, zIndex: 1000 }}>
+      {rect ? (
+        <div style={{ position: "fixed", left: rect.left - pad, top: rect.top - pad, width: rect.width + pad * 2, height: rect.height + pad * 2,
+          borderRadius: 4, boxShadow: "0 0 0 9999px rgba(20,24,30,0.55)", outline: "2px solid " + T.paper, transition: "all 0.2s ease", pointerEvents: "none" }} />
+      ) : <div style={{ position: "fixed", inset: 0, background: "rgba(20,24,30,0.55)" }} />}
+      <div ref={tipRef} style={{ position: "fixed", width, ...tip, background: T.white, borderRadius: 3, padding: "14px 16px 12px", fontFamily: sans,
+        boxShadow: "0 8px 30px rgba(0,0,0,0.28)" }}>
+        <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 4 }}>{i + 1} of {steps.length}</div>
+        <div style={{ fontFamily: serif, fontSize: 18, color: T.ink, marginBottom: 6 }}>{step.title}</div>
+        <div style={{ fontSize: 14, color: T.ink, lineHeight: 1.55 }}>{step.body}</div>
+        <div className="flex items-center justify-between mt-3" style={{ gap: 10 }}>
+          <button onClick={onClose} style={{ ...linkStyle, background: "none", border: "none", padding: 0, fontSize: 13, color: T.inkSoft, cursor: "pointer" }}>Skip tour</button>
+          <div className="flex" style={{ gap: 8 }}>
+            {i > 0 && <button onClick={() => setI(i - 1)} style={{ fontFamily: sans, fontSize: 14, padding: "7px 12px", borderRadius: 2, border: "1px solid " + T.rule, background: T.white, color: T.ink, cursor: "pointer" }}>Back</button>}
+            <button onClick={next} style={{ fontFamily: sans, fontSize: 14, padding: "7px 14px", borderRadius: 2, border: "1px solid " + T.ink, background: T.ink, color: T.paper, cursor: "pointer" }}>{last ? "Done" : "Next"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DocDrop({ label, value, onChange, hint }) {
   const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -589,6 +671,25 @@ export default function HolderPortal() {
   // ?id=… (the QR code on the mailing packet) fills in the assignment ID and goes straight to its next step.
   const linkedId = typeof window !== "undefined" ? (new URLSearchParams(window.location.search).get("id") || "").trim().toUpperCase() : "";
   const [qId, setQId] = useState(linkedId);
+  // The first-time tour of the review screen: offered once the new assignee's passkey is set up.
+  const [tour, setTour] = useState(null); // null | "offer" | "on"
+  const tourSteps = (rec) => [
+    { target: "amount", title: "Your amount",
+      body: "This is what the register records for you, and its share of the bond. Check it against the signed instrument in your mailing." },
+    { target: "details", title: "The details on record",
+      body: "Who assigned it and to whom, the date, the UCC-3 and the certified mailing. The document hash is the signed instrument's fingerprint; the Verify tab checks your copy against it." },
+    { target: "deadline", title: "Your " + responseDays + " days",
+      body: (effectiveDate(rec, responseDays) ? "If you do nothing, it takes effect on " + effectiveDate(rec, responseDays) + ". " : "You have " + responseDays + " days from the date it was sent. ")
+        + "Accept or reject before then." },
+    { target: "receipt", title: "Record your delivery receipt",
+      body: "Choose Edit, enter the certified mail number, the date you received the mailing, and attach the receipt. Confirm with your passkey; it's recorded on-chain." },
+    { target: "accept", title: "Accept",
+      body: "If everything matches, accept. Your device asks you to confirm with your passkey, and the acceptance is written to the blockchain." },
+    { target: "reject", title: "Or reject",
+      body: "If it isn't right, reject it with a written reason of at least " + REJECTION_MIN + " characters. The amount goes back to " + (rec.origin === "AssignOut" ? "the assignor" : "the bond") + ". Rejecting is final." },
+    { target: null, title: "That's it",
+      body: "Sign in any time with your assignment ID and your passkey. Once it's in effect you can assign portions onward, record UCC-3s and print mailing packets from your record. Reopen this tour from the link at the bottom of the review screen." },
+  ];
   const [qKey, setQKey] = useState("");
   const [qErr, setQErr] = useState("");
 
@@ -750,6 +851,7 @@ export default function HolderPortal() {
       await reload().catch(() => {});
       flash("Passkey set up. The transfer code no longer works; from now on your passkey opens this assignment.");
       setView(open?.status === "Issued" ? "claim" : "position");
+      if (open?.status === "Issued") setTour("offer");
     } catch (e) { setDevErr(e.message); } finally { setDevBusy(false); }
   }
 
@@ -1021,14 +1123,14 @@ export default function HolderPortal() {
         {inHolder && view === "claim" && open && (
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Review this assignment</h1>
-            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
+            <p data-tour="deadline" style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
               {effectiveDate(open, responseDays)
                 ? "It takes effect on " + effectiveDate(open, responseDays) + " unless you reject it before then. "
                 : "It takes effect " + responseDays + " days after it's mailed, unless you reject it. "}
               You can confirm it now, or reject it with a reason. Either way it's recorded on-chain.
             </p>
 
-            <div className="mb-5 px-3 py-4" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white }}>
+            <div data-tour="amount" className="mb-5 px-3 py-4" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white }}>
               <Label>What the register records for this assignment</Label>
               <div style={{ fontFamily: serif, fontSize: 34, color: T.ink, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>
                 {usd(open.units)}
@@ -1041,7 +1143,7 @@ export default function HolderPortal() {
               </div>
             </div>
 
-            <Rows data={[
+            <div data-tour="details"><Rows data={[
               ["Issuer", issuerOf(open)],
               ["Assignment", open.id],
               ["Assignor", open.assignor],
@@ -1055,16 +1157,21 @@ export default function HolderPortal() {
               open.filingRef && ["UCC-3 filing ref", open.filingRef],
               ["Certified mailing", mailSay(open)],
               open.deliveryRef && ["Delivery ref", open.deliveryRef],
-            ]} />
-            <ReceiptRow rec={open} knownMail={myMail && myMail.id === open.id ? myMail.instrumentMail || myMail.passkeyMail : null} onSave={(f) => recordReceipt(open, f)} />
+            ]} /></div>
+            <div data-tour="receipt"><ReceiptRow rec={open} knownMail={myMail && myMail.id === open.id ? myMail.instrumentMail || myMail.passkeyMail : null} onSave={(f) => recordReceipt(open, f)} /></div>
 
             <div className="mt-5 space-y-3">
-              <Button onClick={confirmNow}>Accept: confirm with your passkey</Button>
-              <Button variant="quiet" danger onClick={() => { setRjErr(""); setView("mismatch"); }}>
+              <div data-tour="accept"><Button onClick={confirmNow}>Accept: confirm with your passkey</Button></div>
+              <div data-tour="reject"><Button variant="quiet" danger onClick={() => { setRjErr(""); setView("mismatch"); }}>
                 Reject this assignment
-              </Button>
+              </Button></div>
               <Button variant="quiet" onClick={() => { setView(null); setOpenId(null); }}>Back</Button>
             </div>
+            <div className="mt-4" style={{ textAlign: "center" }}>
+              <button onClick={() => setTour("on")} style={{ ...linkStyle, background: "none", border: "none", padding: 0, fontSize: 13, color: T.inkSoft, cursor: "pointer" }}>Take the tour</button>
+            </div>
+            {tour === "offer" && <TourOffer onStart={() => setTour("on")} onSkip={() => { markTourSeen(); setTour(null); }} />}
+            {tour === "on" && <Tour steps={tourSteps(open)} onClose={() => { markTourSeen(); setTour(null); }} />}
           </div>
         )}
 
