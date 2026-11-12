@@ -154,6 +154,7 @@ await codeBox.waitFor({ timeout: 20000 }).catch(() => {});
 ok(await codeBox.count() === 1, "the assignor's screen shows the new assignee's access code, once");
 await shot("6-assignee-code");
 const TRANSFER = (await codeBox.first().textContent()).trim();
+const QR_LINK = (await import(ROOT + "/src/print-packet.js")).assigneeLink(H, child.id);
 // The mailing packet: the instruction letter with the entries filled in, and the code on its own page.
 {
   const [pop] = await Promise.all([page.waitForEvent("popup"), page.getByRole("button", { name: "Print mailing packet" }).first().click()]);
@@ -162,6 +163,7 @@ const TRANSFER = (await codeBox.first().textContent()).trim();
   ok(txt.includes(child.id) && txt.includes("$10.40") && txt.includes("Company D, LLC") && txt.includes(TRANSFER)
     && /\/assignee/.test(txt) && /255 characters/.test(txt) && /30 days/.test(txt) && (await pop.locator("section.page").count()) === 2,
     "the mailing packet prints the letter with the entries and instructions, and the code on its own page");
+  ok(await pop.locator("header .qr svg").count() === 1 && /Scan to open/.test(txt), "the letter has a QR code under the date");
   if (SHOTS) await pop.screenshot({ path: SHOTS + "/6b-packet.png", fullPage: true });
   await pop.close();
 }
@@ -232,10 +234,11 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   const cdp3 = await ctx3.newCDPSession(p3);
   await cdp3.send("WebAuthn.enable");
   await cdp3.send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
-  await p3.goto(H + "/assignee");
+  // The assignee scans the packet's QR code: the portal opens with the assignment ID in and asks for the code.
+  await p3.goto(QR_LINK);
   ok(!(await p3.getByRole("button", { name: "Request access" }).count()), "there's no Request access tab");
-  await p3.getByLabel("Assignment ID").fill(child.id);
-  await p3.getByRole("button", { name: "Continue" }).click();
+  await p3.getByLabel("Transfer code").waitFor({ timeout: 15000 });
+  ok((await p3.getByLabel("Assignment ID").inputValue()) === child.id, "the QR link opens the portal with the assignment ID filled in, straight to the transfer code");
   await p3.getByLabel("Transfer code").fill(TRANSFER);
   await p3.getByRole("button", { name: "Continue" }).click();
   await p3.getByRole("heading", { name: "Set up this device" }).waitFor({ timeout: 15000 });

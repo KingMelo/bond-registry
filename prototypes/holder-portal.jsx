@@ -586,7 +586,9 @@ export default function HolderPortal() {
   const [toast, setToast] = useState("");
 
   // sign-in
-  const [qId, setQId] = useState("");
+  // ?id=… (the QR code on the mailing packet) fills in the assignment ID and goes straight to its next step.
+  const linkedId = typeof window !== "undefined" ? (new URLSearchParams(window.location.search).get("id") || "").trim().toUpperCase() : "";
+  const [qId, setQId] = useState(linkedId);
   const [qKey, setQKey] = useState("");
   const [qErr, setQErr] = useState("");
 
@@ -666,13 +668,24 @@ export default function HolderPortal() {
   // Holder access: the assignment ID first. The server says what opens it: the one-time transfer
   // code (until a passkey is set up), or the passkey itself.
   const [qStep, setQStep] = useState(null); // null | { mode: "code" } | { mode: "passkey", ... }
-  async function start() {
-    const id = qId.trim().toUpperCase();
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!ready || autoStarted.current || !linkedId || tab !== "access") return;
+    autoStarted.current = true;
+    start(linkedId);
+  }, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function start(given) {
+    const id = (typeof given === "string" ? given : qId).trim().toUpperCase();
     if (!id) return;
     setQErr("");
     let r;
     try { r = await api.holderStart(id); } catch (e) { return setQErr(e.message); }
-    if (r.mode === "code" || r.mode === "passkey") return setQStep(r);
+    if (r.mode === "code" || r.mode === "passkey") {
+      // Keep the ID in the address, so the page can be bookmarked or reopened straight to it.
+      try { const u = new URL(window.location.href); u.searchParams.set("id", id); window.history.replaceState(null, "", u); } catch { /* fine without it */ }
+      return setQStep(r);
+    }
     if (r.mode === "locked") return setQErr("This transfer code is locked after " + MAX_ATTEMPTS + " failed attempts. The issuer must verify your identity before it can be unlocked.");
     if (r.mode === "closed") return setQErr("This record is " + (LABEL[r.status] || r.status).toLowerCase() + " and can no longer be acted on.");
     setQErr(r.error || "That assignment can't be opened.");

@@ -5,6 +5,11 @@
 // Where assignees sign in: the assignee portal on the public registry site.
 export const ASSIGNEE_SITE = (import.meta.env?.VITE_ASSIGNEE_SITE || "https://registry.omni-stance.com").replace(/\/+$/, "");
 
+import QRCode from "qrcode";
+
+/** The link a packet's QR code opens: the assignee portal with the assignment ID filled in. */
+export const assigneeLink = (site, id) => site.replace(/\/+$/, "") + "/assignee?id=" + encodeURIComponent(id);
+
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
 const money = (cents) => "$" + (Number(cents || 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const longDate = (d = new Date()) => d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
@@ -18,7 +23,7 @@ const longDate = (d = new Date()) => d.toLocaleDateString("en-US", { month: "lon
  * site:  the assignee portal's base URL
  * days:  the response period
  */
-export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE, days = 30 }) {
+export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE, days = 30, qr = "" }) {
   const portal = site + "/assignee";
   const share = bond?.total ? ((Number(rec.units) / Number(bond.total)) * 100).toFixed(6) + "%" : "—";
   const rows = [
@@ -34,8 +39,7 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
     rec.filingNumber ? ["UCC-3 filing number", rec.filingNumber] : null,
   ].filter(Boolean);
   const steps = [
-    `Go to <b>${esc(portal)}</b> on a phone or computer.`,
-    `Enter your assignment ID, <b>${esc(rec.id)}</b>, and choose Continue.`,
+    `Scan the code at the top right with your phone's camera (your assignment ID fills in), or go to <b>${esc(portal)}</b> and enter <b>${esc(rec.id)}</b>, then choose Continue.`,
     `Open the sealed envelope marked <b>Transfer code</b> and enter the code it holds. It works once.`,
     `Set up your passkey when asked: your phone or computer (face, fingerprint or PIN), a password manager, or a security key such as a YubiKey or Trezor. From then on it is how you sign in and approve every action. Nobody else can act for you.`,
     `Review the assignment and check the amount against the signed instrument in this mailing.`,
@@ -45,14 +49,19 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
   const letter = `
   <section class="page">
     <header>
-      <div class="brand">Interest Registry</div>
-      <div class="meta">${esc(longDate())}</div>
+      <div class="left">
+        <div class="brand">Interest Registry</div>
+      <div class="to">
+        <div>${esc(rec.party)}</div>
+        ${rec.contact ? `<div>Attn: ${esc([rec.contact, rec.position].filter(Boolean).join(", "))}</div>` : ""}
+        ${rec.address ? `<div class="addr">${esc(rec.address)}</div>` : ""}
+      </div>
+      </div>
+      <div class="meta">
+        <div>${esc(longDate())}</div>
+        ${qr ? `<div class="qr">${qr}</div><div class="qr-cap">Scan to open ${esc(rec.id)}</div>` : ""}
+      </div>
     </header>
-    <div class="to">
-      <div>${esc(rec.party)}</div>
-      ${rec.contact ? `<div>Attn: ${esc([rec.contact, rec.position].filter(Boolean).join(", "))}</div>` : ""}
-      ${rec.address ? `<div class="addr">${esc(rec.address)}</div>` : ""}
-    </div>
     <h1>Notice of assignment and instructions</h1>
     <p>${esc(from)} has assigned you an interest in bond ${esc(rec.bond)}; the signed instrument is enclosed. The assignment
       is recorded in the Interest Registry and on the public blockchain, where anyone can check it.</p>
@@ -106,15 +115,18 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
   .page:last-child { page-break-after: auto; break-after: auto; }
   header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1.5px solid #1B1F24; padding-bottom: 5px; margin-bottom: 12px; }
   .brand { font-size: 15pt; letter-spacing: 0.02em; }
-  .meta { font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; color: #4A515B; }
-  .to { font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; margin-bottom: 12px; }
+  .meta { font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; color: #4A515B; text-align: right; }
+  .qr { width: 0.95in; height: 0.95in; margin: 6px 0 2px auto; } .qr svg { width: 100%; height: 100%; display: block; }
+  .qr-cap { font-size: 7pt; color: #6B7280; }
+  header { align-items: flex-start !important; }
+  .to { font-family: Helvetica, Arial, sans-serif; font-size: 9.5pt; margin-top: 12px; }
   .addr { white-space: pre-line; }
-  h1 { font-size: 15pt; font-weight: normal; margin: 0 0 6px; }
+  h1 { font-size: 14pt; font-weight: normal; margin: 0 0 5px; }
   h2 { font-size: 11.5pt; font-weight: normal; margin: 11px 0 4px; border-bottom: 1px solid #C9CDD2; padding-bottom: 2px; }
   p, li { font-size: 9.6pt; } p { margin: 0 0 8px; }
   ol, ul { margin: 3px 0; padding-left: 18px; } li { margin: 2px 0; }
   table { border-collapse: collapse; width: 100%; font-family: Helvetica, Arial, sans-serif; font-size: 8.8pt; }
-  .entries th, .entries td { border: 1px solid #C9CDD2; padding: 3px 7px; text-align: left; vertical-align: top; }
+  .entries th, .entries td { border: 1px solid #C9CDD2; padding: 2px 7px; text-align: left; vertical-align: top; }
   .entries th { width: 36%; font-weight: normal; color: #4A515B; background: #F4F5F3; }
   .entries.narrow th { width: 30%; }
   .mono { font-family: "Courier New", monospace; } .small { font-size: 8.5pt; word-break: break-all; }
@@ -130,13 +142,21 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
 }
 
 /** Opens the packet in a new window and asks the browser to print it. */
+/** The QR code (an SVG) for an assignment's link. */
+export const qrSvg = (text) => QRCode.toString(text, { type: "svg", margin: 0, errorCorrectionLevel: "M", color: { dark: "#1B1F24", light: "#FFFFFF" } });
+
 export function printPacket(opts) {
+  // Opened straight away (in the click), then filled once the QR code is drawn, so pop-up blockers allow it.
   const w = window.open("", "_blank");
   if (!w) throw new Error("Your browser blocked the print window. Allow pop-ups for this site and try again.");
-  w.document.open();
-  w.document.write(packetHtml(opts));
-  w.document.close();
-  w.focus();
-  setTimeout(() => { try { w.print(); } catch { /* the window stays open for printing by hand */ } }, 350);
+  w.document.write("<p style='font-family:sans-serif;padding:24px'>Preparing the mailing packet…</p>");
+  const site = opts.site || ASSIGNEE_SITE;
+  qrSvg(assigneeLink(site, opts.rec.id)).catch(() => "").then((qr) => {
+    w.document.open();
+    w.document.write(packetHtml({ ...opts, site, qr }));
+    w.document.close();
+    w.focus();
+    setTimeout(() => { try { w.print(); } catch { /* the window stays open for printing by hand */ } }, 350);
+  });
   return w;
 }
