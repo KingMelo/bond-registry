@@ -154,6 +154,17 @@ await codeBox.waitFor({ timeout: 20000 }).catch(() => {});
 ok(await codeBox.count() === 1, "the assignor's screen shows the new assignee's access code, once");
 await shot("6-assignee-code");
 const TRANSFER = (await codeBox.first().textContent()).trim();
+// The mailing packet: the instruction letter with the entries filled in, and the code on its own page.
+{
+  const [pop] = await Promise.all([page.waitForEvent("popup"), page.getByRole("button", { name: "Print mailing packet" }).first().click()]);
+  await pop.waitForLoadState();
+  const txt = await pop.locator("body").innerText();
+  ok(txt.includes(child.id) && txt.includes("$10.40") && txt.includes("Company D, LLC") && txt.includes(TRANSFER)
+    && /\/assignee/.test(txt) && /255 characters/.test(txt) && /30 days/.test(txt) && (await pop.locator("section.page").count()) === 2,
+    "the mailing packet prints the letter with the entries and instructions, and the code on its own page");
+  if (SHOTS) await pop.screenshot({ path: SHOTS + "/6b-packet.png", fullPage: true });
+  await pop.close();
+}
 // Back on the record, the list offers it again; it was already shown, so it says so.
 await page.getByRole("button", { name: "Back to my record" }).click().catch(() => {});
 const again = page.getByRole("button", { name: /transfer code/ });

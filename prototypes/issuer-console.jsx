@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { SignatureQueue } from "./trezor-sign.jsx";
 import { ChainWriting, Spinner, nextIssuedId } from "../src/registry.jsx";
+import { printPacket } from "../src/print-packet.js";
 import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -357,7 +358,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     await api.setPasskey(issuerId, id, passkey);
     return passkey;
   }
-  const showPasskey = (id, passkey, why) => setSheet({ k: "passkey", id, passkey, why });
+  const showPasskey = (id, passkey, why, rec) => setSheet({ k: "passkey", id, passkey, why, rec });
 
   async function issueCredential(a) {
     if (!mail.trim() || !a.filingRef) return;
@@ -562,7 +563,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress(""); setNDoc(null); setNUcc(""); setNUccDoc(null);
     setTab("records");
     flash(rec.id + " issued. Mail the instrument and passkey document together by certified post, then record the tracking number.");
-    showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".");
+    showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".", rec);
   }
 
   // A new bond: its documents are hashed in this browser and only the hashes are kept.
@@ -1110,22 +1111,28 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
       {/* ============ switch bond ============ */}
       {sheet?.k === "passkey" && (
-        <Sheet title="Passkey document" onClose={() => setSheet(null)}>
+        <Sheet title="Transfer code" onClose={() => setSheet(null)}>
           <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, marginBottom: 14 }}>{sheet.why}</p>
           <Label>Assignment</Label>
           <div style={{ fontSize: 15, color: T.ink, marginBottom: 14, fontVariantNumeric: "tabular-nums" }}>{sheet.id}</div>
-          <Label>Passkey</Label>
+          <Label>Transfer code</Label>
           <div className="px-3 py-4 mb-4 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
             fontSize: 24, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>
             {sheet.passkey}
           </div>
           <Note kind="warn">
-            Shown once. Copy it onto the confidential passkey document, seal it in its own envelope,
-            and send it in the same certified mailing as the instrument. Only its hash is stored;
-            if it is lost, issue a new one.
+            Print the mailing packet: the instruction letter with this assignment's entries, and this code on its own
+            page to seal in its own envelope. Send both in the same certified mailing as the signed instrument. You can
+            show the code and print the packet again from the record until the assignee uses it.
           </Note>
-          <div className="mt-4">
-            <Button onClick={() => setSheet(null)}>I've recorded it</Button>
+          <div className="mt-4 space-y-3">
+            <Button onClick={() => {
+              const rec = sheet.rec || reg.find((x) => x.id === sheet.id);
+              if (!rec) return flash("Open the record to print its packet.");
+              try { printPacket({ rec, code: sheet.passkey, bond: bonds.find((b) => b.id === rec.bond),
+                from: rec.origin === "AssignOut" ? rec.assignor : issuerName, issuer: issuerName, days: responseDays }); } catch (e) { flash(e.message); }
+            }}>Print mailing packet</Button>
+            <Button variant="quiet" onClick={() => setSheet(null)}>Done</Button>
           </div>
         </Sheet>
       )}
@@ -1229,18 +1236,28 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               </div>
             )}
 
-            {a.origin === "AssignOut" && a.accessCode === "unused" && !TERMINAL.includes(a.status) && (
+            {a.accessCode === "unused" && !TERMINAL.includes(a.status) && (
               <div className="mt-5">
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Transfer code</div>
+                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Transfer code and mailing packet</div>
                 <Note>
-                  {a.party} claims this assign-out at Assignee access with the assignment ID and this
+                  {a.party} opens this assignment at Assignee access with the assignment ID and this
                   transfer code, then accepts or rejects it with their passkey. The code works once;
-                  it's available here until they use it.
+                  it's available here until they use it. The mailing packet is the instruction letter, with this
+                  assignment's entries filled in, and the code on its own page to seal in its own envelope.
+                  {isChild ? " " + a.assignor + " mails it with the signed instrument." : " Mail it with the signed instrument."}
                 </Note>
                 <div className="mt-3">
                   {shownCodes[a.id] ? (
-                    <div className="px-3 py-3 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
-                      fontSize: 22, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>{shownCodes[a.id]}</div>
+                    <>
+                      <div className="px-3 py-3 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white,
+                        fontSize: 22, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>{shownCodes[a.id]}</div>
+                      <div className="mt-3">
+                        <Button onClick={() => { try { printPacket({ rec: a, code: shownCodes[a.id], bond: bonds.find((b) => b.id === a.bond),
+                          from: isChild ? a.assignor : issuerName, issuer: issuerName, days: responseDays }); } catch (e) { flash(e.message); } }}>
+                          Print mailing packet
+                        </Button>
+                      </div>
+                    </>
                   ) : (
                     <Button variant="quiet" onClick={() => api.revealAccessCode(issuerId, a.id)
                       .then((r) => setShownCodes((m) => ({ ...m, [a.id]: r.code }))).catch((e) => flash(e.message))}>Show transfer code</Button>

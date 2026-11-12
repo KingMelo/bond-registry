@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
 import { ChainWriting, Spinner, nextChildId } from "../src/registry.jsx";
+import { printPacket } from "../src/print-packet.js";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
@@ -608,6 +609,14 @@ export default function HolderPortal() {
   const [childCode, setChildCode] = useState(null); // { code } | { error } | null while waiting
   // The same, from the list of assign-outs: for when the assignor left that screen before it showed.
   const [listCodes, setListCodes] = useState({});
+  // The mailing packet for an assign-out this assignee made: the instruction letter and the code page.
+  function printFor(c, code) {
+    try {
+      printPacket({ rec: c, code, bond: bonds.find((b) => b.id === c.bond), from: open?.party || c.assignor,
+        issuer: issuerOf(c), site: window.location.origin, days: responseDays });
+    } catch (e) { flash(e.message); }
+  }
+
   async function showTransferCode(c) {
     try { const r = await api.assigneeCode(session.current?.token, c.id); setListCodes((m) => ({ ...m, [c.id]: { code: r.code } })); }
     catch (e) { setListCodes((m) => ({ ...m, [c.id]: { error: e.message } })); }
@@ -1225,6 +1234,7 @@ export default function HolderPortal() {
                         <div style={{ fontSize: 12, color: T.inkSoft, marginBottom: 4 }}>{c.party}'s transfer code: seal it and send it with your signed instrument. It works once.</div>
                         <div className="px-3 py-2 text-center" style={{ border: "2px solid " + T.ink, borderRadius: 2, fontSize: 20, letterSpacing: "0.08em",
                           color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>{listCodes[c.id].code}</div>
+                        <div className="mt-2"><Button variant="quiet" onClick={() => printFor(c, listCodes[c.id].code)}>Print mailing packet</Button></div>
                       </div>
                     ) : listCodes[c.id]?.error ? (
                       <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5 }}>{listCodes[c.id].error}</div>
@@ -1351,9 +1361,10 @@ export default function HolderPortal() {
                     fontSize: 24, letterSpacing: "0.08em", color: T.ink, fontVariantNumeric: "tabular-nums", userSelect: "all" }}>
                     {childCode.code}
                   </div>
+                  <div className="mb-3"><Button onClick={() => printFor({ ...childIssued, ...(reg.find((x) => x.id === childIssued.id) || {}), address: childIssued.address }, childCode.code)}>Print mailing packet</Button></div>
                   <Note kind="warn">
-                    <strong style={{ fontWeight: 600 }}>Keep it private.</strong> Write it on the access code page, seal it in its
-                    own envelope, and send it with your signed instrument to {childIssued.party} in one certified
+                    <strong style={{ fontWeight: 600 }}>Keep it private.</strong> Print the mailing packet: the instruction letter, and
+                    this code on its own page to seal in its own envelope. Send both with your signed instrument to {childIssued.party} in one certified
                     mailing, then record its delivery receipt below. {childIssued.party} signs in at Assignee access with
                     the assignment ID and this code, sets up their passkey, then accepts or rejects it. It works once:
                     their passkey replaces it. Until then you can show it again from your record.
