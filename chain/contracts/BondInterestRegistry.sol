@@ -188,7 +188,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
     /// `what` is "issuer", "bond", "prior" or "record"; `id` the issuer, bond or record; `sub` the prior's refHash.
     event Imported(string what, bytes32 indexed id, bytes32 indexed sub);
     event ImportFinished(address actor);
-    event HolderKeyCleared(bytes32 indexed bondId, bytes32 indexed assignmentId, bytes32 docHash, address actor);
 
     // ---------------------------------------------------------------- errors
 
@@ -489,23 +488,6 @@ contract BondInterestRegistry is AccessControl, Pausable {
         a.updatedAt = uint64(block.timestamp);
         mailedAt[assignmentId] = mailedOn;
         emit DeliveryRecorded(bondId, assignmentId, deliveryRef, mailedOn, msg.sender);
-    }
-
-    /// Recovery when a holder loses their device: clears the record's key so the holder can
-    /// register a new one after the issuer verifies them and mails a new access code. The
-    /// counter keeps going, so nothing the old key signed can be replayed.
-    function clearHolderKey(bytes32 bondId, bytes32 assignmentId, bytes32 docHash)
-        external
-        whenNotPaused
-        onlyIssuerOf(bondId)
-        nonZero(docHash)
-    {
-        _liveRecord(bondId, assignmentId);
-        HolderKey storage k = holderKeys[assignmentId];
-        if (k.x == 0 && k.y == 0) revert NoHolderKey(assignmentId);
-        k.x = 0;
-        k.y = 0;
-        emit HolderKeyCleared(bondId, assignmentId, docHash, msg.sender);
     }
 
     /// An issuer correction of a record's UCC-3 reference. Holders record their own with recordFiling.

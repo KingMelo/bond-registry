@@ -12,7 +12,6 @@ const FN_SAY = {
   issueCredential: "Activate a new assignee", issuerCancelAssignOut: "Cancel an assign-out", unlock: "Unlock a record",
   recordRotation: "Record a passkey reissue", redeem: "Record a redemption",
   suspendIssuer: "Suspend an issuer", reinstateIssuer: "Reinstate an issuer",
-  clearHolderKey: "Reset a assignee's device key",
   pause: "Freeze the registry contract (for a move to a new version)", unpause: "Unfreeze the registry contract",
 };
 export const sayFn = (fn) => FN_SAY[fn] || fn;

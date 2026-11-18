@@ -90,7 +90,7 @@ const SAY = {
   DeliveryRecorded: "Certified mailing recorded", BondAnchored: "Bond anchored",
   PriorInstrumentRecorded: "Prior instrument recorded", PriorInstrumentReversed: "Prior instrument reversed",
   AssignmentRejected: "Rejected by the assignee",
-  HolderKeyRegistered: "Assignee's device key registered", HolderKeyCleared: "Assignee's device key reset by the issuer",
+  HolderKeyRegistered: "Assignee's device key registered",
 };
 
 /**

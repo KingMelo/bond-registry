@@ -252,27 +252,21 @@ ok(e?.status === 403, "a holder can't request redemption through the registry ("
   ok((await onchain(a1.id)) === "Redeemed", "the issuer's redemption is on-chain, with no holder request");
 }
 
-// 7. Lost phone: the issuer resets the key; the holder registers a new phone; the old one is dead.
+// 7. A passkey can't be reset: the issuer has no way to clear it, so control stays with the assignee.
 const CODE3 = "QRST-UVWX-YZ23-4567";
 await issue("PENS-0001-BD-A00003", 500_000, CODE3);
-const old = newDevice();
-const s3 = await signIn("PENS-0001-BD-A00003", CODE3, old);
+const fresh = newDevice();
+const s3b = await signIn("PENS-0001-BD-A00003", CODE3, fresh);
 await settle();
 ok((await regC.holderKeys(id32("PENS-0001-BD-A00003"))).x !== 0n, "the device key is on-chain for A00003");
-e = await tryCall(I, "POST", "/api/issuer/holder-key/clear", { issuer: issuerId, id: "PENS-0001-BD-A00003", reason: "" });
-ok(e?.status === 400, "a reset needs a note on how the holder was verified");
-await call(I, "POST", "/api/issuer/holder-key/clear", { issuer: issuerId, id: "PENS-0001-BD-A00003", reason: "Photo ID checked by video call" });
-await settle();
-ok((await regC.holderKeys(id32("PENS-0001-BD-A00003"))).x === 0n, "the issuer's reset cleared the key on-chain");
+e = await tryCall(I, "POST", "/api/issuer/holder-key/clear", { issuer: issuerId, id: "PENS-0001-BD-A00003", reason: "Photo ID checked" });
+ok(e?.status === 404 || e?.status === 405, "the issuer can't reset an assignee's passkey: there's no such action (" + e?.status + ")");
+ok(!regC.interface.getFunction("clearHolderKey", []), "and the contract has no function for it");
+{
+  const again = await call(H, "POST", "/api/holder/signin", { id: "PENS-0001-BD-A00003", passkey: CODE3 }).catch((x) => ({ ok: false, code: x.status }));
+  ok(!again.ok && !again.token, "the used transfer code doesn't open it again (" + again.code + ")");
+}
 let a3 = await hrec("PENS-0001-BD-A00003");
-e = await hsave(s3.token, old, { reg: [{ ...a3, status: "Rejected", rejectionReason: LONG }] }).then(() => null, (x) => x);
-ok(e?.status === 409, "the old phone can no longer act (" + e?.status + ")");
-const fresh = newDevice();
-// The reset made a new transfer code, which the issuer reviews and mails; it opens the record once, for the new device.
-const CODE3b = (await call(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: "PENS-0001-BD-A00003" })).code;
-ok(CODE3b && CODE3b !== CODE3, "the reset made a new transfer code for the issuer to mail");
-const s3b = await signIn("PENS-0001-BD-A00003", CODE3b, fresh);
-a3 = await hrec("PENS-0001-BD-A00003");
 await hsave(s3b.token, fresh, { reg: [{ ...a3, status: "Accepted", accepted: "now", effective: "holder" }], events: [ev(a3.bond, a3.id, "Acknowledged")] });
 
 // 8. No answer within 30 days: it takes effect without anyone's signature, and not a day sooner.

@@ -688,7 +688,7 @@ export default function HolderPortal() {
     { target: "reject", title: "Or reject",
       body: "If it isn't right, reject it with a written reason of at least " + REJECTION_MIN + " characters. The amount goes back to " + (rec.origin === "AssignOut" ? "the assignor" : "the bond") + ". Rejecting is final." },
     { target: null, title: "That's it",
-      body: "Sign in any time with your assignment ID and your passkey. Once it's in effect you can assign portions onward, record UCC-3s and print mailing packets from your record. Reopen this tour from the link at the bottom of the review screen." },
+      body: "Sign in any time with your assignment ID and your passkey. Keep the passkey safe: nobody can reset or replace it, not even the issuer. Once it's in effect you can assign portions onward, record UCC-3s and print mailing packets from your record. Reopen this tour from the link at the bottom of the review screen." },
   ];
   const [qKey, setQKey] = useState("");
   const [qErr, setQErr] = useState("");
@@ -1075,8 +1075,8 @@ export default function HolderPortal() {
                 <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
                   Use the device, password manager or security key you set it up with. If you used a YubiKey or a
                   Trezor and Bitwarden or your browser offers a saved passkey, choose “Use another device” or
-                  “Security key” instead, then confirm on the key. Lost it? The issuer can verify you, reset it,
-                  and mail you a new transfer code.
+                  “Security key” instead, then confirm on the key. Your passkey can't be reset or replaced by anyone,
+                  the issuer included: it is your control of this assignment.
                 </div>
               </div>
             )}
@@ -1108,7 +1108,8 @@ export default function HolderPortal() {
               ["Then", "The transfer code from your mailing stops working. Your passkey opens this assignment from then on."],
               ["What you can use", "This phone or computer, a password manager such as Bitwarden, or a security key such as a YubiKey or a Trezor."],
               ["Using a security key", "If Bitwarden or your browser offers to save the passkey, choose \u201cUse another device\u201d or \u201cSecurity key\u201d instead (in Bitwarden, close its window first). Then plug in or connect the key and confirm on it with its PIN. Use that same key every time."],
-              ["Use", "The device you'll use to manage this assignment. Passkeys saved to your Apple, Google or Microsoft account work on your other devices too."],
+              ["Use", "The device you'll use to manage this assignment. Passkeys saved to your Apple, Google or Microsoft account, or a password manager, work on your other devices too."],
+              ["Keep it safe", "Nobody can reset or replace your passkey, not even the issuer: it is your control of this assignment. If you lose it, you lose control. Use a passkey that syncs to your account or password manager, or keep your security key somewhere safe."],
             ]} />
             {!passkeysAvailable() && <div className="mt-4"><Note kind="warn">This browser can't use passkeys. Open this page on an up-to-date phone or computer.</Note></div>}
             {devErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, margin: "14px 0 0" }}>{devErr}</p>}

@@ -859,7 +859,7 @@ if (APP === "holder") {
     const rec = row.data;
     if (TERMINAL.includes(rec.status) || ["AwaitingCredential", "CredentialRequested"].includes(rec.status))
       throw new Reject(422, rec.id + " is " + rec.status + "; a device key can't be added now.");
-    if (activeKey(rec)) throw new Reject(409, "This record already has a device key. Use that device, or ask the issuer to reset it.");
+    if (activeKey(rec)) throw new Reject(409, "This record already has a device key. Sign in with that passkey; it can't be reset or replaced.");
     const doc = deviceDoc(rec.id, credId), args = keyArgs(rec, x, y, doc), nonce = startNonce(rec);
     return { session, rec, x, y, credId, doc, args, nonce, challenge: challengeOf(rec.id, nonce, "registerHolderKey", args) };
   }
@@ -1277,31 +1277,7 @@ if (APP === "issuer") {
   // Recovery when a holder loses their device: clears the record's device key, on-chain too (signed
   // through the issuer's Safe). The holder registers a new device at their next sign-in, usually
   // with a new access code mailed after the issuer verifies them.
-  app.post("/api/issuer/holder-key/clear", wrap(async (req, res) => {
-    await recordAccess(req);
-    const { id, reason } = req.body || {};
-    if (!String(reason || "").trim()) throw new Reject(400, "Say how you verified the assignee, for the record.");
-    await tx(async (c) => {
-      const row = (await c.query("select bond, data from assignments where id = $1 for update", [id])).rows[0];
-      if (!row) throw new Reject(404, "No such record.");
-      const k = row.data.holder;
-      if (!k || k.contract !== (chain.CONTRACT || "local") || !k.x) throw new Reject(409, id + " has no device key to reset.");
-      const holder = { ...k, x: null, y: null, credId: null, clearedOn: stampNow() };
-      await c.query("update assignments set data = data || jsonb_build_object('holder', $2::jsonb), rev = rev + 1 where id = $1",
-        [id, JSON.stringify(holder)]);
-      // A new transfer code for the holder's next device, for the issuer to mail.
-      const code = genAccessCode();
-      await setPasskey(c, id, code);
-      await c.query(`insert into sealed_codes (id, sealed) values ($1, $2)
-        on conflict (id) do update set sealed = excluded.sealed, created_at = now(), revealed_at = null, revealed_by = null`, [id, seal(code)]);
-      await chain.queueOps(c, [{ bond: row.bond, ref: id, fn: "clearHolderKey",
-        args: [chain.id32(row.bond), chain.id32(id), chain.noteDoc(id, "clearHolderKey", stampNow() + " " + String(reason).trim())], role: "issuer" }]);
-      await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
-        [crypto.randomUUID(), row.bond, id, { bond: row.bond, id, t: stampNow(), ev: "DeviceKeyReset", actor: "ISSUER", ref: String(reason).trim() }]);
-      await bump(c);
-    });
-    res.json({ ok: true });
-  }));
+
 
   // Chain writes waiting on this issuer's Safe, and a signature for one of them.
   app.get("/api/issuer/signing", wrap(async (req, res) => {

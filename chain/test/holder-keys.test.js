@@ -176,19 +176,9 @@ describe("holder device keys", () => {
       await expect(RL.accept(...a, await sign(reg, next, A1, "accept", a))).to.emit(reg, "Accepted");
     });
 
-    it("only the issuer clears a lost key; the counter keeps going so old signatures stay dead", async () => {
-      const { reg, I, RL, platform, stranger } = await setup();
-      await I.issueAssignment(BOND, A1, 1000, h("d"));
-      const lost = await enroll(reg, RL, A1);
-      const stale = await sign(reg, lost, A1, "rejectAssignment", [BOND, A1, h("no")]); // signed, never sent
-      for (const who of [RL, reg.connect(platform), reg.connect(stranger)])
-        await expect(who.clearHolderKey(BOND, A1, h("id check"))).to.be.revertedWithCustomError(reg, "NotIssuer");
-      await expect(I.clearHolderKey(BOND, A1, h("id check"))).to.emit(reg, "HolderKeyCleared");
-      await expect(I.clearHolderKey(BOND, A1, h("again"))).to.be.revertedWithCustomError(reg, "NoHolderKey");
-      await expect(RL.rejectAssignment(BOND, A1, h("no"), stale)).to.be.revertedWithCustomError(reg, "NoHolderKey");
-      const fresh = await enroll(reg, RL, A1, h("new device"));
-      await expect(RL.rejectAssignment(BOND, A1, h("no"), stale)).to.be.revertedWithCustomError(reg, "BadHolderSignature");
-      await expect(RL.rejectAssignment(BOND, A1, h("no"), await sign(reg, fresh, A1, "rejectAssignment", [BOND, A1, h("no")]))).to.emit(reg, "AssignmentRejected");
+    it("nobody can clear an assignee's key: there is no reset", async () => {
+      const { reg } = await setup();
+      expect(reg.interface.getFunction("clearHolderKey", [])).to.equal(null);
     });
   });
 });

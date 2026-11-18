@@ -79,7 +79,7 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
       <li>Anyone can check this assignment without signing in: choose <b>Verify</b> at ${esc(portal)} and enter the assignment ID.
         You can check your copy of the instrument there too.</li>
       <li>Keep the transfer code private. It works once; after your passkey is set up it no longer opens the assignment.</li>
-      <li>Lost your passkey? Contact ${esc(issuer)}; after confirming your identity they reset it and mail you a new transfer code.</li>
+      <li>Nobody can reset or replace your passkey, not even ${esc(issuer)}: it is your control of this assignment. Use one that syncs to your account or password manager, or keep your security key safe.</li>
       <li>Once it's in effect you can assign portions onward from the same page, and record the UCC-3 for each.</li>
     </ul>
     <table class="keep">

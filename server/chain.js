@@ -392,7 +392,6 @@ async function alreadyDone(reg, op, signer) {
     case "suspendIssuer": return (await reg.issuers(a[0])).suspended;
     case "reinstateIssuer": return !(await reg.issuers(a[0])).suspended;
     case "registerHolderKey": case "rotateHolderKey": return (await reg.holderKeys(a[1])).x === BigInt(a[2]);
-    case "clearHolderKey": { const k = await reg.holderKeys(a[1]); return k.x === 0n && k.y === 0n; }
     case "pause": return reg.paused();
     case "importIssuer": return (await reg.issuers(a[0])).account !== ethers.ZeroAddress;
     case "importBond": return (await reg.bonds(a[0])).issuerId !== ethers.ZeroHash;

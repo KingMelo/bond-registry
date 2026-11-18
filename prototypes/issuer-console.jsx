@@ -420,16 +420,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   }
 
   // The credential is off-chain; clearing a lockout touches the credential store only.
-  // A holder who lost their device: after verifying them, clear the key so they can set up a new
-  // one. Signed through the issuer's Safe like any other issuer action.
-  const [keyNote, setKeyNote] = useState("");
+  // An assignee's passkey can't be reset by anyone: control of the record is theirs alone.
   const [shownCodes, setShownCodes] = useState({}); // transfer codes the issuer opened on this page
-  async function resetDeviceKey(a) {
-    if (!keyNote.trim()) return;
-    try { await api.clearDeviceKey(issuerId, a.id, keyNote.trim()); await reload(); } catch (e) { return flash(e.message); }
-    setKeyNote("");
-    done("Device key reset. The assignee sets up a new device at their next sign-in" + (issuerInfo?.safe ? "; approve the reset in Approvals." : "."));
-  }
 
   async function unlockCredential(a) {
     try { await api.clearLockout(issuerId, a.id); await reload(); } catch (e) { return flash(e.message); }
@@ -1266,23 +1258,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               </div>
             )}
 
-            {a.deviceKey?.fingerprint && !TERMINAL.includes(a.status) && (
-              <div className="mt-5">
-                <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Assignee lost their device?</div>
-                <Note kind="caution">
-                  Only after verifying the assignee's identity. Resetting clears their device key on-chain;
-                  they set up a new device at their next sign-in, usually with a new access code you mail
-                  them. Nothing their old device signed can be used again.
-                </Note>
-                <div className="mt-3">
-                  <Field label="How you verified the assignee" value={keyNote} onChange={setKeyNote}
-                    placeholder="e.g. photo ID and callback to the number on file" />
-                  <Button variant="quiet" danger disabled={!keyNote.trim()} onClick={() => resetDeviceKey(a)}>
-                    Reset the assignee's device key{signNote}
-                  </Button>
-                </div>
-              </div>
-            )}
 
             {a.status === "CredentialRequested" && (
               <div className="mt-5">
