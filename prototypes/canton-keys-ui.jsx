@@ -36,11 +36,23 @@ export function sayActs(summary) {
     } else if (a.template === "Assignment" && a.choice === "ReclaimToAssignment") {
       const rest = made("Assignment")[0]?.args || {};
       lines.push("Take back the units of a rejected assign-out into " + rest.recordId + ", which then holds " + dollars(rest.units) + ".");
+    } else if (a.choice === "RecordMailing") {
+      const offer = made("AssignmentOffer")[0]?.args || {};
+      lines.push("Record the certified mailing of " + offer.recordId + " to " + offer.assigneeName + ", sent " + String(a.args.sentOn).slice(0, 10) + ".");
+      lines.push("Its fingerprint: " + short(a.args.mailingRef) + ". The assignee's 30 days run from this date.");
+    } else if (a.choice === "RecordUcc3" || a.choice === "RecordUcc3OnAssignment") {
+      const on = (made("AssignmentOffer")[0] || made("Assignment")[0])?.args || {};
+      lines.push("Record the UCC-3 filed for " + on.recordId + ": filed copy " + short(a.args.filedHash) + ".");
+    } else if (a.choice === "RecordReceipt" || a.choice === "RecordReceiptOnAssignment") {
+      const on = (made("AssignmentOffer")[0] || made("Assignment")[0])?.args || {};
+      lines.push("Record your delivery receipt for " + on.recordId + ", received " + a.args.received + ".");
+      lines.push("Its fingerprint: " + short(a.args.ref) + ".");
     } else if (a.choice !== "Archive") lines.push(a.choice + " on " + a.template + ".");
   }
   return lines;
 }
-const SAY_KIND = { accept: "your acceptance", reject: "your rejection", assignOut: "your assign-out", reclaim: "taking back the units" };
+const SAY_KIND = { accept: "your acceptance", reject: "your rejection", assignOut: "your assign-out", reclaim: "taking back the units",
+  mailing: "the mailing", ucc3: "the UCC-3", receipt: "your delivery receipt" };
 
 /**
  * Signs, one by one, the acts the register has and Canton doesn't. Each transaction is checked

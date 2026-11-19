@@ -891,18 +891,21 @@ export default function HolderPortal() {
     setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, ...f, filedBy: by } : a)));
     emit(rec.bond, rec.id, "FilingRecorded", "HOLDER", f.filingNumber);
     flash("UCC-3 " + f.filingNumber + " recorded. Confirm with your passkey; it's recorded with the filed copy's hash.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   function recordMailingOf(child, f) {
     setReg((r) => r.map((a) => (a.id === child.id ? { ...a, ...f } : a)));
     emit(child.bond, child.id, "DeliveryRecorded", "HOLDER", "sent " + f.mailedOn);
     flash("Delivery receipt recorded: sent " + f.mailedOn + ". Confirm with your passkey; only hashes of the number and receipt are kept, with the date.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   function recordReceipt(rec, f) {
     setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, ...f } : a)));
     emit(rec.bond, rec.id, "ReceiptRecorded", "HOLDER", "received " + f.receivedOn);
     flash("Delivery receipt recorded. Confirm with your passkey; it's recorded with the receipt's hash.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   function cancelAssignOut(child) {

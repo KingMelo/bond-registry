@@ -169,6 +169,8 @@ const plain = (v) => {
     case "optional": return v.optional.value ? plain(v.optional.value) : "none";
     case "list": return v.list.elements?.length ? v.list.elements.map(plain).join(", ") : "none";
     case "contract_id": return "contract " + v.contract_id.slice(0, 10) + "…";
+    case "timestamp": return new Date(Number(BigInt(v.timestamp) / 1000n)).toISOString(); // microseconds
+    case "date": return new Date(Number(v.date) * 86400000).toISOString().slice(0, 10); // days since 1970-01-01
     case "record": return Object.fromEntries((v.record.fields || []).map((f) => [f.label, plain(f.value)]));
     default: return String(v?.[v?.sum] ?? "");
   }

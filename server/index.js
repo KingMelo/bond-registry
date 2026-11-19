@@ -1257,6 +1257,10 @@ if (APP === "issuer") {
     // already; a failure here is logged and doesn't undo it.
     if (canton.enabled && newlyIssued.length)
       await canton.mirrorIssued(pool, newlyIssued).catch((e) => console.error("Canton: issuing", newlyIssued.map((a) => a.id).join(", "), "-", e.message));
+    // Its mailings and UCC-3s for its own assignments, likewise.
+    const issuerMade = canton.enabled ? (await pool.query("select data from assignments where id = any($1)", [reg.map((a) => a.id)])).rows.map((r) => r.data) : [];
+    if (issuerMade.length)
+      await canton.syncIssuerFacts(pool, issuerMade).catch((e) => console.error("Canton: mailing/UCC-3", "-", e.message));
     res.json(nv);
   }));
 

@@ -127,6 +127,29 @@ export async function mirrorIssued(pool, records) {
   }
 }
 
+/**
+ * The issuer's own acts on its assignments, after a save: the certified mailing and the UCC-3 it
+ * records go on Canton as the issuer's party (held by the node), so nobody else is asked to sign.
+ * Compared with what Canton holds, so each is recorded once.
+ */
+export async function syncIssuerFacts(pool, records) {
+  for (const rec of records.filter((r) => r.origin === "Issuer")) {
+    const ref = await refOf(pool, rec.id);
+    if (ref?.template !== "AssignmentOffer" && ref?.template !== "Assignment") continue;
+    const issuer = await issuerPartyOf(pool, rec.bond);
+    const on = (await heldOnCanton(pool, rec.bond)).get(rec.id);
+    if (!on) continue;
+    if (rec.deliveryRef && on.deliveryRef == null && on.template === "AssignmentOffer")
+      await submit([issuer], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: on.cid, choice: "RecordMailing",
+        choiceArgument: { sentOn: asTime(rec.mailedOn || rec.deliveredAt), mailingRef: rec.deliveryRef } } }]);
+    const now = (await heldOnCanton(pool, rec.bond)).get(rec.id);
+    if (isHash(rec.filingDoc) && now && now.ucc3Hash == null)
+      await submit([issuer], [{ ExerciseCommand: { templateId: tpl(now.template), contractId: now.cid,
+        choice: now.template === "Assignment" ? "RecordUcc3OnAssignment" : "RecordUcc3", choiceArgument: { filedHash: rec.filingDoc } } }]);
+    await refresh(pool, issuer, rec.id);
+  }
+}
+
 // ------------------------------------------------------------------ the assignee's keys
 
 const jsonKey = (spki) => ({ format: "CRYPTO_KEY_FORMAT_DER_X509_SUBJECT_PUBLIC_KEY_INFO", keyData: spki, keySpec: "SIGNING_KEY_SPEC_EC_P256" });
@@ -181,21 +204,41 @@ export async function status(pool, rec) {
     toSign: holder ? await waiting(pool, rec, ref) : [] };
 }
 
-// The register's acts on this record (and the assign-outs it made) not yet on Canton, in order.
+// The register's acts on this record (and the assign-outs it made) not yet on Canton, in order:
+// compared with what Canton itself holds, so nothing is signed twice or missed.
 async function waiting(pool, rec, ref) {
   const out = [];
+  const held = await heldOnCanton(pool, rec.bond);
+  const mine = held.get(rec.id);
+  const live = ref?.template === "AssignmentOffer" || ref?.template === "Assignment";
+  if (live && rec.receiptRef && mine && mine.receiptRef == null && rec.status !== "Rejected") out.push({ kind: "receipt" });
   if (ref?.template === "AssignmentOffer" && rec.status === "Accepted") out.push({ kind: "accept" });
   if (ref?.template === "AssignmentOffer" && rec.status === "Rejected") out.push({ kind: "reject" });
   if (ref?.template === "Assignment") {
     const kids = (await pool.query(`select data from assignments where data->>'parent' = $1 and data->>'origin' = 'AssignOut' order by created_at`, [rec.id])).rows.map((r) => r.data);
     for (const c of kids) {
-      const cref = await refOf(pool, c.id);
-      if (!cref) out.push({ kind: "assignOut", child: c.id });
-      else if (cref.template === "UnitsReturned") out.push({ kind: "reclaim", child: c.id });
+      const cref = await refOf(pool, c.id), on = held.get(c.id);
+      if (!cref) { out.push({ kind: "assignOut", child: c.id }); continue; }
+      if (cref.template === "UnitsReturned") { out.push({ kind: "reclaim", child: c.id }); continue; }
+      if (cref.template === "AssignmentOffer" && c.deliveryRef && on && on.deliveryRef == null) out.push({ kind: "mailing", child: c.id });
+      if ((cref.template === "AssignmentOffer" || cref.template === "Assignment") && isHash(c.filingDoc) && on && on.ucc3Hash == null)
+        out.push({ kind: "ucc3", child: c.id });
     }
   }
   return out;
 }
+// Each record's live offer or assignment on Canton, as the bond's issuer sees it: recordId → arguments.
+async function heldOnCanton(pool, bondId) {
+  const issuer = await issuerPartyOf(pool, bondId);
+  const all = await activeFor(issuer);
+  const m = new Map();
+  for (const e of all) if (/:Registry:(AssignmentOffer|Assignment)$/.test(e.templateId) && e.createArgument?.bondId === bondId)
+    m.set(e.createArgument.recordId, { ...e.createArgument, template: e.templateId.split(":").pop(), cid: e.contractId });
+  return m;
+}
+// A register date (YYYY-MM-DD, or a full timestamp) as Canton's Time and Date.
+const asTime = (d) => new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(d)) ? d + "T00:00:00Z" : d).toISOString().replace(/\.\d{3}Z$/, "Z");
+const asDate = (d) => asTime(d).slice(0, 10);
 const child = async (pool, rec, id) => {
   const c = (await pool.query("select data from assignments where id = $1", [id])).rows[0]?.data;
   if (!c || c.parent !== rec.id || c.origin !== "AssignOut") throw new CantonError("That isn't one of your assign-outs.", 403);
@@ -249,12 +292,14 @@ async function issuerPartyOf(pool, bondId) {
   const code = (await pool.query("select i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [bondId])).rows[0]?.code;
   return localParty(pool, "issuer-" + code);
 }
-async function findContract(party, template, recordId) {
+async function activeFor(party) {
   const end = (await json("GET", "/v2/state/ledger-end")).offset;
   const acs = await json("POST", "/v2/state/active-contracts", { activeAtOffset: end, eventFormat: { verbose: false,
     filtersByParty: { [party]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } } });
-  return (Array.isArray(acs) ? acs : []).map((x) => x.contractEntry?.JsActiveContract?.createdEvent)
-    .find((e) => e?.templateId.endsWith(":Registry:" + template) && e.createArgument?.recordId === recordId) || null;
+  return (Array.isArray(acs) ? acs : []).map((x) => x.contractEntry?.JsActiveContract?.createdEvent).filter(Boolean);
+}
+async function findContract(party, template, recordId) {
+  return (await activeFor(party)).find((e) => e.templateId.endsWith(":Registry:" + template) && e.createArgument?.recordId === recordId) || null;
 }
 
 /**
@@ -264,6 +309,12 @@ async function findContract(party, template, recordId) {
  *   reclaim           units back from an assign-out of theirs that was rejected
  * The page gets the transaction itself as well as its hash, so it can check one against the other.
  */
+// Points the register's record at its live contract on Canton, after an act replaced it.
+async function refresh(pool, issuer, recordId) {
+  const asg = await findContract(issuer, "Assignment", recordId) || await findContract(issuer, "AssignmentOffer", recordId);
+  if (asg) await setRef(pool, recordId, asg.templateId.split(":").pop(), asg.contractId);
+}
+
 export async function prepareAct(pool, rec, { kind, child: childId }) {
   const ref = await refOf(pool, rec.id), holder = await holderOf(pool, rec.id);
   if (!holder) throw new CantonError("This assignment has no keys on Canton yet.", 409);
@@ -276,6 +327,18 @@ export async function prepareAct(pool, rec, { kind, child: childId }) {
     const c = await child(pool, rec, childId);
     command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "AssignOut", choiceArgument: {
       childId: c.id, childUnits: String(c.issuedUnits ?? c.units), childHash: c.docHash, childName: c.party || "", childParty: null } };
+  }
+  if (kind === "receipt") {
+    const onAsg = ref.template === "Assignment";
+    command = { templateId: tpl(ref.template), contractId: ref.cid, choice: onAsg ? "RecordReceiptOnAssignment" : "RecordReceipt",
+      choiceArgument: { received: asDate(rec.receivedOn), ref: rec.receiptRef } };
+  }
+  if (kind === "mailing" || kind === "ucc3") {
+    const c = await child(pool, rec, childId), cref = await refOf(pool, childId);
+    command = kind === "mailing"
+      ? { templateId: tpl("AssignmentOffer"), contractId: cref.cid, choice: "RecordMailing", choiceArgument: { sentOn: asTime(c.mailedOn || c.deliveredAt), mailingRef: c.deliveryRef } }
+      : { templateId: tpl(cref.template), contractId: cref.cid, choice: cref.template === "Assignment" ? "RecordUcc3OnAssignment" : "RecordUcc3",
+          choiceArgument: { filedHash: c.filingDoc } };
   }
   if (kind === "reclaim") {
     await child(pool, rec, childId);
@@ -306,6 +369,8 @@ export async function executeAct(pool, rec, { signature, signedBy }) {
     if (offer) await setRef(pool, s.child, "AssignmentOffer", offer.contractId);
   }
   if (s.act === "reclaim") await setRef(pool, s.child, "Closed", "-");
+  if (s.act === "receipt") await refresh(pool, issuer, rec.id);
+  if (s.act === "mailing" || s.act === "ucc3") await refresh(pool, issuer, s.child);
   if (s.act === "reject") {
     const back = await findContract(issuer, "UnitsReturned", rec.id);
     if (back && back.createArgument.parentId == null) {

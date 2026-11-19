@@ -8,7 +8,7 @@
 //      then replace the first browser as lost: its key stops working on Canton; the new one works.
 //
 // Needs Postgres on 127.0.0.1:54329, the apps built, and a Canton sandbox with the registry's DAR:
-//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.1.0.dar)
+//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.2.0.dar)
 // Run from the repo root: node e2e/canton-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -82,6 +82,29 @@ await icommit({ bonds: [{ ...(await st()).bonds[0], unassigned: TOTAL - 1_000_00
     "issuing in the register put the bond and an offer for " + A1 + " on Canton");
 }
 
+const acsFor = async (party) => {
+  const end = (await canton("GET", "/v2/state/ledger-end")).body.offset;
+  const r = await canton("POST", "/v2/state/active-contracts", { activeAtOffset: end, eventFormat: { verbose: false,
+    filtersByParty: { [party]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } } });
+  return (Array.isArray(r.body) ? r.body : []).map((x) => x.contractEntry?.JsActiveContract?.createdEvent).filter(Boolean);
+};
+const issuerParty = (await q("select party from canton_parties where name like 'issuer-PENS%'"))[0].party;
+const onCanton = async (template, recordId) => (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:" + template) && e.createArgument.recordId === recordId);
+const until = async (f, ms = 30000) => { for (let t = Date.now(); Date.now() - t < ms; await new Promise((r) => setTimeout(r, 1000))) { const v = await f(); if (v) return v; } return null; };
+
+// The issuer mails the packet and records it, and records the UCC-3: both go on Canton as the issuer's own acts.
+{
+  const r = (await st()).reg.find((a) => a.id === A1);
+  await icommit({ reg: [{ ...r, instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01",
+    mailedOn: new Date().toISOString().slice(0, 10), mailingDoc: H32(), filingNumber: "UCC3-2026-0417", filingDoc: H32(), filingFile: "ucc3.pdf",
+    filedOn: "Nov 19, 2026", filedBy: "Penson Trust" }] });
+  const saved = (await st()).reg.find((a) => a.id === A1);
+  const offer = await until(async () => { const o = await onCanton("AssignmentOffer", A1); return o?.createArgument.deliveryRef && o.createArgument.ucc3Hash ? o : null; });
+  ok(offer?.createArgument.deliveryRef === saved.deliveryRef && offer.createArgument.mailedOn?.startsWith(saved.mailedOn),
+    "the issuer's certified mailing is on Canton: its fingerprint and the date sent (" + offer?.createArgument.mailedOn + ")");
+  ok(offer?.createArgument.ucc3Hash === saved.filingDoc && offer.signatories.length === 1, "and its UCC-3's filed copy, as the issuer's own act");
+}
+
 // ---- 2. the assignee, in a browser with a (virtual) passkey device
 const browser = await chromium.launch();
 async function newBrowser() {
@@ -128,6 +151,22 @@ ok(stored.length === 1 && stored[0] === false, "this browser's device key is sto
 // The tour may be offered; skip it, then accept.
 const skip = page.getByRole("button", { name: "Skip, I've done this before" });
 if (await skip.count()) await skip.click();
+// The assignee records their delivery receipt; their key signs it on Canton.
+async function recordReceipt(pg, name, expectId) {
+  const rcRow = pg.locator("div.mt-3", { has: pg.getByText("Delivery receipt", { exact: true }) }).first();
+  await rcRow.getByRole("button", { name: "Edit" }).click();
+  await pg.getByLabel("Date received").fill(new Date().toISOString().slice(0, 10));
+  await pg.locator('input[type="file"]').first().setInputFiles({ name: "usps-delivered.pdf", mimeType: "application/pdf", buffer: Buffer.from("delivered " + name) });
+  await pg.getByRole("button", { name: "Confirm with your passkey", exact: true }).click();
+  await answerCanton(pg, new RegExp("Record your delivery receipt for " + expectId + ", received \\d{4}-\\d{2}-\\d{2}\\. Its fingerprint: 0x"), "receipt " + name);
+}
+
+await recordReceipt(page, "A", A1.replace(/-/g, "\\-"));
+{
+  const saved = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1);
+  const offer = await until(async () => { const o = await onCanton("AssignmentOffer", A1); return o?.createArgument.receiptRef ? o : null; });
+  ok(!!saved.receiptRef && offer?.createArgument.receiptRef === saved.receiptRef, "Company A's delivery receipt is on Canton, signed with its own key");
+}
 await page.getByRole("button", { name: /^Accept: confirm with your passkey/ }).click();
 // Before the key signs, the page checks the transaction against its hash and says what it does.
 async function answerCanton(pg, expect, name) {
@@ -144,12 +183,6 @@ ok(await page.getByText(/On Canton: in effect, signed with your own key/).count(
 await shot(page, "c3-in-effect");
 
 // ---- 3. what Canton holds, read straight from the node
-const acsFor = async (party) => {
-  const end = (await canton("GET", "/v2/state/ledger-end")).body.offset;
-  const r = await canton("POST", "/v2/state/active-contracts", { activeAtOffset: end, eventFormat: { verbose: false,
-    filtersByParty: { [party]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } } });
-  return (Array.isArray(r.body) ? r.body : []).map((x) => x.contractEntry?.JsActiveContract?.createdEvent).filter(Boolean);
-};
 {
   const mine = (await acsFor(holder.party)).filter((e) => e.templateId.endsWith(":Registry:Assignment"));
   ok(mine.length === 1 && mine[0].createArgument.recordId === A1 && mine[0].signatories.includes(holder.party) && mine[0].createArgument.instrumentHash === docHash,
@@ -158,8 +191,6 @@ const acsFor = async (party) => {
 }
 
 // ---- an assign-out, rejected by its new assignee, and the units taken back, all signed on Canton
-const issuerParty = (await q("select party from canton_parties where name like 'issuer-PENS%'"))[0].party;
-const onCanton = async (template, recordId) => (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:" + template) && e.createArgument.recordId === recordId);
 const CHILD = A1 + "-1";
 await page.getByRole("button", { name: "Assign out" }).click();
 await page.getByLabel("Amount to assign").fill("10.40");
@@ -182,6 +213,25 @@ const codeBox = page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}
 await codeBox.first().waitFor({ timeout: 20000 });
 const TRANSFER = (await codeBox.first().textContent()).trim();
 await page.getByRole("button", { name: "Back to my record" }).click().catch(() => {});
+// Company A, as assignor, records the certified mailing and the UCC-3 for its assign-out; its key signs each.
+{
+  const childCard = page.locator("div.mb-2", { has: page.getByText(CHILD + " · ", { exact: false }) }).first();
+  await childCard.getByRole("button", { name: "Edit" }).click();
+  await childCard.getByLabel("Certified mail number").fill("9407 1000 0000 0000 0000 77");
+  await childCard.locator('input[type="file"]').setInputFiles({ name: "ps3800.pdf", mimeType: "application/pdf", buffer: Buffer.from("certified mail receipt") });
+  await page.getByRole("button", { name: "Confirm with your passkey", exact: true }).click();
+  await answerCanton(page, /Record the certified mailing of PENS-0001-BD-A00001-1 to Company D, LLC, sent \d{4}-\d{2}-\d{2}\. Its fingerprint: 0x/, "assignor's mailing");
+  const mailed = await until(async () => { const o = await onCanton("AssignmentOffer", CHILD); return o?.createArgument.deliveryRef ? o : null; });
+  const reg = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === CHILD);
+  ok(mailed?.createArgument.deliveryRef === reg.deliveryRef, "the assignor's mailing of " + CHILD + " is on Canton, signed with Company A's key");
+  await page.getByRole("button", { name: "Record the UCC-3 for this assignment" }).click();
+  await page.getByLabel("Filing number").fill("UCC3-2026-0555");
+  await page.locator("div.mt-3", { has: page.getByText(/^Record your UCC-3 for/) }).locator('input[type="file"]').setInputFiles({ name: "ucc3-child.pdf", mimeType: "application/pdf", buffer: Buffer.from("child ucc-3") });
+  await page.getByRole("button", { name: /^Record UCC-3: confirm with your passkey/ }).click();
+  await answerCanton(page, /Record the UCC-3 filed for PENS-0001-BD-A00001-1: filed copy 0x/, "assignor's UCC-3");
+  const filed = await until(async () => { const o = await onCanton("AssignmentOffer", CHILD); return o?.createArgument.ucc3Hash ? o : null; });
+  ok(filed?.createArgument.ucc3Hash === "0x" + crypto.createHash("sha256").update("child ucc-3").digest("hex"), "and its UCC-3's filed copy");
+}
 
 // Company D, on its own device: transfer code, passkey, its own Canton keys, then rejects with a reason.
 const three = await newBrowser();
@@ -204,6 +254,11 @@ ok(!!holderD && holderD.party !== holder.party, "Company D has its own party on 
 {
   const companyDSees = (await acsFor(holderD.party)).map((e) => e.createArgument.recordId);
   ok(companyDSees.length && companyDSees.every((id) => id === CHILD), "Company D sees only its own offer on Canton, not Company A's assignment (" + companyDSees.join(", ") + ")");
+}
+await recordReceipt(p3, "D", CHILD.replace(/-/g, "\\-"));
+{
+  const o = await until(async () => { const x = await onCanton("AssignmentOffer", CHILD); return x?.createArgument.receiptRef ? x : null; });
+  ok(!!o, "Company D's delivery receipt is on Canton, signed with Company D's own key");
 }
 await p3.getByRole("button", { name: "Reject this assignment" }).click();
 await p3.getByLabel(/Reason for rejecting/).fill("The amount on the instrument I received does not match what the register shows, and I did not agree to take this portion " +

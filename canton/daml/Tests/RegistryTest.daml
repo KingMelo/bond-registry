@@ -3,7 +3,8 @@ module Tests.RegistryTest where
 
 import Daml.Script
 import DA.Assert
-import DA.Time (days)
+import DA.Time (days, addRelTime)
+import DA.Date (toDateUTC)
 import qualified DA.Text as T
 import Registry
 
@@ -37,7 +38,7 @@ issueAndAccept c bond = do
   (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
     recordId = "PENS-0001-BD-A00001"; units = 1_000_000; docHash = h "a00001"; ucc3Hash = Some (h "ucc3a"); assigneeName = "Company A"; assignee = None
   now <- getTime
-  offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now
+  offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now; mailingRef = h "mail"
   -- After the transfer code and their key, the platform names their party on the offer.
   offer <- submit c.platform $ exerciseCmd offer Bind with party = c.alice
   a1 <- submit c.alice $ exerciseCmd offer Accept
@@ -159,7 +160,7 @@ test_deemed_acceptance = script do
     recordId = "PENS-0001-BD-A00003"; units = 700; docHash = h "a3"; ucc3Hash = None; assigneeName = "Company D"; assignee = None
   submitMustFail c.platform $ exerciseCmd offer DeemAccepted   -- not mailed yet
   now <- getTime
-  offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now
+  offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now; mailingRef = h "mail"
   passTime (days 29)
   submitMustFail c.platform $ exerciseCmd offer DeemAccepted   -- not a day sooner
   passTime (days 2)
@@ -188,4 +189,33 @@ test_issue_numbering = script do
     recordId = "OTHER-0001-BD-A00001"; units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
   _ <- submit c.issuer $ exerciseCmd bond Issue with
     recordId = "PENS-0001-BD-A00007"; units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
+  pure ()
+
+test_mailing_receipt_ucc3 = script do
+  (c, bond) <- setup
+  (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
+    recordId = "PENS-0001-BD-A00001"; units = 1_000; docHash = h "a1"; ucc3Hash = None; assigneeName = "Company A"; assignee = Some c.alice
+  now <- getTime
+  -- The mailing: by its sender only, once, not dated in the future, with its fingerprint.
+  submitMustFail c.alice $ exerciseCmd offer RecordMailing with sentOn = now; mailingRef = h "mail"
+  submitMustFail c.issuer $ exerciseCmd offer RecordMailing with sentOn = now; mailingRef = "no"
+  submitMustFail c.issuer $ exerciseCmd offer RecordMailing with sentOn = addRelTime now (days 2); mailingRef = h "mail"
+  offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now; mailingRef = h "mail"
+  submitMustFail c.issuer $ exerciseCmd offer RecordMailing with sentOn = now; mailingRef = h "mail2"
+  -- The delivery receipt: by the assignee only, once.
+  let today = toDateUTC now
+  submitMustFail c.issuer $ exerciseCmd offer RecordReceipt with received = today; ref = h "rcpt"
+  offer <- submit c.alice $ exerciseCmd offer RecordReceipt with received = today; ref = h "rcpt"
+  submitMustFail c.alice $ exerciseCmd offer RecordReceipt with received = today; ref = h "rcpt2"
+  -- Accepted, the assignment keeps all three, and a UCC-3 filed later goes on by the assignor (here the issuer) only.
+  a <- submit c.alice $ exerciseCmd offer Accept
+  submitMustFail c.alice $ exerciseCmd a RecordUcc3OnAssignment with filedHash = h "ucc3"
+  a <- submit c.issuer $ exerciseCmd a RecordUcc3OnAssignment with filedHash = h "ucc3"
+  submitMustFail c.issuer $ exerciseCmd a RecordUcc3OnAssignment with filedHash = h "ucc3b"
+  Some v <- queryContractId c.alice a
+  v.deliveryRef === Some (h "mail")
+  v.mailedOn === Some now
+  v.receiptRef === Some (h "rcpt")
+  v.receivedOn === Some today
+  v.ucc3Hash === Some (h "ucc3")
   pure ()

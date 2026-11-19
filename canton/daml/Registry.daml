@@ -13,6 +13,7 @@ module Registry where
 
 import qualified DA.Text as T
 import DA.Time (days, addRelTime)
+import DA.Date (toDateUTC)
 import DA.Optional (fromSomeNote)
 
 -- A document fingerprint: "0x" + 64 hex digits (the SHA-256 of the file, taken in the browser).
@@ -68,7 +69,7 @@ template Bond
         offer <- create AssignmentOffer with
           issuer; platform; assignor = issuer; bondId; recordId; parentId = None
           units; instrumentHash = docHash; ucc3Hash; assigneeName; assignee
-          mailedOn = None; deemed = False; observers
+          mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None; deemed = False; observers
         bond <- create this with unassigned = unassigned - units
         pure (bond, offer)
 
@@ -103,12 +104,16 @@ template AssignmentOffer
     assigneeName : Text
     assignee : Optional Party   -- None until the assignee has a party (after the transfer code)
     mailedOn : Optional Time    -- the date sent; starts the response period
+    deliveryRef : Optional Text -- fingerprint of the mailing: certified mail number and receipt copy
+    receivedOn : Optional Date  -- the assignee's delivery receipt: the date received
+    receiptRef : Optional Text  -- and its fingerprint: tracking number, date and receipt copy
     deemed : Bool               -- in effect by default after the response period
     observers : [Party]
   where
     signatory issuer, assignor
     observer platform, observers, optional [] (\p -> [p]) assignee
     ensure units > 0 && isHash instrumentHash && optional True isHash ucc3Hash
+      && optional True isHash deliveryRef && optional True isHash receiptRef
 
     -- The platform names the assignee's new party once they've set up their key.
     choice Bind : ContractId AssignmentOffer
@@ -120,13 +125,29 @@ template AssignmentOffer
 
     -- The sender records the certified mailing: its date starts the 30 days.
     choice RecordMailing : ContractId AssignmentOffer
-      with sentOn : Time
+      with
+        sentOn : Time
+        mailingRef : Text         -- the register's fingerprint of the mailing
       controller assignor
       do
         assertMsg "The mailing is already recorded." (mailedOn == None)
+        assertMsg "The mailing needs its fingerprint." (isHash mailingRef)
         now <- getTime
         assertMsg "The date sent can't be in the future." (sentOn <= now)
-        create this with mailedOn = Some sentOn
+        create this with mailedOn = Some sentOn; deliveryRef = Some mailingRef
+
+    -- The assignee records their delivery receipt, once.
+    choice RecordReceipt : ContractId AssignmentOffer
+      with
+        received : Date
+        ref : Text
+      controller fromSomeNote "No assignee yet." assignee
+      do
+        assertMsg "A delivery receipt is already recorded." (receiptRef == None)
+        assertMsg "The receipt needs its fingerprint." (isHash ref)
+        today <- toDateUTC <$> getTime
+        assertMsg "The date received can't be in the future." (received <= today)
+        create this with receivedOn = Some received; receiptRef = Some ref
 
     -- The UCC-3: the issuer for its own assignments, the assignor for an assign-out.
     choice RecordUcc3 : ContractId AssignmentOffer
@@ -142,7 +163,7 @@ template AssignmentOffer
       controller fromSomeNote "No assignee yet." assignee
       do create Assignment with
            issuer; platform; assignee = fromSomeNote "" assignee; assignor; assigneeName; bondId; recordId; parentId
-           units; instrumentHash; carveOuts = []; ucc3Hash; observers
+           units; instrumentHash; carveOuts = []; ucc3Hash; mailedOn; deliveryRef; receivedOn; receiptRef; observers
 
     -- The assignee rejects, with a reason of 255+ characters. The units go back where they came
     -- from: a UnitsReturned record the assignor (or the issuer) reclaims. The assignee never sees
@@ -203,6 +224,10 @@ template Assignment
     instrumentHash : Text     -- this assignment's own signed paper
     carveOuts : [Text]        -- the paper of every assign-out made from it
     ucc3Hash : Optional Text
+    mailedOn : Optional Time
+    deliveryRef : Optional Text
+    receivedOn : Optional Date
+    receiptRef : Optional Text
     observers : [Party]
   where
     signatory issuer, assignee
@@ -230,7 +255,8 @@ template Assignment
         offer <- create AssignmentOffer with
           issuer; platform; assignor = assignee; bondId; recordId = childId; parentId = Some recordId
           units = childUnits; instrumentHash = childHash; ucc3Hash = None; assigneeName = childName
-          assignee = childParty; mailedOn = None; deemed = False; observers
+          assignee = childParty; mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None
+          deemed = False; observers
         pure (rest, offer)
 
     -- Units back from an assign-out that was rejected or cancelled (its paper stays listed:
@@ -243,6 +269,29 @@ template Assignment
         assertMsg "Those units came from another record." (r.parentId == Some recordId && r.assignor == assignee)
         archive returnedCid
         create this with units = units + r.units
+
+    -- A UCC-3 filed after it took effect: the issuer for its own assignments, the assignor for an
+    -- assign-out. Once; the assignor can do nothing else on it.
+    choice RecordUcc3OnAssignment : ContractId Assignment
+      with filedHash : Text
+      controller assignor
+      do
+        assertMsg "A UCC-3 is already recorded." (ucc3Hash == None)
+        assertMsg "Attach the filed UCC-3 (its SHA-256)." (isHash filedHash)
+        create this with ucc3Hash = Some filedHash
+
+    -- A delivery receipt recorded after it took effect, by the assignee, once.
+    choice RecordReceiptOnAssignment : ContractId Assignment
+      with
+        received : Date
+        ref : Text
+      controller assignee
+      do
+        assertMsg "A delivery receipt is already recorded." (receiptRef == None)
+        assertMsg "The receipt needs its fingerprint." (isHash ref)
+        today <- toDateUTC <$> getTime
+        assertMsg "The date received can't be in the future." (received <= today)
+        create this with receivedOn = Some received; receiptRef = Some ref
 
     -- The issuer pays under the paperwork and records it, with the payment confirmation's hash.
     choice Redeem : ()
