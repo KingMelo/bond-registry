@@ -14,9 +14,6 @@
     "dev:platform": "APP=platform node server/index.js"
   },
   "dependencies": {
-    "@trezor/connect-web": "9.7.3",
-    "ethers": "6.13.4",
-    "events": "3.3.0",
     "express": "4.21.2",
     "pg": "8.13.1",
     "qrcode": "1.5.4",

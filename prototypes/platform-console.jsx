@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from "react";
 import { T, serif, sans, Label, Chip, Button, Field, Area, Rows, Note } from "./issuer-console.jsx";
 import { Shell, Heading, Lede, ErrorText, TextLink, ForgotPassword, NewPassword, resetToken } from "./issuer-account.jsx";
 import { api, Loading, dollars } from "../src/registry.jsx";
-import { SignatureQueue } from "./trezor-sign.jsx";
 
 /* ================================================================
    Platform console — the platform's own back office.
@@ -236,88 +235,6 @@ const FN_LABEL = {
   reinstateIssuer: "Reinstate issuer", unsupported: "No matching contract call",
 };
 
-// The on-chain mirror: what's waiting, what went through, and anything the contract refused.
-function ChainPanel({ me, flash }) {
-  const [s, setS] = useState(null);
-  const [err, setErr] = useState("");
-  const load = useCallback(() => api.chainSummary().then(setS).catch((e) => setErr(e.message)), []);
-  useEffect(() => { load(); const t = setInterval(load, POLL_MS); return () => clearInterval(t); }, [load]);
-  if (!s) return <Loading error={err} />;
-  if (!s.enabled) return (
-    <div>
-      <Heading>Chain</Heading>
-      <Lede>The on-chain mirror is off on this console: CHAIN_CONTRACT isn't set.</Lede>
-    </div>
-  );
-  const n = (k) => s.counts[k] || 0;
-  const retry = async (seq) => {
-    try { await api.chainRetry(seq); flash("Queued again."); await load(); } catch (e) { flash(e.message); }
-  };
-  const [freezeOk, setFreezeOk] = useState(false);
-  const freeze = async () => {
-    try { await api.chainFreeze(); setFreezeOk(false); flash("Freeze queued. Approve it with your Trezor above."); await load(); } catch (e) { flash(e.message); }
-  };
-  const openWrites = n("queued") + n("sent") + n("signing") + n("failed");
-  return (
-    <div>
-      <Heading>Chain</Heading>
-      <Lede>
-        Every change the contract tracks is written to it in order, one bond at a time. If the
-        contract refuses a write, later writes for that bond wait until it's fixed and retried.
-      </Lede>
-      {s.platformSafe && me.role === "owner" && (
-        <SignatureQueue load={api.platformSigning} submit={api.platformSign} T={T} sans={sans} serif={serif} onDone={load} />
-      )}
-      <Rows data={[
-        ["Contract", <a href={s.explorer + "/address/" + s.contract} target="_blank" rel="noreferrer"
-          style={{ color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 }}>{s.contract.slice(0, 10) + "…" + s.contract.slice(-6)}</a>],
-        ["Recorded", String(n("confirmed"))],
-        ["Waiting to be written", String(n("queued") + n("sent"))],
-        n("signing") > 0 && ["Waiting for signatures", String(n("signing"))],
-        s.platformSafe && ["Platform role held by", "Safe " + s.platformSafe],
-        s.predecessor && ["Copied from", s.predecessor.slice(0, 10) + "…" + s.predecessor.slice(-6) + " (the contract this one replaced)"],
-        s.freeze && ["Frozen for a move", s.freeze === "confirmed" ? "Yes: no more writes go to this contract" : s.freeze === "failed" ? "The freeze was refused; see below" : "Waiting: " + s.freeze],
-        ["Refused", String(n("failed"))],
-        s.last && ["Last transaction", <a href={s.explorer + "/tx/" + s.last.tx} target="_blank" rel="noreferrer"
-          style={{ color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 }}>{new Date(s.last.updated_at).toLocaleString()}</a>],
-      ]} />
-      {s.failed.length > 0 && (
-        <div className="mt-5">
-          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Refused writes</div>
-          {s.failed.map((f) => (
-            <div key={f.seq} className="px-3 py-3 mb-2" style={{ border: "1px solid " + T.red, borderRadius: 2, background: T.white }}>
-              <div style={{ fontSize: 14, color: T.ink }}>{FN_LABEL[f.fn] || f.fn} · {f.ref}</div>
-              <div style={{ fontSize: 13, color: T.red, marginTop: 4, lineHeight: 1.5, wordBreak: "break-word" }}>{f.error}</div>
-              {me.role === "owner" && (
-                <div className="mt-2"><Button variant="quiet" onClick={() => retry(f.seq)}>Retry</Button></div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {me.role === "owner" && !s.freeze && (
-        <div className="mt-6 pt-4" style={{ borderTop: "1px solid " + T.rule }}>
-          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 6 }}>Move to a new contract version</div>
-          <p style={{ fontSize: 14, color: T.inkSoft, lineHeight: 1.6, margin: "0 0 10px", maxWidth: "62ch" }}>
-            Step one is freezing this contract, so the new version can copy everything it holds
-            (records, assignees' device keys, prior instruments) exactly. Once frozen, nothing more is
-            written here; the registry waits until the new version is deployed and has copied it.
-            {openWrites > 0 && " First, " + openWrites + " open write(s) must finish or be fixed."}
-          </p>
-          {!freezeOk ? (
-            <Button variant="quiet" disabled={openWrites > 0} onClick={() => setFreezeOk(true)}>Freeze this contract for a move…</Button>
-          ) : (
-            <div className="flex gap-3 flex-wrap">
-              <Button danger onClick={freeze}>Yes, freeze it (Trezor approval)</Button>
-              <Button variant="quiet" onClick={() => setFreezeOk(false)}>Cancel</Button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function StaffPanel({ me }) {
   const [staff, setStaff] = useState(null);
   const [invite, setInvite] = useState(null);
@@ -424,7 +341,7 @@ export default function PlatformApp() {
     (fStatus === "all" || b.review === fStatus) && (fIssuer === "all" || b.issuer.id === fIssuer));
   const live = bonds.filter((b) => b.review === "approved");
 
-  const tabs = [["review", "Review"], ["issuers", "Issuers"], ["bonds", "Bond directory"], ["chain", "Chain"], ["staff", "Staff"]];
+  const tabs = [["review", "Review"], ["issuers", "Issuers"], ["bonds", "Bond directory"], ["staff", "Staff"]];
   const select = { fontFamily: sans, fontSize: 14, color: T.ink, background: T.white, border: "1px solid " + T.rule,
     borderRadius: 2, padding: "8px 10px", width: "100%" };
 
@@ -539,7 +456,6 @@ export default function PlatformApp() {
         </div>
       )}
 
-      {tab === "chain" && <ChainPanel me={me.user} flash={flash} />}
       {tab === "staff" && <StaffPanel me={me.user} />}
 
       {toast && (

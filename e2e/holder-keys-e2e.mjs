@@ -1,44 +1,35 @@
-// End-to-end: holders act only with their own device key (contract v4).
-// The servers run against a local chain; this script plays the holder's phone, making P-256
-// passkeys and WebAuthn responses exactly as a browser would.
+// End-to-end: holders act only with their own passkey.
+// The servers run against a local Postgres; this script plays the holder's phone, making P-256
+// passkeys and WebAuthn responses exactly as a browser would. Every signed act is kept, and the
+// suite checks each kept signature again at the end.
 //
-// Needs a local chain (cd chain && npx hardhat node), Postgres on 127.0.0.1:54329, and the contract
-// compiled. Run from the repo root: node chain/e2e/holder-keys-e2e.mjs
+// Needs Postgres on 127.0.0.1:54329. Run from the repo root: node e2e/holder-keys-e2e.mjs
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
-const require = createRequire(new URL("../../package.json", import.meta.url));
-const { ethers } = require("ethers");
+const require = createRequire(new URL("../package.json", import.meta.url));
 const pg = require("pg");
 // A fake phone: passkeys that answer like a browser's WebAuthn.
 import { newDevice, created, signs, holderPasskeySignIn } from "./fake-device.mjs";
 
-const ROOT = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
+const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const DB = "postgres://postgres@127.0.0.1:54329/hke";
 const I = "http://127.0.0.1:4992", P = "http://127.0.0.1:4993", H = "http://127.0.0.1:4994";
-const RPC = "http://127.0.0.1:8545", RP_ID = "holder.test";
-const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const RP_ID = "holder.test";
 let fails = 0; const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) fails++; };
 const H32 = () => "0x" + crypto.randomBytes(32).toString("hex");
 const b64u = (b) => Buffer.from(b).toString("base64url");
 
-// ---------- chain and servers
-const provider = new ethers.JsonRpcProvider(RPC);
-const wallet = new ethers.NonceManager(new ethers.Wallet(KEY, provider));
-const art = JSON.parse(fs.readFileSync(ROOT + "/chain/artifacts/contracts/BondInterestRegistry.sol/BondInterestRegistry.json", "utf8"));
-const me = new ethers.Wallet(KEY).address;
-const regC = await new ethers.ContractFactory(art.abi, art.bytecode, wallet).deploy(me, me, me, me, ethers.ZeroAddress);
-await regC.waitForDeployment();
-const CONTRACT = await regC.getAddress();
-console.log("registry v4", CONTRACT);
-
+// ---------- servers
+const records = await import(ROOT + "/server/records.js");
+const holderKeys = await import(ROOT + "/server/holder-keys.js");
 execSync(`psql -h 127.0.0.1 -p 54329 -U postgres -q -c "drop database if exists hke" -c "create database hke"`, { stdio: "ignore" });
 const procs = [];
 process.on("exit", () => procs.forEach((c) => c.kill())); // stop the servers even when a step throws
 const start = (app, port, extra = {}) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
-    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CHAIN_CONTRACT: CONTRACT, CHAIN_ID: "31337", CHAIN_RPC_URL: RPC,
+    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x",
     HOLDER_RP_ID: RP_ID, HOLDER_ORIGIN: "https://holder.test", RESPONSE_CHECK_MS: "1500", ...extra } });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; process.env.VERBOSE && process.stdout.write("[" + app + "] " + d); if (out.includes("listening")) res(c); });
@@ -46,7 +37,7 @@ const start = (app, port, extra = {}) => new Promise((res, rej) => {
   setTimeout(() => rej(new Error(app + " didn't start")), 20000);
 });
 await start("platform", 4993);
-await start("issuer", 4992, { CHAIN_WORKER: "1", CHAIN_SIGNER_KEY: KEY });
+await start("issuer", 4992);
 await start("holder", 4994);
 
 const jar = {};
@@ -71,17 +62,11 @@ const icommit = async ({ bonds = [], reg = [], events = [] }) => call(I, "POST",
 const rec = async (id) => (await st()).reg.find((a) => a.id === id);
 const hrec = async (id) => (await hst()).reg.find((a) => a.id === id);
 const bondNow = async () => (await st()).bonds.find((b) => b.id === "PENS-0001-BD");
-const id32 = (s) => ethers.keccak256(ethers.toUtf8Bytes(s));
-const S = ["None", "AwaitingCredential", "CredentialRequested", "Issued", "Accepted", "Locked", "PendingRedemption", "Redeemed", "Superseded", "Cancelled", "Rejected"];
-const onchain = async (id) => S[Number((await regC.assignments(id32(id))).status)];
-async function settle(ms = 90000) {
-  const t0 = Date.now(); let s;
-  while (Date.now() - t0 < ms) {
-    s = await call(P, "GET", "/api/platform/chain");
-    if (!(s.counts.queued || s.counts.sent || s.counts.signing)) return s;
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  return s;
+// The passkey signatures kept for a record (or signed by it).
+async function sigs(where, id) {
+  const db = new pg.Client({ connectionString: DB }); await db.connect();
+  const r = (await db.query(`select * from holder_signatures where ${where} = $1 order by seq`, [id])).rows; await db.end();
+  return r;
 }
 
 /** Signs in with the mailed code; registers the device if the record has none yet. */
@@ -227,19 +212,14 @@ ok(e?.status === 404, "once used, the transfer code is gone for the issuer too (
   const doc = H32();
   await icommit({ reg: [{ ...(await rec(a1.id)), filingNumber: "UCC3-2026-0417", filingDoc: doc, filingFile: "ucc3.pdf", filedOn: "Nov 10, 2026", filedBy: "Penson Trust" }],
     events: [ev(a1.bond, a1.id, "FilingRecorded", "UCC3-2026-0417")] });
-  await settle();
-  const want = (await import(ROOT + "/server/chain.js")).filingRef(a1.id, "UCC3-2026-0417", doc);
-  ok((await regC.assignments(id32(a1.id))).filingRef === want, "the issuer's UCC-3 is on-chain (number and filed copy)");
-  const db = new pg.Client({ connectionString: DB }); await db.connect();
-  const ops = (await db.query("select fn, role from chain_ops where ref = $1", [a1.id])).rows; await db.end();
-  ok(ops.some((r) => r.fn === "setFilingRef" && r.role === "issuer") && !ops.some((r) => r.fn === "recordFiling"), "written as the issuer's act, not the holder's");
+  ok((await rec(a1.id)).filingRef === records.filingRef(a1.id, "UCC3-2026-0417", doc), "the issuer's UCC-3 is recorded (number and filed copy)");
+  ok(!(await sigs("assignment", a1.id)).some((r) => r.fn === "recordFiling"), "as the issuer's act: no assignee signature was asked for it");
 }
 
 // 6. Lock, issuer unlocks. Holders don't request redemption through the registry: refused.
 a1 = await hrec(a1.id);
 await hsave(s1.token, phone, { reg: [{ ...a1, status: "Locked", lockKind: "pledge", lockReason: "Pledged", lockedOn: "now" }], events: [ev(a1.bond, a1.id, "Locked")] });
 await icommit({ reg: [{ ...(await rec(a1.id)), status: "Accepted", lockKind: null }], events: [ev(a1.bond, a1.id, "Unlocked", "release")] });
-await settle();
 a1 = await hrec(a1.id);
 e = await hsave(s1.token, phone, { reg: [{ ...a1, status: "PendingRedemption" }], events: [ev(a1.bond, a1.id, "RedemptionRequested")] }).then(() => null, (x) => x);
 ok(e?.status === 403, "a holder can't request redemption through the registry (" + e?.status + ")");
@@ -248,8 +228,7 @@ ok(e?.status === 403, "a holder can't request redemption through the registry ("
   const b0 = await bondNow(), r1 = await rec(a1.id);
   await icommit({ bonds: [{ ...b0, redeemed: b0.redeemed + r1.units }], reg: [{ ...r1, status: "Redeemed", redeemedOn: "now" }],
     events: [ev(a1.bond, a1.id, "Redeemed", H32())] });
-  await settle();
-  ok((await onchain(a1.id)) === "Redeemed", "the issuer's redemption is on-chain, with no holder request");
+    ok((await rec(a1.id)).status === "Redeemed", "the issuer's redemption is recorded, with no holder request");
 }
 
 // 7. A passkey can't be reset: the issuer has no way to clear it, so control stays with the assignee.
@@ -257,11 +236,9 @@ const CODE3 = "QRST-UVWX-YZ23-4567";
 await issue("PENS-0001-BD-A00003", 500_000, CODE3);
 const fresh = newDevice();
 const s3b = await signIn("PENS-0001-BD-A00003", CODE3, fresh);
-await settle();
-ok((await regC.holderKeys(id32("PENS-0001-BD-A00003"))).x !== 0n, "the device key is on-chain for A00003");
+ok(!!(await hrec("PENS-0001-BD-A00003")).deviceKey?.fingerprint, "A00003 has its device key");
 e = await tryCall(I, "POST", "/api/issuer/holder-key/clear", { issuer: issuerId, id: "PENS-0001-BD-A00003", reason: "Photo ID checked" });
 ok(e?.status === 404 || e?.status === 405, "the issuer can't reset an assignee's passkey: there's no such action (" + e?.status + ")");
-ok(!regC.interface.getFunction("clearHolderKey", []), "and the contract has no function for it");
 {
   const again = await call(H, "POST", "/api/holder/signin", { id: "PENS-0001-BD-A00003", passkey: CODE3 }).catch((x) => ({ ok: false, code: x.status }));
   ok(!again.ok && !again.token, "the used transfer code doesn't open it again (" + again.code + ")");
@@ -271,29 +248,20 @@ await hsave(s3b.token, fresh, { reg: [{ ...a3, status: "Accepted", accepted: "no
 
 // 8. No answer within 30 days: it takes effect without anyone's signature, and not a day sooner.
 await issue("PENS-0001-BD-A00004", 1234, "AAAA-BBBB-CCCC-DDDD");
-await settle();
 {
   const db = new pg.Client({ connectionString: DB }); await db.connect();
   await db.query(`update assignments set data = data || jsonb_build_object('deliveredAt', (now() - interval '31 days')::text) where id = 'PENS-0001-BD-A00004'`);
   await db.end();
 }
-// The chain keeps its own date (the mailing date it was given), so the server's backdating alone
-// isn't enough: the sender's first try is refused until the chain's 30 days pass too.
-await provider.send("evm_increaseTime", [31 * 86400]); await provider.send("evm_mine", []);
 let deemed = null;
 for (let i = 0; i < 30 && !deemed; i++) { await new Promise((r) => setTimeout(r, 1000)); const x = await rec("PENS-0001-BD-A00004"); if (x.status === "Accepted") deemed = x; }
 ok(deemed?.effective === "deemed", "after 30 days without a rejection it took effect");
 
-// 8a. Every other register change is logged on-chain too: the issuer corrects A00004's contact and address.
+// 8a. The issuer corrects A00004's contact and address; no assignee signature is involved.
 {
   const r4 = await rec("PENS-0001-BD-A00004");
   await icommit({ reg: [{ ...r4, contact: "J. Doe, Treasurer", address: "Company A\n2 New St\nDover, DE 19901" }] });
-  await settle();
-  const C = await import(ROOT + "/server/chain.js");
-  const want = C.changeDoc(r4.id, "details", C.RECORD_DETAILS, await rec(r4.id));
-  const logs = await regC.queryFilter(regC.filters.RegisterChanged(id32("PENS-0001-BD"), id32(r4.id)));
-  ok(logs.length === 1 && logs[0].args.kind === ethers.id("details") && logs[0].args.docHash === want,
-    "the corrected contact and address are logged on-chain as a hash of the new values, written automatically");
+  ok((await rec(r4.id)).contact === "J. Doe, Treasurer", "the issuer's correction is saved");
 }
 
 // 8b. It repeats: the holder of A00003 (in effect, on their new phone) assigns out in turn.
@@ -320,14 +288,10 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
   const mdoc = H32();
   await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 2222 3333", mailedOn: "2026-11-09", mailingDoc: mdoc, mailingFile: "ps3800.pdf" }],
     events: [ev(g.bond, g.id, "DeliveryRecorded", "mailed 2026-11-09")] });
-  await settle();
-  const C = await import(ROOT + "/server/chain.js");
-  const onc = await regC.assignments(id32(g.id));
-  ok(onc.deliveryRef === C.deliveryRef(g.id, "9407 2222 3333", undefined, mdoc) && (await regC.mailedAt(id32(g.id))) === BigInt(Date.parse("2026-11-09") / 1000),
-    "the assignor's mailing is on-chain, and its date starts the assignee's 30 days");
-  const db = new pg.Client({ connectionString: DB }); await db.connect();
-  const fns = (await db.query("select fn, role from chain_ops where ref = $1", [g.id])).rows; await db.end();
-  ok(fns.some((r) => r.fn === "recordMailing" && r.role === "relayer") && !fns.some((r) => r.fn === "setDeliveryRef"), "nothing went to the issuer's Safe for it");
+    const onc = await rec(g.id);
+  ok(onc.deliveryRef === records.deliveryRef(g.id, "9407 2222 3333", undefined, mdoc) && onc.mailedOn === "2026-11-09" && Date.parse(onc.deliveredAt) === Date.parse("2026-11-09"),
+    "the assignor's mailing is recorded, and its date starts the assignee's 30 days");
+  ok((await sigs("assignment", g.id)).some((r) => r.fn === "recordMailing" && r.signer === a3.id), "signed with the assignor's own passkey");
   gr = await hrec(g.id);
   e = await hsave(s3b.token, fresh, { reg: [{ ...gr, instrumentMail: "9407 9999", mailedOn: "2026-11-09", mailingDoc: H32() }] }).then(() => null, (x) => x);
   ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
@@ -343,8 +307,8 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
   ok(e?.status === 400, "an assign-out's UCC-3 needs the filed copy attached (" + e?.status + ")");
   await hsave(s3b.token, fresh, { reg: [{ ...gr, filingNumber: "UCC3-2026-0555", filingDoc: gdoc, filingFile: "ucc3.pdf", filedOn: "Nov 11, 2026", filedBy: "Company A" }],
     events: [ev(g.bond, g.id, "FilingRecorded", "UCC3-2026-0555")] });
-  await settle();
-  ok((await regC.assignments(id32(g.id))).filingRef === C.filingRef(g.id, "UCC3-2026-0555", gdoc), "the assignor's UCC-3 for their assign-out is on-chain, signed with their passkey");
+    ok((await rec(g.id)).filingRef === records.filingRef(g.id, "UCC3-2026-0555", gdoc)
+    && (await sigs("assignment", g.id)).some((r) => r.fn === "recordFiling" && r.signer === a3.id), "the assignor's UCC-3 for their assign-out is recorded, signed with their passkey");
   gr = await hrec(g.id);
   e = await hsave(s3b.token, fresh, { reg: [{ ...gr, filingNumber: "UCC3-OTHER", filingDoc: H32() }] }).then(() => null, (x) => x);
   ok(e?.status === 409, "it's recorded once (" + e?.status + ")");
@@ -360,11 +324,10 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
   ok(e?.status === 400, "and the tracking number on it (" + e?.status + ")");
   await hsave(s3b.token, fresh, { reg: [{ ...a3, receiptMail: "9407-00003", receivedOn: "2026-11-10", receiptDoc: doc, receiptFile: "green-card.pdf" }],
     events: [ev(a3.bond, a3.id, "ReceiptRecorded", "received 2026-11-10")] });
-  await settle();
-  const C = await import(ROOT + "/server/chain.js");
-  const rc = await regC.receipts(id32(a3.id));
-  ok(rc.ref === C.receiptRef(a3.id, "9407-00003", "2026-11-10", doc) && rc.receivedAt === BigInt(Date.parse("2026-11-10") / 1000),
-    "the assignee's delivery receipt is on-chain (tracking number, date, receipt), signed with their passkey");
+    const rc = await rec(a3.id);
+  ok(rc.receiptRef === records.receiptRef(a3.id, "9407-00003", "2026-11-10", doc) && rc.receivedOn === "2026-11-10"
+    && (await sigs("assignment", a3.id)).some((r) => r.fn === "recordReceipt" && r.signer === a3.id),
+    "the assignee's delivery receipt is recorded (tracking number, date, receipt), signed with their passkey");
   const mine3 = await hrec(a3.id);
   ok(mine3.receiptMatches === true && !("receiptMail" in mine3), "its tracking number matches the issuer's mailing, and stays out of the public register");
   a3 = await hrec(a3.id);
@@ -374,13 +337,23 @@ ok(deemed?.effective === "deemed", "after 30 days without a rejection it took ef
   ok(e && e.status >= 400, "nobody else can record it (" + e?.status + ")");
 }
 
-// 9. Everything confirmed, and the chain matches the register.
-const sum = await settle(120000);
-console.log("queue:", JSON.stringify(sum.counts), sum.failed.length ? JSON.stringify(sum.failed) : "");
-ok(!sum.counts.failed && !sum.counts.queued && !sum.counts.sent, "every write confirmed (" + sum.counts.confirmed + ")");
-for (const a of (await st()).reg) ok((await onchain(a.id)) === a.status, `${a.id}: chain ${await onchain(a.id)} · register ${a.status}`);
-const nonce = (await regC.holderKeys(id32("PENS-0001-BD-A00001"))).nonce;
-ok(nonce === 4n, "A00001's key signed 4 times on-chain: register key, acknowledge, assign out, lock (" + nonce + ")");
+// 9. Every kept signature checks out again against its record's public key, and the counts are right.
+{
+  const db = new pg.Client({ connectionString: DB }); await db.connect();
+  const rows = (await db.query("select s.*, a.data->'holder' as key from holder_signatures s join assignments a on a.id = s.signer order by s.seq")).rows; await db.end();
+  let good = 0;
+  for (const r of rows) {
+    try {
+      holderKeys.checkAssertion({ assertion: r.assertion, challenge: r.challenge, x: r.key.x, y: r.key.y, rpId: RP_ID, origins: ["https://holder.test"] });
+      if (holderKeys.challengeFor({ signerId: r.signer, nonce: r.nonce, fn: r.fn, args: r.args }) === r.challenge) good++;
+    } catch { /* counted as bad */ }
+  }
+  ok(rows.length > 0 && good === rows.length, "all " + rows.length + " kept signatures verify again, each over exactly what it records (" + good + ")");
+  const mine = rows.filter((r) => r.signer === "PENS-0001-BD-A00001").map((r) => r.fn);
+  ok(mine.join(",") === "registerHolderKey,accept,assignOut,lock", "A00001's passkey signed 4 times: register key, accept, assign out, lock (" + mine.join(", ") + ")");
+  const nonces = rows.filter((r) => r.signer === "PENS-0001-BD-A00001").map((r) => r.nonce);
+  ok(nonces.join(",") === "0,1,2,3", "each at the next count, so none can be replayed (" + nonces.join(",") + ")");
+}
 
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");
 for (const c of procs) c.kill();

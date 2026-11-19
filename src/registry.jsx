@@ -60,33 +60,26 @@ export const api = {
   reviewBond: (id, decision, note) => call("POST", "/api/platform/bonds/" + encodeURIComponent(id) + "/review", { decision, note }),
   staff: () => call("GET", "/api/platform/staff"),
   staffInvite: () => call("POST", "/api/platform/invite"),
-  chainSummary: () => call("GET", "/api/platform/chain"),
-  signing: (issuer) => call("GET", "/api/issuer/signing?issuer=" + encodeURIComponent(issuer)),
-  sign: (issuer, seq, signature) => call("POST", "/api/issuer/sign", { issuer, seq, signature }),
-  platformSigning: () => call("GET", "/api/platform/signing"),
-  platformSign: (seq, signature) => call("POST", "/api/platform/sign", { seq, signature }),
-  chainRetry: (seq) => call("POST", "/api/platform/chain/retry", { seq }),
-  chainFreeze: () => call("POST", "/api/platform/chain/freeze", {}),
 };
 
 const byId = (list, key = "id") => new Map(list.map((x) => [x[key], x]));
 
 // `issuer` scopes the issuer console to one issuer; the holder portal leaves it out.
 // `beforeCommit`, when given, adds to each save: the holder portal uses it to get the holder's
-// device signatures for what the save will do on-chain.
+// passkey signatures for the acts the save makes.
 export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
   const [reg, setReg] = useState([]);
   const [bonds, setBonds] = useState([]);
   const [events, setEvents] = useState([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
-  const [info, setInfo] = useState({ issuer: null, issuers: [], chain: null, responseDays: 30 });
+  const [info, setInfo] = useState({ issuer: null, issuers: [], responseDays: 30 });
   const scope = issuer ? "issuer=" + encodeURIComponent(issuer) : "";
-  const stateUrl = (since) => "/api/state?" + [scope, since != null ? "since=" + since + "&chain=" + (synced.current.chainStamp || 0) : ""].filter(Boolean).join("&");
+  const stateUrl = (since) => "/api/state?" + [scope, since != null ? "since=" + since : ""].filter(Boolean).join("&");
 
   const synced = useRef({ version: 0, reg: new Map(), bonds: new Map(), events: new Set() });
   const latest = useRef({ reg, bonds, events });
-  // After a save, the server's copy carries what only it works out (on-chain references, matches):
+  // After a save, the server's copy carries what only it works out (fingerprints, matches):
   // the next poll takes the whole state, once nothing local is waiting to be saved.
   const refetch = useRef(false);
   latest.current = { reg, bonds, events };
@@ -98,14 +91,14 @@ export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
 
   const adopt = useCallback((s) => {
     synced.current = {
-      version: s.version, chainStamp: s.chainStamp || 0,
+      version: s.version,
       reg: byId(s.reg),
       bonds: byId(s.bonds),
       events: new Set(s.events.map((e) => e.eid)),
     };
     latest.current = { reg: s.reg, bonds: s.bonds, events: s.events };
     setReg(s.reg); setBonds(s.bonds); setEvents(s.events);
-    setInfo({ issuer: s.issuer || null, issuers: s.issuers || [], chain: s.chain || null, responseDays: s.responseDays || 30 });
+    setInfo({ issuer: s.issuer || null, issuers: s.issuers || [], responseDays: s.responseDays || 30 });
   }, []);
 
   const reload = useCallback(async () => {
@@ -187,7 +180,7 @@ export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
   useEffect(() => onNewVersion(() => setStale(true)), []);
 
   return { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, stale,
-    issuerInfo: info.issuer, issuers: info.issuers, chainInfo: info.chain, responseDays: info.responseDays };
+    issuerInfo: info.issuer, issuers: info.issuers, responseDays: info.responseDays };
 }
 
 // The date an issued assignment takes effect if the holder doesn't reject it, or null before mailing.
@@ -197,21 +190,7 @@ export function effectiveDate(rec, days) {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-// How a bond or record stands on-chain, in words, with an explorer link when there is one.
-//   rec.chain: { state: confirmed | pending | failed, tx, error } from the server, or null
-//   chainInfo: { contract, explorer } when the mirror is on, else null
-export function chainStatus(rec, chainInfo) {
-  if (!chainInfo) return null;
-  const c = rec?.chain;
-  const contract = chainInfo.explorer + "/address/" + chainInfo.contract;
-  if (!c) return { label: "Not on-chain yet", href: null, tone: "soft" };
-  if (c.state === "failed") return { label: "Not written: " + (c.error || "the contract refused it"), href: contract, tone: "bad" };
-  if (c.state === "signing") return { label: "Waiting for your signature", href: null, tone: "soft", busy: true };
-  if (c.state === "pending") return { label: "Writing to the chain…", href: contract, tone: "soft", busy: true };
-  return { label: "Recorded on-chain", href: c.tx ? chainInfo.explorer + "/tx/" + c.tx : contract, tone: "good" };
-}
-
-// Bytes32 hashes are long; show the ends.
+// Hashes are long; show the ends.
 export const shortHash = (h) => (typeof h === "string" && h.length > 20 ? h.slice(0, 10) + "…" + h.slice(-6) : h || "—");
 
 // Reads a dollar amount typed into an amount box and returns it in cents, the unit every
@@ -264,66 +243,10 @@ export function Loading({ error }) {
   );
 }
 
-// ------------------------------------------------------------------ writing on-chain
-
-const SPIN_CSS = `
-@keyframes br-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
-@keyframes br-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .br-slide, .br-spin { animation-duration: 3s !important; } }`;
-function SpinStyle() { return <style>{SPIN_CSS}</style>; }
-
-/** A small spinner, for a status that's still on its way to the chain. */
-export function Spinner({ color = "#5C6472", size = 12 }) {
-  return (
-    <>
-      <SpinStyle />
-      <span className="br-spin" aria-hidden="true" style={{ display: "inline-block", width: size, height: size, verticalAlign: "-1px", marginRight: 6,
-        border: "2px solid " + color, borderRightColor: "transparent", borderRadius: "50%", animation: "br-spin 0.8s linear infinite" }} />
-    </>
-  );
-}
-
-/**
- * The preloader for writes on their way to the chain: an animated bar while any of `items` (records
- * or bonds with a `chain` status) is being written or waits for a signature, then "Recorded
- * on-chain" for a few seconds once they've all landed.
- */
-export function ChainWriting({ items, chainInfo, ink = "#1D2433", soft = "#5C6472", wash = "#EEF0F2", signHint }) {
-  const pending = (items || []).filter((x) => x?.chain?.state === "pending").length;
-  const signing = (items || []).filter((x) => x?.chain?.state === "signing").length;
-  const busy = pending + signing;
-  const [done, setDone] = useState(false);
-  const was = useRef(0);
-  useEffect(() => {
-    if (was.current > 0 && busy === 0) { setDone(true); const t = setTimeout(() => setDone(false), 5000); was.current = busy; return () => clearTimeout(t); }
-    if (busy > 0) setDone(false);
-    was.current = busy;
-  }, [busy]);
-  if (!chainInfo || (!busy && !done)) return null;
-  const text = busy
-    ? (pending ? "Writing " + pending + (pending === 1 ? " change" : " changes") + " to the blockchain…" : "")
-      + (pending && signing ? " " : "")
-      + (signing ? signing + (signing === 1 ? " change waits" : " changes wait") + " for your signature" + (signHint ? " (" + signHint + ")" : "") + "." : "")
-    : "Recorded on-chain ✓";
-  return (
-    <div role="status" aria-live="polite" style={{ position: "sticky", top: 0, zIndex: 20, margin: "0 0 14px", background: wash, borderRadius: 2,
-      overflow: "hidden", fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}>
-      <SpinStyle />
-      <div style={{ padding: "9px 12px", fontSize: 13, color: busy ? soft : ink, display: "flex", alignItems: "center" }}>
-        {busy ? <Spinner color={soft} /> : null}<span>{text}</span>
-        {busy && pending ? <span style={{ marginLeft: "auto", fontSize: 12, color: soft, whiteSpace: "nowrap", paddingLeft: 10 }}>usually a few seconds</span> : null}
-      </div>
-      <div style={{ height: 3, background: busy ? "rgba(0,0,0,0.06)" : ink, position: "relative" }}>
-        {busy ? <div className="br-slide" style={{ position: "absolute", top: 0, bottom: 0, width: "40%", background: ink, animation: "br-slide 1.2s ease-in-out infinite" }} /> : null}
-      </div>
-    </div>
-  );
-}
-
 // ------------------------------------------------------------------ assignment IDs
 //
 // An assignment the issuer makes is <bond>-A00001, -A00002, …: each is tied to its original assignor
-// and secured party. Every assign-out under it, however far down the chain, is A00001-1, A00001-2, …:
+// and secured party. Every assign-out under it, however far down the line, is A00001-1, A00001-2, …:
 // one dash, one count of how many times that assignment has been assigned out. Which record each
 // came from is its parent, kept on the record.
 

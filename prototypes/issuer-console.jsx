@@ -1,8 +1,7 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { SignatureQueue } from "./trezor-sign.jsx";
-import { ChainWriting, Spinner, nextIssuedId } from "../src/registry.jsx";
+import React, { useEffect, useState } from "react";
+import { nextIssuedId } from "../src/registry.jsx";
 import { printPacket } from "../src/print-packet.js";
-import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — issuer console
@@ -137,18 +136,6 @@ function TextBtn({ children, onClick }) {
   );
 }
 
-// On-chain standing of a bond or record, as a line of text with an explorer link.
-export function ChainLink({ s }) {
-  if (!s) return null;
-  const color = s.tone === "bad" ? T.red : s.tone === "good" ? T.ink : T.inkSoft;
-  const text = <span style={{ color }}>{s.busy && <Spinner color={color} />}{s.label}</span>;
-  return s.href ? (
-    <a href={s.href} target="_blank" rel="noreferrer" style={{ color, textDecoration: "underline", textUnderlineOffset: 2 }}>
-      {s.busy && <Spinner color={color} />}{s.label}{s.tone === "good" ? " · view" : ""}
-    </a>
-  ) : text;
-}
-
 export function Note({ children, kind = "quiet" }) {
   const skin = kind === "warn" ? { background: "#F7E9E8", borderLeft: "3px solid " + T.red }
     : kind === "caution" ? { background: "#F2EAD3", borderLeft: "3px solid " + T.amber }
@@ -228,7 +215,7 @@ export function Sheet({ title, children, onClose }) {
 /* ---------------- console ---------------- */
 
 export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssuerStatus }) {
-  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo, chainInfo, responseDays, stale } =
+  const { reg, setReg, bonds, setBonds, events, setEvents, ready, error, reload, issuerInfo, responseDays, stale } =
     useRegistry({ issuer: issuerId, onNotice: (m) => flash(m) });
   const [pickedBond, setActiveBond] = useState(null);
   const activeBond = bonds.some((b) => b.id === pickedBond) ? pickedBond : bonds[0]?.id || null;
@@ -269,11 +256,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const [rbTitle, setRbTitle] = useState("");
   const [rbAssignor, setRbAssignor] = useState(""); // the party assigning interests in the bond
-  const [toSign, setToSign] = useState(0); // chain writes waiting on the issuer's Safe
-  const signNote = issuerInfo?.safe ? " — needs your signature" : "";
-  const signDone = issuerInfo?.safe ? " Approve it with your Trezor on the Approvals tab." : "";
-  const loadSigning = useCallback(() => api.signing(issuerId), [issuerId]);
-  const submitSig = useCallback((seq, sig) => api.sign(issuerId, seq, sig), [issuerId]);
   const [asEdit, setAsEdit] = useState(null); // the bond's assignor, while being changed
   const [rbUnits, setRbUnits] = useState("");
   const [rbInstr, setRbInstr] = useState(null);
@@ -349,7 +331,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   /* --- issuer actions (multisig) ---
      No paper, no record: every action below carries the hash of the document
-     that authorizes it. Mail numbers never go on-chain in plain text. */
+     that authorizes it. Mail numbers are shown only to the assignee. */
 
   // The passkey is generated here and shown once for the passkey document.
   // Only its hash is stored, on the server.
@@ -376,7 +358,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     patch(a.id, { status: "Issued", passkeyMail: mail.trim(), deliveryRef });
     emit(a.bond, a.id, "CredentialIssued", "ISSUER", deliveryRef);
     emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", deliveryRef);
-    done("Credential issued and mailing recorded." + signDone);
+    done("Credential issued and mailing recorded.");
     if (passkey) showPasskey(a.id, passkey, "Credential issued to " + a.party + ".");
   }
 
@@ -419,7 +401,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     showPasskey(a.id, passkey, "Replacement passkey for " + a.party + ".");
   }
 
-  // The credential is off-chain; clearing a lockout touches the credential store only.
+  // Clearing a lockout touches the credential store only.
   // An assignee's passkey can't be reset by anyone: control of the record is theirs alone.
   const [shownCodes, setShownCodes] = useState({}); // transfer codes the issuer opened on this page
 
@@ -438,7 +420,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     setBonds((bs) => bs.map((b) => (b.id === a.bond ? { ...b, redeemed: b.redeemed + a.units } : b)));
     emit(a.bond, a.id, "Redeemed", "ISSUER", rdDoc.hash);
     setRdDoc(null);
-    done("Redeemed. " + usd(a.units) + " is retired and this record can never be acted on again." + signDone);
+    done("Redeemed. " + usd(a.units) + " is retired and this record can never be acted on again.");
   }
 
 
@@ -448,7 +430,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     patch(a.id, { filingNumber: filing.trim(), filingDoc: uccDoc.hash, filingFile: uccDoc.name, filedOn: today(), filedBy: issuerName });
     emit(a.bond, a.id, "FilingRecorded", "ISSUER", filing.trim());
     setUccDoc(null);
-    done("UCC-3 " + filing.trim() + " recorded. Its hash goes on-chain with the filed copy's." + signDone);
+    done("UCC-3 " + filing.trim() + " recorded. Only its hash and the filed copy's are kept.");
   }
 
   function recordMailing(a) {
@@ -465,7 +447,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     });
     emit(a.bond, a.id, "DeliveryRecorded", "ISSUER", "sent " + iMailOn);
     setIMail(""); setIMailDoc(null);
-    done("Delivery receipt recorded: sent " + iMailOn + ". Only hashes go on-chain; the 30 days run from the date sent." + signDone);
+    done("Delivery receipt recorded: sent " + iMailOn + ". Only hashes are kept; the 30 days run from the date sent.");
   }
 
   async function replaceAssignment(a) {
@@ -585,7 +567,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
       : id + " registered. The platform reviews it before you can issue against it.");
   }
 
-  // The bond's assignor is register text: it isn't on-chain, and the signed instruments are what
+  // The bond's assignor is register text: it isn't fingerprinted, and the signed instruments are what
   // count. Changing it corrects the name on the bond and on records issued from it, and is logged.
   function saveAssignor() {
     const name = (asEdit || "").trim();
@@ -647,7 +629,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               style={{ fontFamily: sans, fontSize: 12, background: "none", border: "none", padding: 0,
                 cursor: "pointer", textAlign: "right", color: T.inkSoft, fontVariantNumeric: "tabular-nums" }}>
               <span style={{ color: T.ink }}>{activeBond || "No bonds yet"}</span>
-              <span style={{ display: "block", marginTop: 2 }}>{issuerInfo?.code} · {issuerInfo?.safe ? "signs through Safe " + issuerInfo.safe.slice(0, 6) + "…" + issuerInfo.safe.slice(-4) : "signed by the platform"}</span>
+              <span style={{ display: "block", marginTop: 2 }}>{issuerInfo?.code}</span>
             </button>
           </div>
         </div>
@@ -676,7 +658,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               style={{ fontFamily: sans, fontSize: 14, color: tab === k ? T.ink : T.inkSoft, padding: "0 0 8px",
                 borderBottom: "2px solid " + (tab === k ? T.ink : "transparent"), background: "none", cursor: "pointer" }}>
               {l}
-              {k === "queue" && queue.length + toSign > 0 && <span style={{ color: T.red }}> · {queue.length + toSign}</span>}
+              {k === "queue" && queue.length > 0 && <span style={{ color: T.red }}> · {queue.length}</span>}
             </button>
           ))}
         </div>
@@ -686,10 +668,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 25, color: T.ink, lineHeight: 1.25 }}>Awaiting your signature</h1>
             <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, margin: "8px 0 18px", maxWidth: "62ch" }}>
-              Across every bond. {issuerInfo?.safe ? "Issuer actions go on-chain only once your Safe signs them" : "Issuer actions are signed by the platform for now"} — the relayer
-              can never activate a assignee, unlock a record, or end an interest.
+              Across every bond. Only you can activate an assignee, unlock a record, or end an interest.
             </p>
-            {chainInfo && <SignatureQueue load={loadSigning} submit={submitSig} T={T} sans={sans} serif={serif} onCount={setToSign} onDone={reload} />}
 
             {queue.length === 0 && (
               <div className="px-3 py-5 text-center" style={{ border: "1px solid " + T.rule, borderRadius: 2,
@@ -730,10 +710,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
         )}
 
         {extra && extra[2]()}
-
-        {/* Everything of this issuer's on its way to the chain. */}
-        <ChainWriting chainInfo={chainInfo} ink={T.ink} soft={T.inkSoft} wash={T.wash}
-          items={[...reg, ...bonds]} signHint={issuerInfo?.safe ? "approve on the Approvals tab" : undefined} />
 
         {/* ============ bonds ============ */}
         {tab === "bonds" && (
@@ -834,7 +810,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   {rbErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>{rbErr}</p>}
                   <div className="mb-3 space-y-3">
                     <Button onClick={registerBond}>
-                      Register {issuerInfo?.code}-{String(bonds.length + 1).padStart(4, "0")}-BD{signNote}
+                      Register {issuerInfo?.code}-{String(bonds.length + 1).padStart(4, "0")}-BD
                     </Button>
                     <Button variant="quiet" onClick={() => { setRbOpen(false); setRbErr(""); }}>Cancel</Button>
                   </div>
@@ -844,10 +820,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             <div className="mt-4">
               <Note>
-                The daily job rebuilds state from contract events and compares units and status
-                per record, plus the rule prior + live + unassigned + redeemed = total per bond, and
-                checks every on-chain document hash against a document in the register. A mismatch alerts and freezes
-                the affected records rather than correcting them silently.
+                Every save is checked against the rule prior + live + unassigned + redeemed = total
+                per bond, and refused if it wouldn't add up. Each record keeps the SHA-256 of its signed
+                instrument, so any copy can be checked against it.
               </Note>
             </div>
           </div>
@@ -872,17 +847,17 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               placeholder={"Company F, LLC\nAttn: name, position\nStreet\nCity, State ZIP"} />
 
             <FileHash label="Signed assignment instrument" value={nDoc} onChange={(v) => { setNDoc(v); setNErr(""); }}
-              hint="No paper, no record: the instrument is hashed in this browser and only its SHA-256 is kept and written on-chain." />
+              hint="No paper, no record: the instrument is hashed in this browser and only its SHA-256 is kept." />
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>UCC-3</div>
             <Field label="UCC-3 filing number" value={nUcc} onChange={(v) => { setNUcc(v); setNErr(""); }} placeholder="e.g. 2026 4417 0091" mono
               hint="If it's filed already. Otherwise leave it blank and record it on the assignment once it is." />
             <FileHash label="Filed UCC-3 (acknowledgment copy)" value={nUccDoc} onChange={(v) => { setNUccDoc(v); setNErr(""); }}
-              hint="Hashed in this browser; only its SHA-256 is kept and written on-chain with the filing number." />
+              hint="Hashed in this browser; only its SHA-256 is kept, with the filing number." />
 
             {nErr && <p style={{ color: T.red, fontSize: 14, lineHeight: 1.55, marginBottom: 14 }}>{nErr}</p>}
 
-            <Button disabled={!approved || !bondLive} onClick={issueAssignment}>Issue{signNote}</Button>
+            <Button disabled={!approved || !bondLive} onClick={issueAssignment}>Issue</Button>
             <div className="mt-3">
               <Button variant="quiet" onClick={() => setTab("bonds")}>Cancel</Button>
             </div>
@@ -982,7 +957,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 ["Redeemed and retired", usd(bond.redeemed)],
                 ["Unassigned", usd(bond.unassigned)],
                 ["Check", reconciled(activeBond) ? "Reconciled — the lines add up to the total" : "Mismatch — activity frozen"],
-                chainInfo && bond.review === "approved" && ["On-chain", <ChainLink s={chainStatus(bond, chainInfo)} />],
               ]} />
             </div>
 
@@ -1074,10 +1048,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
         {/* ============ log ============ */}
         {tab === "log" && bond && (
           <div>
-            <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, marginBottom: 4 }}>On-chain event log</div>
+            <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, marginBottom: 4 }}>Event log</div>
             <p style={{ color: T.inkSoft, fontSize: 14, lineHeight: 1.6, marginBottom: 16, maxWidth: "62ch" }}>
-              {activeBond}. Every action writes an app audit entry, a register entry and an
-              on-chain event, linked by assignment ID. Append only.
+              {activeBond}. Every action writes an audit entry and a register entry, linked by
+              assignment ID. Append only.
             </p>
             <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
               {scopedEvents.map((e, i) => (
@@ -1093,9 +1067,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 2, wordBreak: "break-all" }}>{e.ref}</div>
                 </div>
               ))}
-            </div>
-            <div className="mt-4">
-              <Rows data={[["Contract", chainInfo ? chainInfo.contract : "—"], ["Issuer role held by", issuerInfo?.safe ? "Safe " + issuerInfo.safe : "the platform's key"]]} />
             </div>
           </div>
         )}
@@ -1205,7 +1176,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               ["Delivery ref", a.deliveryRef ? shortHash(a.deliveryRef) : "—"],
               ["Assignee's device key", a.deviceKey?.fingerprint ? a.deviceKey.fingerprint + (a.deviceKey.since ? " · since " + a.deviceKey.since : "")
                 : a.deviceKey?.cleared ? "Reset " + a.deviceKey.cleared + " · waiting for the assignee's new device" : "Not set up yet"],
-              chainInfo && ["On-chain", <ChainLink s={chainStatus(a, chainInfo)} />],
               ...(a.instrumentMail && a.passkeyMail && a.instrumentMail !== a.passkeyMail
                 ? [["Instrument mail", a.instrumentMail], ["Passkey mail", a.passkeyMail]]
                 : [["Certified mailing", (a.passkeyMail || a.instrumentMail)
@@ -1218,7 +1188,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <Note kind="warn">
                   Credential locked after 5 failed passkey attempts. Verify the assignee's identity
                   before clearing it — a lockout can be a assignee who mistyped, or someone guessing.
-                  Clearing is recorded in the register only; the credential never touches the chain.
+                  Clearing is recorded in the register only.
                 </Note>
                 <div className="mt-3">
                   <Button variant="quiet" danger onClick={() => unlockCredential(a)}>
@@ -1290,7 +1260,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     value={mail} onChange={setMail} placeholder="9407 1000 0000 0000 0000 00" mono
                     hint={a.accessCode === "assignor" ? a.assignor + " received this assignee's access code at assign-out and mailed it with the instrument. Ask them for the tracking number." : undefined} />
                   <Button disabled={!mail.trim() || !a.filingRef} onClick={() => issueCredential(a)}>
-                    Issue credential{signNote}
+                    Issue credential
                   </Button>
                 </div>
               </div>
@@ -1303,7 +1273,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 </div>
                 <Field label="Reason" value={reason} onChange={setReason}
                   placeholder={a.status === "CredentialRequested" ? "Requester doesn't match the named assignee" : "Unclaimed after 30 days plus notice"}
-                  hint="A hash of the signed reason memo goes on-chain with the event." />
+                  hint="A hash of the signed reason memo is kept with the event." />
                 <div className="space-y-3">
                   {a.status === "CredentialRequested" && (
                     <Button variant="quiet" disabled={!reason.trim()} onClick={() => rejectCredentialRequest(a)}>
@@ -1313,7 +1283,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <Button variant="quiet" danger
                     disabled={!reason.trim() || !parent || parent.status === "PendingRedemption"}
                     onClick={() => cancelChild(a)}>
-                    Cancel transfer — return {usd(a.units)} to {a.assignor}{signNote}
+                    Cancel transfer — return {usd(a.units)} to {a.assignor}
                   </Button>
                 </div>
                 <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 6, lineHeight: 1.5 }}>
@@ -1339,9 +1309,9 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     </Note>
                     <div className="mt-4">
                       <FileHash label="Payment confirmation" value={rdDoc} onChange={setRdDoc}
-                        hint="Only its SHA-256 is kept, and goes on-chain with the redemption." />
+                        hint="Only its SHA-256 is kept, with the redemption." />
                       <Button danger disabled={!rdDoc} onClick={() => redeem(a)}>
-                        Record redemption · {usd(a.units)}{signNote}
+                        Record redemption · {usd(a.units)}
                       </Button>
                     </div>
                   </>
@@ -1364,7 +1334,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     value={docRef} onChange={setDocRef} placeholder="0x…" mono
                     hint={a.lockKind === "pledge"
                       ? "Pledged record. Do not unlock without the lender's signed release."
-                      : "Recorded on-chain with the Unlocked or PasskeyRotated event."} />
+                      : "Recorded with the Unlocked or PasskeyRotated event."} />
                 </div>
                 {a.rotationRequested && (
                   <div className="mt-2">
@@ -1372,13 +1342,13 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                       placeholder="9407 1000 0000 0000 0000 00" mono
                       hint="The old hash is discarded. The record stays locked until you unlock it." />
                     <Button disabled={!mail.trim() || !docRef.trim()} onClick={() => rotate(a)}>
-                      Rotate passkey{signNote}
+                      Rotate passkey
                     </Button>
                   </div>
                 )}
                 <div className="mt-3">
                   <Button variant="quiet" disabled={!docRef.trim()} onClick={() => unlock(a)}>
-                    Unlock{signNote}
+                    Unlock
                   </Button>
                 </div>
               </div>
@@ -1389,13 +1359,13 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>Delivery receipt</div>
                 <Field label="Certified mail number" value={iMail} onChange={setIMail}
                   placeholder="9407 1000 0000 0000 0000 00" mono
-                  hint="One mailing: the signed instrument and the sealed transfer code. Only a hash of the number goes on-chain." />
+                  hint="One mailing: the signed instrument and the sealed transfer code." />
                 <Field label="Date sent" type="date" value={iMailOn} onChange={setIMailOn}
                   hint={a.party + " has 30 days from this date to accept or reject; after that it takes effect."} />
                 <FileHash label="Certified mail receipt" value={iMailDoc} onChange={setIMailDoc}
-                  hint="Hashed in this browser; only its SHA-256 is kept and written on-chain with the number." />
+                  hint="Hashed in this browser; only its SHA-256 is kept, with the number." />
                 <Button variant="quiet" disabled={!iMail.trim() || !iMailOn || !iMailDoc} onClick={() => recordMailing(a)}>
-                  Record delivery receipt{signNote}
+                  Record delivery receipt
                 </Button>
               </div>
             )}
@@ -1423,8 +1393,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   <>
                     <Field label="UCC-3 filing number" value={filing} onChange={setFiling} placeholder="e.g. 2026 4417 0091" mono />
                     <FileHash label="Filed UCC-3 (acknowledgment copy)" value={uccDoc} onChange={setUccDoc}
-                      hint="Hashed in this browser; only its SHA-256 is kept and written on-chain with the filing number." />
-                    <Button variant="quiet" disabled={!filing.trim() || !uccDoc} onClick={() => setFilingRef(a)}>Record UCC-3{signNote}</Button>
+                      hint="Hashed in this browser; only its SHA-256 is kept, with the filing number." />
+                    <Button variant="quiet" disabled={!filing.trim() || !uccDoc} onClick={() => setFilingRef(a)}>Record UCC-3</Button>
                   </>
                 )}
               </div>
@@ -1449,7 +1419,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                       <FileHash label="Supporting document" value={rpDoc} onChange={setRpDoc}
                         hint="The court order, certificate or other paper behind the replacement. Hashed here; not uploaded." />
                       <FileHash label="Signed replacement instrument" value={rpInstr} onChange={setRpInstr}
-                        hint="Its SHA-256 goes on-chain as the new record's document." />
+                        hint="Its SHA-256 is kept as the new record's document." />
                       <Field label="Rightful assignee's legal name" value={rpParty} onChange={setRpParty} placeholder="Estate of …" />
                       <Field label="Attention of" value={rpContact} onChange={setRpContact} placeholder="Full name" />
                       <Area label="Mailing address" value={rpAddress} onChange={setRpAddress}
@@ -1457,7 +1427,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                       <Button variant="quiet" danger
                         disabled={!rpDoc || !rpInstr || !rpParty.trim() || !rpContact.trim() || !rpAddress.trim()}
                         onClick={() => replaceAssignment(a)}>
-                        Replace{signNote}
+                        Replace
                       </Button>
                     </div>
                   </div>

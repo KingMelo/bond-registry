@@ -1,5 +1,7 @@
 # Bond Interest Registry: Workflow Spec
 
+> **Superseded in part (November 2026).** The Polygon mirror described here (the smart contract, its roles, the relayer, the Safe and every on-chain step) was retired before going live. The register is now the only record, assignee acts are signed with their passkey and the signatures kept on the server, and the next ledger is Canton. See the [Canton design](https://claude.ai/artifact/WCxQLzY9Zx8MUep8tTVioe). The rest of this spec is kept as the original design.
+
 Oct 17, 2026 · King Penson · Revision 2
 
 ## Overview and design principles

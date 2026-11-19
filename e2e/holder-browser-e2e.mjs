@@ -1,47 +1,37 @@
 // Browser end-to-end: a holder signs in on the portal, sets up a device key with a (virtual)
-// passkey authenticator, and confirms an assignment. The chain must show the key and the
-// holder's own signed acknowledgement.
+// passkey authenticator, confirms an assignment, assigns out, and the new assignee rejects.
+// Every act must be signed with the right passkey, and the signatures kept.
 //
-// Needs a local chain (cd chain && npx hardhat node), Postgres on 127.0.0.1:54329, the contract
-// compiled, and the apps built (npm run build). Run from the repo root:
-//   node chain/e2e/holder-browser-e2e.mjs [screenshot-dir]
+// Needs Postgres on 127.0.0.1:54329 and the apps built (npm run build). Run from the repo root:
+//   node e2e/holder-browser-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
-const require = createRequire(new URL("../../package.json", import.meta.url));
-const { ethers } = require("ethers");
+const require = createRequire(new URL("../package.json", import.meta.url));
 const { chromium } = require("playwright");
 
-const ROOT = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
+const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const SHOTS = process.argv[2] || null;
 const DB = "postgres://postgres@127.0.0.1:54329/hbe";
 const pg = require("pg");
 const I = "http://localhost:5002", P = "http://localhost:5003", H = "http://localhost:5004";
-const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 let fails = 0; const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) fails++; };
 const H32 = () => "0x" + crypto.randomBytes(32).toString("hex");
-
-const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
-const art = JSON.parse(fs.readFileSync(ROOT + "/chain/artifacts/contracts/BondInterestRegistry.sol/BondInterestRegistry.json", "utf8"));
-const me = new ethers.Wallet(KEY).address;
-const regC = await new ethers.ContractFactory(art.abi, art.bytecode, new ethers.NonceManager(new ethers.Wallet(KEY, provider))).deploy(me, me, me, me, ethers.ZeroAddress);
-await regC.waitForDeployment();
-const CONTRACT = await regC.getAddress();
 
 execSync(`psql -h 127.0.0.1 -p 54329 -U postgres -q -c "drop database if exists hbe" -c "create database hbe"`, { stdio: "ignore" });
 const procs = [];
 process.on("exit", () => procs.forEach((c) => c.kill())); // stop the servers even when a step throws
 const start = (app, port, extra = {}) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
-    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CHAIN_CONTRACT: CONTRACT, CHAIN_ID: "31337", CHAIN_RPC_URL: "http://127.0.0.1:8545", CHAIN_PUBLIC_RPC: "http://127.0.0.1:8545", CHAIN_FROM_BLOCK: "0", ...extra } });
+    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", ...extra } });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; if (out.includes("listening")) res(c); });
   c.stderr.on("data", (d) => process.stdout.write("[" + app + " err] " + d));
   setTimeout(() => rej(new Error(app + " didn't start")), 20000);
 });
 await start("platform", 5003);
-await start("issuer", 5002, { CHAIN_WORKER: "1", CHAIN_SIGNER_KEY: KEY });
+await start("issuer", 5002);
 await start("holder", 5004);
 
 const jar = {};
@@ -72,6 +62,7 @@ await icommit({ reg: [{ ...(await st()).reg[0], instrumentMail: "9407 1000 0000 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 430, height: 900 }, deviceScaleFactor: 2 });
 const page = await ctx.newPage();
+page.on("pageerror", (e) => console.log("[page error] " + e.message));
 const cdp = await ctx.newCDPSession(page);
 await cdp.send("WebAuthn.enable");
 const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", { options: {
@@ -128,17 +119,7 @@ await page.getByRole("button", { name: /^Accept: confirm with your passkey/ }).c
 let saved = null;
 for (let i = 0; i < 30 && !saved; i++) { await page.waitForTimeout(500); const r = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1); if (r.status === "Accepted") saved = r; }
 ok(saved?.effective === "holder", "the holder's confirmation, signed on the device, is saved");
-// The preloader: the page shows the write on its way, then that it landed, without a reload.
-{
-  const seen = { busy: false, done: false };
-  for (let i = 0; i < 60 && !seen.done; i++) {
-    if (await page.getByText(/to the blockchain…/).count()) { seen.busy = true; if (SHOTS) await page.screenshot({ path: SHOTS + "/3b-writing.png" }); }
-    if (await page.getByText("Recorded on-chain ✓").count()) seen.done = true;
-    else await page.waitForTimeout(250);
-  }
-  ok(seen.done, "the page says when the confirmation is recorded on-chain, without a reload" + (seen.busy ? " (after showing it being written)" : ""));
-  if (SHOTS) await page.screenshot({ path: SHOTS + "/3c-recorded.png" });
-}
+ok(!(await page.getByText(/blockchain|on-chain/i).count()), "the page no longer talks about a blockchain");
 const signCount = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signCount >= 2, "the device signed the key registration and the confirmation (" + signCount + " signatures)");
 await page.getByText("Signed with your device key").waitFor({ timeout: 10000 }).catch(() => {});
@@ -213,16 +194,14 @@ ok(childUcc?.filingNumber === "UCC3-2026-0555" && childUcc.filedBy === "Company 
 const signs2 = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
 ok(signs2 > signCount, "the device signed the assign-out (" + signs2 + " signatures)");
 
-// ---- on-chain
-const t0 = Date.now(); let s;
-while (Date.now() - t0 < 90000) { s = await call(P, "GET", "/api/platform/chain"); if (!(s.counts.queued || s.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
-const id32 = (x) => ethers.keccak256(ethers.toUtf8Bytes(x));
-const k = await regC.holderKeys(id32(A1));
-ok(k.x !== 0n && k.nonce === 5n, "the chain holds the device key and counted 5 signatures from it: key, accept, assign-out, mailing, the assign-out's UCC-3 (" + k.nonce + ")");
-ok(!!filed && (await regC.assignments(id32(A1))).filingRef === filed.filingRef, "the chain holds the issuer's UCC-3 reference");
-ok((await regC.assignments(id32(child.id))).filingRef === childUcc?.filingRef, "and the assignor's UCC-3 for the assign-out");
-ok(Number((await regC.assignments(id32(A1))).status) === 4, "the chain shows A00001 in effect, by the holder's own signature");
-ok(!s.counts.failed, "no write failed (" + JSON.stringify(s.counts) + ")");
+// ---- the kept signatures
+{
+  const db = new pg.Client({ connectionString: DB }); await db.connect();
+  const fns = (await db.query("select fn from holder_signatures where signer = $1 order by seq", [A1])).rows.map((r) => r.fn); await db.end();
+  ok(fns.join(",") === "registerHolderKey,accept,assignOut,recordMailing,recordFiling",
+    "A00001's passkey signed 5 acts, each kept: key, accept, assign-out, mailing, the assign-out's UCC-3 (" + fns.join(", ") + ")");
+  ok(!!filed && filed.filingNumber === "UCC3-2026-0417", "the register holds the issuer's UCC-3");
+}
 
 // ---- a second browser with no passkey can sign in, but not act
 const other = await browser.newContext({ viewport: { width: 430, height: 900 } });
@@ -299,34 +278,31 @@ ok(after.status === "Accepted", "without the device key, nothing changes (" + af
   await ctx3.close();
 }
 
-// ---- Verify: the browser reads the chain itself and compares it with the register
+// ---- Verify: anyone can check a bond or an assignment against the register
 {
-  const t1 = Date.now();
-  while (Date.now() - t1 < 60000) { const q = await call(P, "GET", "/api/platform/chain"); if (!(q.counts.queued || q.counts.sent)) break; await new Promise((r) => setTimeout(r, 1000)); }
   await page.goto(H + "/assignee");
   await page.getByRole("button", { name: "Verify" }).click();
   const box = page.getByLabel("Assignment or bond ID");
   await box.fill("PENS-0001-BD");
-  await page.getByRole("button", { name: "Check the chain" }).click();
-  await page.getByText(/agrees with the chain on this bond/).waitFor({ timeout: 20000 }).catch(() => {});
-  ok(await page.getByText(/agrees with the chain on this bond/).count() > 0, "Verify: the bond's figures on-chain match the register");
-  await box.fill(A1);
-  await page.getByRole("button", { name: "Check the chain" }).click();
-  await page.getByText(/register agrees with the chain/).waitFor({ timeout: 20000 }).catch(() => {});
-  ok(await page.getByText(/register agrees with the chain/).count() > 0, "Verify: the assignment on-chain matches the register");
-  // A record removed from the register still shows on-chain, flagged as removed.
-  const db = new pg.Client({ connectionString: DB }); await db.connect();
-  await db.query("delete from chain_ops where ref = $1", [child.id]); await db.query("delete from assignments where id = $1", [child.id]);
-  await db.query("update meta set version = version + 1 where k = 'v'"); await db.end();
-  await page.reload();
-  await page.getByRole("button", { name: "Verify" }).click();
-  await page.getByLabel("Assignment or bond ID").fill(child.id);
-  await page.getByRole("button", { name: "Check the chain" }).click();
-  await page.getByText(/has no .* it was removed from the register/).waitFor({ timeout: 20000 }).catch(() => {});
-  ok(await page.getByText(/it was removed from the register/).count() > 0, "Verify: a record removed from the register is flagged, not shown as current");
-  await page.getByText("Assignment rejected by the holder").or(page.getByText("No events found.")).first().waitFor({ timeout: 20000 }).catch(() => {});
-  const hist = await page.locator("text=History on-chain").locator("xpath=following-sibling::*[1]").innerText().catch(() => "");
-  ok(/Created by an assign-out/.test(hist) && !/No events found/.test(hist), "Verify: the record's on-chain history is listed (" + hist.replace(/\s+/g, " ").slice(0, 120) + ")");
+  await page.getByRole("button", { name: "Check the register" }).click();
+  await page.getByText("Adds up to the total").waitFor({ timeout: 10000 }).catch(() => {});
+  ok(await page.getByText("Yes ✓").count() > 0, "Verify: the bond's figures add up to its total");
+  await box.fill(child.id);
+  await page.getByRole("button", { name: "Check the register" }).click();
+  await page.getByText(/The assignee rejected this assignment/).waitFor({ timeout: 10000 }).catch(() => {});
+  ok(await page.getByText(/The assignee rejected this assignment/).count() > 0, "Verify: the assignment's status is shown");
+  const hist = await page.locator("text=History").last().locator("xpath=following-sibling::*[1]").innerText().catch(() => "");
+  ok(hist.trim() && !/No events recorded/.test(hist), "Verify: the record's history is listed (" + hist.replace(/\s+/g, " ").slice(0, 120) + ")");
+  // Their copy of the instrument: the same file matches, another doesn't.
+  await page.locator('input[type="file"]').first().setInputFiles({ name: "assignment-to-company-d.pdf", mimeType: "application/pdf", buffer: Buffer.from("signed assignment") });
+  await page.getByText(/^Match\./).waitFor({ timeout: 10000 }).catch(() => {});
+  ok(await page.getByText(/^Match\./).count() > 0, "Verify: the signed instrument's copy matches the one on record");
+  await page.locator('input[type="file"]').first().setInputFiles({ name: "x.pdf", mimeType: "application/pdf", buffer: Buffer.from("altered") });
+  await page.getByText(/^No match\./).waitFor({ timeout: 10000 }).catch(() => {});
+  ok(await page.getByText(/^No match\./).count() > 0, "Verify: an altered copy doesn't");
+  await box.fill("PENS-0001-BD-A09999");
+  await page.getByRole("button", { name: "Check the register" }).click();
+  ok(await page.getByText(/Nothing with the ID PENS-0001-BD-A09999/).count() > 0, "Verify: an unknown ID says so");
   await shot("8-verify");
 }
 

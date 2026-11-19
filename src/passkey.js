@@ -23,7 +23,7 @@ export async function createDeviceKey(enroll) {
       rp: { name: "Bond Interest Registry", id: enroll.rpId },
       user: { id: fromB64u(enroll.userId), name: enroll.name, displayName: enroll.displayName },
       challenge: fromB64u(enroll.challenge),
-      pubKeyCredParams: [{ type: "public-key", alg: -7 }], // ES256: P-256, what the chain can check
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }], // ES256: P-256, what the server checks
       authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
       attestation: "none",
       timeout: 120000,

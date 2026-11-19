@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
-import { ChainWriting, Spinner, nextChildId } from "../src/registry.jsx";
+import { nextChildId } from "../src/registry.jsx";
 import { printPacket } from "../src/print-packet.js";
-import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, chainStatus, shortHash, effectiveDate } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, shortHash, effectiveDate } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — holder portal
@@ -43,7 +43,7 @@ const LOCK_KINDS = [
   ["other", "Other"],
 ];
 
-// No paper, no record: every on-chain write carries the hash of the signed
+// No paper, no record: every record carries the hash of the signed
 // document behind it. The demo stands in a random hash for that document.
 async function sha256File(file) {
   const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
@@ -162,7 +162,7 @@ function UccForm({ forWhom, onSave }) {
       <div style={{ fontFamily: serif, fontSize: 16, color: T.ink, marginBottom: 8 }}>Record your UCC-3{forWhom ? " for " + forWhom : ""}</div>
       <Field label="Filing number" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="e.g. 2026 4417 0091" mono />
       <DocDrop label="Filed UCC-3 (acknowledgment copy)" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
-        hint="Hashed on this device; only the hash is kept and written on-chain, with the filing number." />
+        hint="Hashed on this device; only the hash is kept, with the filing number." />
       {err && <p style={{ color: T.red, fontSize: 14, margin: "0 0 10px" }}>{err}</p>}
       <Button onClick={() => {
         if (!num.trim()) return setErr("Enter the filing number.");
@@ -174,12 +174,11 @@ function UccForm({ forWhom, onSave }) {
 }
 
 // A date recorded as a calendar day (midnight UTC), shown as that same day anywhere.
-const utcDay = (sec) => new Date(sec * 1000).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
 const isoToday = () => new Date().toISOString().slice(0, 10);
 
 /**
  * One line of the record you can fill in place: it shows what's recorded; Edit opens its fields right
- * there; Confirm signs it with your passkey. Once recorded it's on-chain and can't be edited again.
+ * there; Confirm signs it with your passkey. Once recorded it can't be edited again.
  */
 function EditRow({ label, value, canEdit, children, onConfirm, onCancel, editing, setEditing, err }) {
   return (
@@ -214,7 +213,7 @@ function MailingRow({ rec, onSave }) {
   const [on, setOn] = useState(isoToday());
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState("");
-  const value = rec.deliveryRef ? "Sent " + (rec.mailedOn || "") + " · recorded on-chain" : "Not recorded";
+  const value = rec.deliveryRef ? "Sent " + (rec.mailedOn || "") + " · recorded" : "Not recorded";
   return (
     <EditRow label="Delivery receipt" value={value} canEdit={!rec.deliveryRef && rec.status === "Issued"}
       editing={editing} setEditing={(v) => { setEditing(v); setErr(""); }} err={err}
@@ -225,11 +224,11 @@ function MailingRow({ rec, onSave }) {
         onSave({ instrumentMail: num.trim(), mailedOn: on, mailingDoc: doc.hash, mailingFile: doc.name }); setEditing(false);
       }}>
       <Field label="Certified mail number" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="9407 1000 0000 0000 0000 00" mono
-        hint="The one mailing with the signed instrument and the sealed transfer code. Only a hash of the number goes on-chain." />
+        hint="The one mailing with the signed instrument and the sealed transfer code." />
       <Field label="Date sent" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }}
         hint={rec.party + " has 30 days from this date to accept or reject; after that it takes effect."} />
       <DocDrop label="Certified mail receipt" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
-        hint="Hashed on this device; only the hash is kept and written on-chain, with the number and date." />
+        hint="Hashed on this device; only the hash is kept, with the number and date." />
     </EditRow>
   );
 }
@@ -256,7 +255,7 @@ function ReceiptRow({ rec, knownMail, onSave }) {
       <Field label="Certified mail number on the receipt" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="9407 1000 0000 0000 0000 00" mono />
       <Field label="Date received" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }} />
       <DocDrop label="Delivery receipt (USPS confirmation or signed return receipt)" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
-        hint="Hashed on this device; only the hash is kept and written on-chain, with the tracking number and date." />
+        hint="Hashed on this device; only the hash is kept, with the tracking number and date." />
     </EditRow>
   );
 }
@@ -370,16 +369,6 @@ function DocDrop({ label, value, onChange, hint }) {
   );
 }
 
-// A record's on-chain standing, linked to the block explorer.
-function OnChain({ rec, info }) {
-  const st = chainStatus(rec, info);
-  if (!st) return null;
-  const color = st.tone === "bad" ? T.red : st.tone === "good" ? T.ink : T.inkSoft;
-  return st.href
-    ? <a href={st.href} target="_blank" rel="noreferrer" style={{ color, textDecoration: "underline", textUnderlineOffset: 2 }}>{st.busy && <Spinner color={color} />}{st.label}{st.tone === "good" ? " · view" : ""}</a>
-    : <span style={{ color }}>{st.busy && <Spinner color={color} />}{st.label}</span>;
-}
-
 function Note({ children, kind = "quiet" }) {
   const skin = kind === "warn"
     ? { background: "#F7E9E8", borderLeft: "3px solid " + T.red }
@@ -393,85 +382,56 @@ function Note({ children, kind = "quiet" }) {
   );
 }
 
-/* ---------------- verify, read straight from the chain ---------------- */
+/* ---------------- verify, read from the register ---------------- */
 
 const ORIGIN_SAY = { Issuer: "Issued directly by the issuer", AssignOut: "Assigned out from an earlier record",
   Replacement: "Replaces an earlier record" };
 const linkStyle = { color: T.ink, textDecoration: "underline", textUnderlineOffset: 2 };
+// "DeliveryReceiptRecorded" → "Delivery receipt recorded"
+const sayEvent = (ev) => String(ev || "").replace(/([a-z])([A-Z0-9])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase())
+  .replace(/ (\w)/g, (m) => m.toLowerCase()).replace(/ ucc/g, " UCC");
 
-// The blockchain library is large, so it loads only when the Verify tab opens.
-function VerifyChain(props) {
-  const [lib, setLib] = useState(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => { import("../src/chain-read.js").then(setLib).catch(() => setFailed(true)); }, []);
-  if (!lib) return <p style={{ fontSize: 14, color: T.inkSoft }}>{failed ? "The verifier couldn't load. Refresh to try again." : "Loading the verifier…"}</p>;
-  return <VerifyChainReady {...props} lib={lib} />;
-}
-
-function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
-  const { readRecord, readBond, history, nameFor, looksLikeRecord, when, filingRefOf } = lib;
+function VerifyRegister({ reg, bonds = [], events = [], issuerOf }) {
   const start = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") || "" : "";
   const [q, setQ] = useState(start);
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [res, setRes] = useState(null); // { kind: "record" | "bond", data }
-  const [hist, setHist] = useState(null);
-  const [histErr, setHistErr] = useState("");
+  const [res, setRes] = useState(null); // { kind: "record" | "bond", id }
   const [doc, setDoc] = useState(null);
 
-  async function check(value = q) {
+  function check(value = q) {
     const id = String(value).trim().toUpperCase();
     if (!id) return;
-    setBusy(true); setErr(""); setRes(null); setHist(null); setHistErr(""); setDoc(null);
-    try {
-      const rec = looksLikeRecord(id) ? await readRecord(info, id) : null;
-      if (rec) {
-        setRes({ kind: "record", data: rec });
-        history(info, rec.recordId).then(setHist).catch(() => setHistErr("The history couldn't be read from this endpoint just now. The figures above are current."));
-      } else {
-        const bond = looksLikeRecord(id) ? null : await readBond(info, id);
-        if (bond) setRes({ kind: "bond", data: bond });
-        else {
-          const inReg = reg.find((a) => a.id.toUpperCase() === id);
-          setErr(inReg
-            ? "The platform's register has " + id + " (" + (LABEL[inReg.status] || inReg.status).toLowerCase() + "), but it isn't on-chain yet: its write is still on its way. Check again in a minute."
-            : "Nothing with the ID " + id + " is recorded on-chain. Check the ID on your paperwork; a record issued in the last minute may still be on its way.");
-        }
-      }
-    } catch (e) {
-      setErr("Couldn't reach the blockchain endpoint (" + (e.shortMessage || e.message) + "). Try again in a moment, or look the contract up on the block explorer below.");
-    } finally { setBusy(false); }
+    setErr(""); setRes(null); setDoc(null);
+    if (reg.some((a) => a.id.toUpperCase() === id)) setRes({ kind: "record", id });
+    else if (bonds.some((x) => x.id.toUpperCase() === id)) setRes({ kind: "bond", id });
+    else setErr("Nothing with the ID " + id + " is on the register. Check the ID on your paperwork.");
   }
-  useEffect(() => { if (start && info) check(start); }, [info]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (start && reg.length) check(start); }, [reg.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!info) return (
-    <div>
-      <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Verify an assignment</h1>
-      <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, marginTop: 10 }}>On-chain verification isn't switched on for this registry yet.</p>
-    </div>
-  );
-
-  const contractLink = info.explorer + "/address/" + info.contract;
-  const r = res?.kind === "record" ? res.data : null;
-  const b = res?.kind === "bond" ? res.data : r?.bond;
-  // The platform's own register, shown only to compare with the chain.
-  const mine = r && reg.find((a) => a.id.toUpperCase() === r.id);
-  const known = reg.map((a) => a.id);
-  const parentName = r?.parentId ? nameFor(r.parentId, known) : null;
+  const r = res?.kind === "record" ? reg.find((a) => a.id.toUpperCase() === res.id) : null;
+  const rb = res?.kind === "bond" ? bonds.find((x) => x.id.toUpperCase() === res.id) : r ? bonds.find((x) => x.id === r.bond) : null;
+  const b = rb && (() => {
+    const prior = (rb.prior || []).filter((p) => !p.reversed).reduce((t, p) => t + Number(p.units), 0);
+    const redeemed = Number(rb.redeemed || 0), unassigned = Number(rb.unassigned), total = Number(rb.total);
+    const live = reg.filter((a) => a.bond === rb.id && !["Redeemed", "Superseded", "Cancelled", "Rejected"].includes(a.status))
+      .reduce((t, a) => t + Number(a.units), 0);
+    return { id: rb.id, total, prior, redeemed, unassigned, live, reconciled: prior + redeemed + unassigned + live === total, instrumentHash: rb.instrumentHash };
+  })();
   const target = r ? r.docHash : b?.instrumentHash;
   const match = doc && target ? doc.hash.toLowerCase() === target.toLowerCase() : null;
+  const hist = r ? events.filter((e) => e.id === r.id) : [];
 
   return (
     <div>
       <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Verify an assignment</h1>
       <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-        Enter an assignment ID, or a bond ID, from your paperwork. Your browser reads the answer
-        directly from the public blockchain, not from this platform, so you don't have to take our
-        word for it. No names or contact details are ever on-chain.
+        Enter an assignment ID, or a bond ID, from your paperwork to see how it stands on the register,
+        and check your copy of the signed instrument. No names or contact details are shown here.
+        Public notice of each assignment is its UCC filing with the state.
       </p>
 
       <Field label="Assignment or bond ID" value={q} onChange={(v) => { setQ(v); setErr(""); }} placeholder="KJPII-0001-BD-A00001" mono />
-      <Button disabled={busy || !q.trim()} onClick={() => check()}>{busy ? "Reading the chain…" : "Check the chain"}</Button>
+      <Button disabled={!q.trim()} onClick={() => check()}>Check the register</Button>
 
       {err && <div className="mt-4"><Note kind="warn">{err}</Note></div>}
 
@@ -486,39 +446,21 @@ function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
               : r.status === "Superseded" ? "This record is closed. Its amount moved to another record."
               : r.status === "Cancelled" ? "This assign-out was cancelled. Its amount went back to the assignor."
               : r.status === "Rejected" ? "The assignee rejected this assignment. Its amount went back " + (r.origin === "AssignOut" ? "to the assignor's record." : "to the bond.")
-              : "This record holds " + usd(r.units) + (r.bond ? " of bond " + r.bond.id : "") + "."}
+              : "This record holds " + usd(r.units) + " of bond " + r.bond + "."}
           </p>
           <Rows data={[
             ["Amount", usd(r.units)],
             ["Status", LABEL[r.status] || r.status],
-            ["Bond", r.bond ? r.bond.id + " ✓" : "A bond not matching this ID's prefix"],
-            mine && ["Issuer", issuerOf(mine)],
-            ["How it began", ORIGIN_SAY[r.origin]],
-            r.parentId && ["From record", parentName || shortHash(r.parentId)],
-            r.pendingChildren > 0 && ["Pending transfers", String(r.pendingChildren)],
-            ["UCC-3 filing", !r.filingRef ? "Not recorded"
-              : mine?.filingNumber ? mine.filingNumber + (filingRefOf(mine.id, mine.filingNumber, mine.filingDoc) === r.filingRef ? " · matches the chain ✓" : " · doesn't match the chain")
-              : "Recorded on-chain"],
-            ["Certified mailing", r.deliveryRef ? "Recorded on-chain" + (r.mailedAt ? ", mailed " + utcDay(r.mailedAt) : "") + " (the tracking number is shown only to the assignee)" : "Not recorded"],
-            ["Delivery receipt", r.receiptRef ? "Recorded on-chain by the assignee, received " + utcDay(r.receivedAt)
-              + (mine ? (mine.receiptRef === r.receiptRef ? " · matches the register ✓" : " · doesn't match the register") : "")
-              + (mine?.receiptMatches === true ? " · its tracking number matches the recorded mailing ✓" : mine?.receiptMatches === false ? " · its tracking number differs from the recorded mailing" : "") : "Not recorded"],
-            ["Last changed", when(r.updatedAt)],
-            ["Document fingerprint", shortHash(r.docHash)],
+            ["Bond", r.bond],
+            ["Issuer", issuerOf(r)],
+            ["How it began", ORIGIN_SAY[r.origin] || r.origin],
+            r.parent && ["From record", r.parent],
+            ["UCC-3 filing", r.filingNumber || (r.filingRef ? "Recorded" : "Not recorded")],
+            ["Certified mailing", r.deliveryRef ? "Recorded" + (r.mailedOn ? ", sent " + r.mailedOn : "") + " (the tracking number is shown only to the assignee)" : "Not recorded"],
+            ["Delivery receipt", r.receiptRef ? "Recorded by the assignee" + (r.receivedOn ? ", received " + r.receivedOn : "")
+              + (r.receiptMatches === true ? " · its tracking number matches the recorded mailing ✓" : r.receiptMatches === false ? " · its tracking number differs from the recorded mailing" : "") : "Not recorded"],
+            ["Signed instrument fingerprint", shortHash(r.docHash)],
           ]} />
-          {!mine && (
-            <div className="mt-3">
-              <Note kind="warn">The platform's register has no {r.id}: it was removed from the register. A blockchain can't erase what it
-                recorded, so this contract still shows the record as it last stood. The register is the record to rely on.</Note>
-            </div>
-          )}
-          {mine && (
-            <div className="mt-3">
-              {mine.units === r.units && mine.status === r.status
-                ? <Note>The platform's register agrees with the chain: {usd(mine.units)}, {(LABEL[mine.status] || mine.status).toLowerCase()}.</Note>
-                : <Note kind="warn">The platform's register shows {usd(mine.units)}, {(LABEL[mine.status] || mine.status).toLowerCase()}, which differs from the chain. A change may still be on its way to the chain; check again in a minute. If it persists, the chain is the record to rely on.</Note>}
-            </div>
-          )}
         </div>
       )}
 
@@ -533,28 +475,8 @@ function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
             ["Redeemed and retired", usd(b.redeemed)],
             ["Left to assign", usd(b.unassigned)],
             ["Adds up to the total", b.reconciled ? "Yes ✓" : "No"],
-            ["Anchored", when(b.anchoredAt)],
             !r && ["Bond instrument fingerprint", shortHash(b.instrumentHash)],
-            !r && ["UCC-1 fingerprint", shortHash(b.ucc1Ref)],
           ]} />
-          {(() => {
-            // The register's figures for the same bond, to compare with the chain's.
-            const rb = bonds.find((x) => x.id.toUpperCase() === b.id);
-            if (!rb) return null;
-            const prior = (rb.prior || []).filter((p) => !p.reversed).reduce((t, p) => t + Number(p.units), 0);
-            const redeemed = Number(rb.redeemed || 0), unassigned = Number(rb.unassigned);
-            const live = Number(rb.total) - unassigned - redeemed - prior;
-            const same = live === b.live && unassigned === b.unassigned && prior === b.prior && redeemed === b.redeemed && Number(rb.total) === b.total;
-            return (
-              <div className="mt-3">
-                {same ? <Note>The platform's register agrees with the chain on this bond's figures.</Note>
-                  : <Note kind="warn">The platform's register shows {usd(live)} held in assignments and {usd(unassigned)} left to assign
-                      {prior !== b.prior ? ", " + usd(prior) + " in prior instruments" : ""}{redeemed !== b.redeemed ? ", " + usd(redeemed) + " redeemed" : ""}, which
-                      differs from the chain. A change may still be on its way; if it persists, records were removed from the register
-                      that this contract still holds, and the register is the record to rely on.</Note>}
-              </div>
-            );
-          })()}
         </div>
       )}
 
@@ -564,7 +486,7 @@ function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
             {r ? "Check your copy of the assignment" : "Check a copy of the bond instrument"}
           </div>
           <p style={{ fontSize: 14, color: T.inkSoft, lineHeight: 1.6, marginBottom: 10 }}>
-            Your browser fingerprints the file on this device and compares it with the one on-chain.
+            Your browser fingerprints the file on this device and compares it with the one on record.
             Nothing is uploaded.
           </p>
           <DocDrop label="Signed PDF" value={doc} onChange={setDoc} />
@@ -575,30 +497,19 @@ function VerifyChainReady({ info, reg, bonds = [], issuerOf, lib }) {
 
       {r && (
         <div className="mt-6">
-          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>History on-chain</div>
-          {!hist && !histErr && <p style={{ fontSize: 14, color: T.inkSoft }}>Reading the history…</p>}
-          {histErr && <Note kind="warn">{histErr}</Note>}
-          {hist && (
-            <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
-              {hist.length === 0 && <div className="px-3 py-2" style={{ fontSize: 14, color: T.inkSoft }}>No events found.</div>}
-              {hist.map((e, i) => (
-                <div key={e.tx + i} className="flex justify-between gap-3 px-3 py-2"
-                  style={{ background: i % 2 ? T.band : T.white, borderTop: i ? "1px solid " + T.rule : "none", fontSize: 14 }}>
-                  <span style={{ color: T.ink }}>{e.label}</span>
-                  <a href={info.explorer + "/tx/" + e.tx} target="_blank" rel="noreferrer"
-                    style={{ ...linkStyle, color: T.inkSoft, fontSize: 13, whiteSpace: "nowrap" }}>{when(e.time)}</a>
-                </div>
-              ))}
-            </div>
-          )}
+          <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, marginBottom: 8 }}>History</div>
+          <div style={{ border: "1px solid " + T.rule, borderRadius: 2 }}>
+            {hist.length === 0 && <div className="px-3 py-2" style={{ fontSize: 14, color: T.inkSoft }}>No events recorded.</div>}
+            {hist.map((e, i) => (
+              <div key={e.eid || i} className="flex justify-between gap-3 px-3 py-2"
+                style={{ background: i % 2 ? T.band : T.white, borderTop: i ? "1px solid " + T.rule : "none", fontSize: 14 }}>
+                <span style={{ color: T.ink }}>{sayEvent(e.ev)}</span>
+                <span style={{ color: T.inkSoft, fontSize: 13, whiteSpace: "nowrap" }}>{e.t}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
-
-      <div className="mt-8" style={{ fontSize: 13, color: T.inkSoft, lineHeight: 1.6 }}>
-        Read from {info.network} through a public endpoint ({new URL(info.rpc).host}), contract{" "}
-        <a href={contractLink} target="_blank" rel="noreferrer" style={{ ...linkStyle, color: T.inkSoft }}>
-          {info.contract.slice(0, 10)}…{info.contract.slice(-6)}</a>, whose source code is published on the explorer.
-      </div>
     </div>
   );
 }
@@ -611,7 +522,7 @@ export default function HolderPortal() {
   const session = useRef(null);
   const [device, setDevice] = useState(null); // { fingerprint } once this record has a device key
   const [myMail, setMyMail] = useState(null); // the signed-in record's certified mail number(s)
-  // The readable numbers behind the chain's hashes: the UCC-3 filing number is public; the
+  // The readable numbers behind the register's hashes: the UCC-3 filing number is public; the
   // certified mail number only for the record's own signed-in holder.
   const filingSay = (a) => a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "")
     : a.filingRef ? "Filed (number not on the register)" : "Not yet filed";
@@ -635,7 +546,7 @@ export default function HolderPortal() {
       return { token: s.token, assertions };
     } finally { setSigning(false); }
   };
-  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, chainInfo, responseDays, stale } =
+  const { reg, setReg, bonds, events, setEvents, ready, error, reload, issuers, responseDays, stale } =
     useRegistry({ onNotice: (m) => flash(m), beforeCommit });
   // Every approved issuer shares this registry; each record names its issuer.
   const issuerOf = (rec) => {
@@ -682,9 +593,9 @@ export default function HolderPortal() {
       body: (effectiveDate(rec, responseDays) ? "If you do nothing, it takes effect on " + effectiveDate(rec, responseDays) + ". " : "You have " + responseDays + " days from the date it was sent. ")
         + "Accept or reject before then." },
     { target: "receipt", title: "Record your delivery receipt",
-      body: "Choose Edit, enter the certified mail number, the date you received the mailing, and attach the receipt. Confirm with your passkey; it's recorded on-chain." },
+      body: "Choose Edit, enter the certified mail number, the date you received the mailing, and attach the receipt. Confirm with your passkey; it's recorded on the register." },
     { target: "accept", title: "Accept",
-      body: "If everything matches, accept. Your device asks you to confirm with your passkey, and the acceptance is written to the blockchain." },
+      body: "If everything matches, accept. Your device asks you to confirm with your passkey, and the acceptance is recorded." },
     { target: "reject", title: "Or reject",
       body: "If it isn't right, reject it with a written reason of at least " + REJECTION_MIN + " characters. The amount goes back to " + (rec.origin === "AssignOut" ? "the assignor" : "the bond") + ". Rejecting is final." },
     { target: null, title: "That's it",
@@ -864,7 +775,7 @@ export default function HolderPortal() {
     ));
     emit(open.bond, open.id, "Acknowledged", "RELAYER");
     setView("position");
-    flash("Confirmed. The assignment is in effect, and the chain is being updated.");
+    flash("Confirmed. The assignment is in effect.");
   }
 
   // The only way to refuse an assignment: explicitly, with a reason. The amount goes back to
@@ -931,25 +842,25 @@ export default function HolderPortal() {
   }
 
   // The holder records a UCC-3: on their own record, or on an assign-out they made. Saved like any
-  // other change, so their passkey signs it and it goes on-chain with the filed copy's hash.
+  // other change, so their passkey signs it and it's recorded with the filed copy's hash.
   const [uccFor, setUccFor] = useState(null);
   function recordUcc(rec, f) {
     const by = open.party; // whoever is signed in filed it: the holder, for their record or an assign-out they made
     setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, ...f, filedBy: by } : a)));
     emit(rec.bond, rec.id, "FilingRecorded", "HOLDER", f.filingNumber);
-    flash("UCC-3 " + f.filingNumber + " recorded. Confirm with your passkey; it's written on-chain with the filed copy's hash.");
+    flash("UCC-3 " + f.filingNumber + " recorded. Confirm with your passkey; it's recorded with the filed copy's hash.");
   }
 
   function recordMailingOf(child, f) {
     setReg((r) => r.map((a) => (a.id === child.id ? { ...a, ...f } : a)));
     emit(child.bond, child.id, "DeliveryRecorded", "HOLDER", "sent " + f.mailedOn);
-    flash("Delivery receipt recorded: sent " + f.mailedOn + ". Confirm with your passkey; only hashes go on-chain, with the date.");
+    flash("Delivery receipt recorded: sent " + f.mailedOn + ". Confirm with your passkey; only hashes of the number and receipt are kept, with the date.");
   }
 
   function recordReceipt(rec, f) {
     setReg((r) => r.map((a) => (a.id === rec.id ? { ...a, ...f } : a)));
     emit(rec.bond, rec.id, "ReceiptRecorded", "HOLDER", "received " + f.receivedOn);
-    flash("Delivery receipt recorded. Confirm with your passkey; it's written on-chain with the receipt's hash.");
+    flash("Delivery receipt recorded. Confirm with your passkey; it's recorded with the receipt's hash.");
   }
 
   function cancelAssignOut(child) {
@@ -980,7 +891,7 @@ export default function HolderPortal() {
       : "Locked. Only the issuer can unlock it.");
   }
 
-  // Holder requests are register entries for the issuer queue, not chain writes.
+  // Holder requests are register entries for the issuer queue.
   function requestUnlock() {
     setReg((r) => r.map((a) => (a.id === open.id ? { ...a, unlockRequested: true } : a)));
     flash(open.lockKind === "pledge"
@@ -1034,12 +945,6 @@ export default function HolderPortal() {
             </button>
           ))}
         </div>
-
-        {/* What the signed-in holder just did, on its way to the chain. */}
-        {inHolder && open && (
-          <ChainWriting chainInfo={chainInfo} ink={T.ink} soft={T.inkSoft} wash={T.wash}
-            items={reg.filter((a) => a.id === open.id || a.parent === open.id)} />
-        )}
 
         {/* ============ holder access ============ */}
         {tab === "access" && !view && (
@@ -1099,7 +1004,7 @@ export default function HolderPortal() {
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 18px", maxWidth: "62ch" }}>
               Your phone or computer makes a key that never leaves it, unlocked with your face,
               fingerprint or device PIN. Every action you take on {open.id} is signed with it, and the
-              chain refuses anything that isn't. Nobody else can act for you: not the issuer, not the
+              registry refuses anything that isn't. Nobody else can act for you: not the issuer, not the
               registry.
             </p>
             <Rows data={[
@@ -1128,7 +1033,7 @@ export default function HolderPortal() {
               {effectiveDate(open, responseDays)
                 ? "It takes effect on " + effectiveDate(open, responseDays) + " unless you reject it before then. "
                 : "It takes effect " + responseDays + " days after it's mailed, unless you reject it. "}
-              You can confirm it now, or reject it with a reason. Either way it's recorded on-chain.
+              You can confirm it now, or reject it with a reason. Either way it's recorded with your signature.
             </p>
 
             <div data-tour="amount" className="mb-5 px-3 py-4" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white }}>
@@ -1292,7 +1197,6 @@ export default function HolderPortal() {
                 open.filingRef && ["UCC-3 filing ref", shortHash(open.filingRef)],
                 ["Certified mailing", mailSay(open)],
                 ["Delivery ref", open.deliveryRef ? shortHash(open.deliveryRef) : "—"],
-                chainInfo && ["On-chain", <OnChain rec={open} info={chainInfo} />],
               ]} />
             </div>
 
@@ -1428,12 +1332,12 @@ export default function HolderPortal() {
             <Area label="Mailing address" value={aAddress} onChange={setAAddress}
               placeholder={"Company E, LLC\nAttn: name, position\nStreet\nCity, State ZIP"} />
             <DocDrop label="Signed assignment" value={aDoc} onChange={(v) => { setADoc(v); setAErr(""); }}
-              hint="The assignment you signed to this party. It's hashed on this device; only the hash is kept and written on-chain." />
+              hint="The assignment you signed to this party. It's hashed on this device; only the hash is kept." />
 
             <div className="mb-4">
               <Note>
                 Your phone or computer asks you to confirm with your face, fingerprint or device PIN.
-                That signature is what authorizes the transfer: the chain refuses it without one.
+                That signature is what authorizes the transfer: the registry refuses it without one.
               </Note>
             </div>
 
@@ -1451,7 +1355,7 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Assignment created</h1>
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              Signed with your device and being recorded on-chain. It's open to the assignee now:
+              Signed with your device and recorded. It's open to the assignee now:
               give them the transfer code below with the instrument. These are the values the register generated; carry them onto
               the instrument you sign.
             </p>
@@ -1550,7 +1454,7 @@ export default function HolderPortal() {
         )}
 
         {/* ============ verify ============ */}
-        {tab === "verify" && <VerifyChain info={chainInfo} reg={reg} bonds={bonds} issuerOf={issuerOf} />}
+        {tab === "verify" && <VerifyRegister reg={reg} bonds={bonds} events={events} issuerOf={issuerOf} />}
       </div>
 
       {signing && (

@@ -44,7 +44,7 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
     `Set up your passkey when asked: your phone or computer (face, fingerprint or PIN), a password manager, or a security key such as a YubiKey or Trezor. From then on it is how you sign in and approve every action. Nobody else can act for you.`,
     `Review the assignment and check the amount against the signed instrument in this mailing.`,
     `Record your delivery receipt: the certified mail number, the date you received this, and a copy of the receipt (USPS confirmation or signed return receipt).`,
-    `Accept the assignment, or reject it with a written reason of at least 255 characters. Either is confirmed with your passkey and recorded on the public blockchain.`,
+    `Accept the assignment, or reject it with a written reason of at least 255 characters. Either is confirmed with your passkey and recorded on the register.`,
   ];
   const letter = `
   <section class="page">
@@ -64,7 +64,7 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
     </header>
     <h1>Notice of assignment and instructions</h1>
     <p>${esc(from)} has assigned you an interest in bond ${esc(rec.bond)}; the signed instrument is enclosed. The assignment
-      is recorded in the Interest Registry and on the public blockchain, where anyone can check it.</p>
+      is recorded in the Interest Registry, where anyone with its ID can check it.</p>
     <table class="entries">
       ${rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td${k.includes("fingerprint") ? ' class="mono small"' : ""}>${esc(v)}</td></tr>`).join("")}
     </table>

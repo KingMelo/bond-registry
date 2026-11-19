@@ -12,7 +12,7 @@ import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { ISSUERS, BONDS, ASSIGNMENTS, PASSKEYS, EVENTS } from "./seed.js";
-import * as chain from "./chain.js";
+import * as records from "./records.js";
 import * as holderKeys from "./holder-keys.js";
 
 const APP = ["issuer", "platform"].includes(process.env.APP) ? process.env.APP : "holder";
@@ -63,7 +63,7 @@ async function migrate() {
     await c.query("select pg_advisory_lock(424242)");
     await c.query(`
       create table if not exists meta (k text primary key, version bigint not null);
-      ${chain.SCHEMA}
+      ${records.SCHEMA}
       create table if not exists bonds (id text primary key, data jsonb not null);
       create table if not exists assignments (
         id text primary key, bond text not null, data jsonb not null,
@@ -90,8 +90,6 @@ async function migrate() {
         id text primary key, code text unique not null, legal_name text not null,
         status text not null default 'pending', created_at timestamptz not null default now(),
         reviewed_at timestamptz);
-      -- The Safe an issuer acts through on-chain, once it has one (then its calls need owner signatures).
-      alter table issuers add column if not exists safe_address text;
       create table if not exists users (
         id text primary key, email text unique not null, name text not null,
         pw_salt text not null, pw_hash text not null, is_admin boolean not null default false,
@@ -328,15 +326,14 @@ async function tx(fn) {
   } finally { c.release(); }
 }
 
-/* The holder's device key on the current contract, as the apps show it. */
+/* The holder's device key, as the apps show it. */
 function activeKey(data) {
   const k = data?.holder;
-  return k && k.contract === (chain.CONTRACT || "local") && k.x ? k : null;
+  return k && k.x ? k : null;
 }
 function deviceKeyOf(data) {
   const k = activeKey(data);
-  return k ? { fingerprint: holderKeys.fingerprint(k.x), since: k.since, credId: k.credId }
-    : data?.holder?.clearedOn && data.holder.contract === (chain.CONTRACT || "local") ? { cleared: data.holder.clearedOn } : null;
+  return k ? { fingerprint: holderKeys.fingerprint(k.x), since: k.since, credId: k.credId } : null;
 }
 
 /* Reads the register for a set of bonds. The holder portal hides contact details. */
@@ -352,31 +349,31 @@ async function readState(bondFilter, params) {
     `select s.id, s.revealed_at, s.revealed_by from sealed_codes s join assignments a on a.id = s.id join bonds b on b.id = a.bond where ${bondFilter}`, params)).rows;
   // "unused": the assignee hasn't used their transfer code yet; it can be viewed until they do.
   const sealed = new Map(sealedRows.map((r) => [r.id, "unused"]));
-  const onChain = await chain.statusFor(pool, bonds.rows.map((r) => r.data.id), regs.rows.map((r) => r.data.id));
   return {
     bonds: bonds.rows.map((r) => {
-      const b = { ...r.data, issuerId: r.issuer_id, review: r.review, reviewNote: r.review_note, rev: Number(r.rev),
-        chain: onChain.get(r.data.id) || null };
+      const { chain: _c, ...data } = r.data;
+      const b = { ...data, issuerId: r.issuer_id, review: r.review, reviewNote: r.review_note, rev: Number(r.rev) };
       // Prior instruments name their holder; the public site gets amounts only.
       if (APP === "holder") b.prior = (b.prior || []).map(({ id, units, reversed }) => ({ id, units, reversed }));
       return b;
     }),
     reg: regs.rows.map(({ data, rev }) => {
       const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false,
-        chain: onChain.get(data.id) || null, deviceKey: deviceKeyOf(data), ...(APP === "holder" ? {} : { accessCode: sealed.get(data.id) || null }) };
+        deviceKey: deviceKeyOf(data), ...(APP === "holder" ? {} : { accessCode: sealed.get(data.id) || null }) };
       delete out.holder;
+      delete out.chain;
+      delete out.tx;
       if (APP === "holder") for (const k of HOLDER_HIDDEN) delete out[k];
       return out;
     }),
     events: events.rows.map((r) => ({ ...r.data, eid: r.eid })),
-    chain: chain.publicInfo(),
     responseDays: RESPONSE_DAYS,
   };
 }
 
 /* An issued assignment the holder hasn't rejected takes effect once the response period after its
    mailing has passed. Runs on the issuer service; each record is its own transaction, through the
-   same save path as any other change, so it reaches the chain the same way. */
+   same save path as any other change. */
 async function takeEffectWhenDue() {
   const due = (await pool.query(
     `select id, bond, data, rev from assignments
@@ -401,7 +398,6 @@ async function takeEffectWhenDue() {
   }
 }
 
-/* Saves one commit after the caller's own checks; enforces the units rule for the bonds given. */
 /* Saves one commit after the caller's own checks; enforces the units rule for the bonds given.
    A changed bond or record must carry the revision it was loaded at; a new one carries none.
    Returns the new revisions so the app can keep editing without reloading. */
@@ -411,8 +407,7 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
   if (touched.length) await c.query("select id from bonds where id = any($1) order by id for update", [touched]);
   const revs = { bonds: {}, reg: {} };
   const stale = (id) => new Reject(409, id + " changed since you loaded it.");
-  // What was stored before this save, so the chain gets exactly the changes.
-  const oldBonds = new Map((await c.query("select id, data, review from bonds where id = any($1)", [bonds.map((b) => b.id)])).rows.map((r) => [r.id, r]));
+  // What was stored before this save, so the signed acts are exactly the changes.
   const oldRecs = new Map((await c.query("select id, data from assignments where id = any($1)", [reg.map((a) => a.id)])).rows.map((r) => [r.id, r.data]));
   const savedRecs = [];
 
@@ -424,7 +419,6 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
         [b.id, stripBond(b), issuerId ?? b.issuerId, autoApprove && ucc1Complete(b) ? "approved" : "pending"]);
       if (!r.rowCount) throw stale(b.id);
       revs.bonds[b.id] = Number(r.rows[0].rev);
-      if (r.rows[0].review === "approved") await chain.queueAnchor(c, b.id);
     } else {
       const r = await c.query(
         `update bonds set data = $2, rev = rev + 1,
@@ -433,9 +427,6 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
         [b.id, stripBond(b), b.rev, autoApprove && ucc1Complete(b)]);
       if (!r.rowCount) throw stale(b.id);
       revs.bonds[b.id] = Number(r.rows[0].rev);
-      const was = oldBonds.get(b.id);
-      if (r.rows[0].review === "approved" && was?.review !== "approved") await chain.queueAnchor(c, b.id);
-      else if (r.rows[0].review === "approved") await chain.queuePriorChanges(c, b.id, was?.data, r.rows[0].data);
     }
   }
   for (const a of reg) {
@@ -461,7 +452,8 @@ async function applyCommit(c, { bonds, reg, events, issuerId, autoApprove = fals
       "insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4) on conflict (eid) do nothing",
       [eid, data.bond, data.id, data]);
   }
-  await chain.queueRecordChanges(c, { app: APP, before: oldRecs, after: savedRecs, events, authFor });
+  // An assignee's own acts each need their passkey's signature (assignee portal saves only).
+  if (authFor) for (const act of records.signedActions({ before: oldRecs, after: savedRecs })) await authFor(act);
 
   // Units rule, per bond: prior + live + unassigned + redeemed = total.
   if (!touched.length) return revs;
@@ -503,7 +495,7 @@ function checkPrior(b, before) {
       if (!String(p.ref || "").trim()) throw new Reject(400, "Enter the prior instrument's identifier.");
       if (!String(p.holder || "").trim()) throw new Reject(400, "Enter who holds " + p.ref + ".");
       if (!Number.isInteger(p.units) || p.units <= 0) throw new Reject(400, "Enter the amount for " + p.ref + ".");
-      // An identifier is used once per bond, even after a reversal: the chain keeps the reversed entry.
+      // An identifier is used once per bond, even after a reversal: the register keeps the reversed entry.
       const key = String(p.ref).trim().toUpperCase();
       const clash = prior.find((q) => q !== p && String(q.ref || "").trim().toUpperCase() === key);
       if (clash) throw new Reject(422, p.ref + (clash.reversed ? " was recorded before and reversed; use a distinct identifier." : " is already recorded on this bond."));
@@ -516,7 +508,7 @@ const stripBond = (b) => { const { issuerId, review, reviewNote, rev, chain: _c,
 
 // A new record needs the SHA-256 of its signed instrument: no paper, no record.
 function needsDocument(before, a) {
-  if (!before && !chain.isHash(a.docHash))
+  if (!before && !records.isHash(a.docHash))
     throw new Reject(400, "Attach the signed assignment instrument for " + a.id + ". Only its SHA-256 hash is kept.");
 }
 
@@ -538,15 +530,14 @@ function cleanRecord(raw) {
 
 if (APP === "holder") {
   app.get("/api/state", wrap(async (req, res) => {
-    // Unchanged only if neither the register nor the chain queue moved: a write landing on-chain shows too.
-    const [v, cs] = await Promise.all([version(pool), chain.chainStamp(pool)]);
-    if (req.query.since && Number(req.query.since) === v && Number(req.query.chain) === cs) return res.json({ version: v, chainStamp: cs, unchanged: true });
+    const v = await version(pool);
+    if (req.query.since && Number(req.query.since) === v) return res.json({ version: v, unchanged: true });
     const filter = "b.review = 'approved' and b.issuer_id in (select id from issuers where status = any($1))";
     const [state, issuers] = await Promise.all([
       readState(filter, [PUBLIC_STATUSES]),
       pool.query("select id, code, legal_name, status from issuers where status = any($1) order by code", [PUBLIC_STATUSES]),
     ]);
-    res.json({ version: v, chainStamp: cs, ...state,
+    res.json({ version: v, ...state,
       issuers: issuers.rows.map((i) => ({ id: i.id, code: i.code, legalName: i.legal_name, status: i.status })) });
   }));
 
@@ -575,11 +566,10 @@ if (APP === "holder") {
     const host = req.get("host") || "";
     return { rpId: process.env.HOLDER_RP_ID || req.hostname, origins: [process.env.HOLDER_ORIGIN || req.protocol + "://" + host] };
   };
-  const contractOrLocal = () => chain.CONTRACT || "local";
-  const deviceDoc = chain.deviceDoc;
-  const keyArgs = (rec, x, y, doc) => [chain.id32(rec.bond), chain.id32(rec.id), x, y, doc];
-  const startNonce = (data) => (data?.holder && data.holder.contract === contractOrLocal() ? Number(data.holder.nonce || 0) : 0);
-  const challengeOf = chain.holderChallenge;
+  const deviceDoc = records.deviceDoc;
+  const keyArgs = (rec, x, y, doc) => [rec.bond, rec.id, x, y, doc];
+  const startNonce = (data) => Number(data?.holder?.nonce || 0);
+  const challengeOf = (signerId, nonce, fn, args) => holderKeys.challengeFor({ signerId, nonce, fn, args });
 
   /**
    * One holder save. `mode.collect` gathers what the device must sign (nothing is kept: the caller
@@ -604,7 +594,7 @@ if (APP === "holder") {
       if (!relayerAllows(before, a))
         throw new Reject(403, "The assignee portal can't move " + a.id + " from " + (before?.status || "nothing") + " to " + a.status + ".");
       // An assign-out is numbered under the issuer-made assignment it descends from, with one dash:
-      // A00001-1, A00001-2, … however far down the chain (its parent is kept on the record).
+      // A00001-1, A00001-2, … however far down the line (its parent is kept on the record).
       const root = String(a.parent || "").replace(/(-A\d+)-\d+$/, "$1");
       if (!before && !new RegExp("^" + root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-[1-9]\\d*$").test(String(a.id || "")))
         throw new Reject(400, "An assignment made from " + a.parent + " is numbered " + root + "-1, -2 and so on.");
@@ -638,7 +628,7 @@ if (APP === "holder") {
           if (!String(a.instrumentMail || "").trim()) throw new Reject(400, "Enter the certified mail number.");
           const t = Date.parse(a.mailedOn || "");
           if (!t || t > Date.now()) throw new Reject(400, "Enter the date it was sent (not a future date).");
-          if (!chain.isHash(a.mailingDoc)) throw new Reject(400, "Attach the certified mail receipt. Only its SHA-256 is kept.");
+          if (!records.isHash(a.mailingDoc)) throw new Reject(400, "Attach the certified mail receipt. Only its SHA-256 is kept.");
           a.instrumentMail = String(a.instrumentMail).trim();
           if (before.receiptMail) a.receiptMatches = mailMatches({ instrumentMail: a.instrumentMail }, before.receiptMail);
           a.deliveredAt = new Date(t).toISOString(); // the response period runs from here
@@ -649,7 +639,7 @@ if (APP === "holder") {
           if (before.receiptRef) throw new Reject(409, "A delivery receipt is already recorded for " + a.id + ".");
           const t = Date.parse(a.receivedOn || "");
           if (!t || t > Date.now()) throw new Reject(400, "Enter the date you received it (not a future date).");
-          if (!chain.isHash(a.receiptDoc)) throw new Reject(400, "Attach the delivery receipt. Only its SHA-256 is kept.");
+          if (!records.isHash(a.receiptDoc)) throw new Reject(400, "Attach the delivery receipt. Only its SHA-256 is kept.");
           if (!String(a.receiptMail || "").trim()) throw new Reject(400, "Enter the certified mail number on the receipt.");
           a.receiptMail = String(a.receiptMail).trim();
           a.receiptMatches = mailMatches(before, a.receiptMail);
@@ -661,7 +651,7 @@ if (APP === "holder") {
           if (role !== "assignor") throw new Reject(403, "The UCC-3 for " + a.id + " is recorded by " + (before.origin === "AssignOut" ? "its assignor" : "the issuer") + ".");
           if (before.filingRef || before.filingNumber) throw new Reject(409, "A UCC-3 is already recorded for " + a.id + ".");
           if (!String(a.filingNumber || "").trim()) throw new Reject(400, "Enter the UCC-3 filing number.");
-          if (!chain.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3. Only its SHA-256 is kept.");
+          if (!records.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3. Only its SHA-256 is kept.");
         }
         if (before && changed.some((k) => !may.includes(k))) throw new Reject(403, "You can't change " + changed.filter((k) => !may.includes(k)).join(", ") + " on " + a.id + ".");
         // The assignor can only cancel an assign-out; the parent of a new holder only closes when emptied.
@@ -687,7 +677,7 @@ if (APP === "holder") {
           if (!r.rowCount) throw new Reject(404, "No such bond.");
         }
       }
-      clean.push(chain.normalizeRecord(a));
+      clean.push(records.normalizeRecord(a));
     }
     // Amounts only move with an assign-out: a new child takes units from its parent; a cancelled or
     // rejected child gives them back. Nothing else in a holder save may change an amount.
@@ -711,11 +701,11 @@ if (APP === "holder") {
     const bondsOk = new Set(clean.map((a) => a.bond));
     for (const e of events) if (!bondsOk.has(e.bond)) throw new Reject(403, "An event must belong to a record being saved.");
 
-    // Each signed call: the signer's key, its next nonce, and the challenge the contract rebuilds.
+    // Each signed act: the signer's key, its next count, and the challenge built from the act.
     const used = new Map();
     let next = 0;
     const authFor = async (op) => {
-      if (op.signer === "$SESSION" && session) { op.signer = session.id; op.args = op.args.map((x) => (x === "$SIGNER_ID" ? chain.id32(session.id) : x)); }
+      if (op.signer === "$SESSION" && session) op.signer = session.id;
       if (!session || op.signer !== session.id) throw new Reject(403, "Only the assignee of " + op.signer + " can sign this.");
       const data = (await c.query("select data from assignments where id = $1", [op.signer])).rows[0]?.data;
       const key = activeKey(data);
@@ -723,10 +713,11 @@ if (APP === "holder") {
       const nonce = startNonce(data) + (used.get(op.signer) || 0);
       const challenge = challengeOf(op.signer, nonce, op.fn, op.args);
       used.set(op.signer, (used.get(op.signer) || 0) + 1);
-      if (mode.collect) { mode.collect.push({ fn: op.fn, ref: op.ref, challenge, credId: key.credId }); return holderKeys.NOAUTH; }
+      if (mode.collect) { mode.collect.push({ fn: op.fn, ref: op.ref, challenge, credId: key.credId }); return; }
       const assertion = (mode.assertions || [])[next++];
       if (!assertion) throw new Reject(400, "This change needs your device's confirmation.");
-      return holderKeys.checkAssertion({ assertion, challenge, x: key.x, y: key.y, ...site(req) });
+      const kept = holderKeys.checkAssertion({ assertion, challenge, x: key.x, y: key.y, ...site(req) });
+      await records.keepSignature(c, { ...op, nonce, challenge, assertion: kept });
     };
     const revs = await applyCommit(c, { bonds: [], reg: clean, events, authFor });
     // Each new assign-out gets its assignee's access code now, signed off by the assignor's device,
@@ -777,9 +768,7 @@ if (APP === "holder") {
         challenge, exp, ticket: ticketFor(id, challenge, exp), rpId: site(req).rpId });
     }
     const cred = (await pool.query("select locked from credentials where id = $1", [id])).rows[0];
-    if (!cred) return res.json({ mode: "none", error: data.holder?.clearedOn
-      ? "This assignment's passkey was reset. The issuer mails a new transfer code once they've verified you."
-      : "No transfer code has been issued for this assignment yet." });
+    if (!cred) return res.json({ mode: "none", error: "No transfer code has been issued for this assignment yet." });
     return res.json({ mode: cred.locked ? "locked" : "code", id });
   }));
 
@@ -873,10 +862,10 @@ if (APP === "holder") {
     const out = await tx(async (c) => {
       const p = await keyPlan(c, req.body, req);
       const auth = holderKeys.checkAssertion({ assertion: req.body?.assertion, challenge: p.challenge, x: p.x, y: p.y, ...site(req) });
-      const holder = { contract: contractOrLocal(), credId: p.credId, x: p.x, y: p.y, nonce: p.nonce + 1, since: stampNow() };
+      const holder = { credId: p.credId, x: p.x, y: p.y, nonce: p.nonce + 1, since: stampNow() };
       await c.query("update assignments set data = data || jsonb_build_object('holder', $2::jsonb), rev = rev + 1 where id = $1",
         [p.rec.id, JSON.stringify(holder)]);
-      await chain.queueOps(c, [{ bond: p.rec.bond, ref: p.rec.id, fn: "registerHolderKey", args: [...p.args, auth], role: "relayer" }]);
+      await records.keepSignature(c, { ref: p.rec.id, signer: p.rec.id, fn: "registerHolderKey", args: p.args, nonce: p.nonce, challenge: p.challenge, assertion: auth });
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
         [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "DeviceKeyRegistered", actor: "HOLDER",
           ref: "Device key " + holderKeys.fingerprint(p.x) }]);
@@ -1058,7 +1047,7 @@ if (APP === "issuer") {
   async function membership(req, issuerId) {
     const u = await needUser(req);
     const r = await pool.query(
-      `select m.role, i.id, i.code, i.legal_name, i.status, i.trusted, i.safe_address from memberships m join issuers i on i.id = m.issuer_id
+      `select m.role, i.id, i.code, i.legal_name, i.status, i.trusted from memberships m join issuers i on i.id = m.issuer_id
        where m.user_id = $1 and m.issuer_id = $2`, [u.id, issuerId]);
     if (!r.rows[0]) throw new Reject(403, "You don't have access to this issuer.");
     return { user: u, ...r.rows[0] };
@@ -1163,11 +1152,10 @@ if (APP === "issuer") {
 
   app.get("/api/state", wrap(async (req, res) => {
     const m = await membership(req, req.query.issuer);
-    // Unchanged only if neither the register nor the chain queue moved: a write landing on-chain shows too.
-    const [v, cs] = await Promise.all([version(pool), chain.chainStamp(pool)]);
-    if (req.query.since && Number(req.query.since) === v && Number(req.query.chain) === cs) return res.json({ version: v, chainStamp: cs, unchanged: true });
+    const v = await version(pool);
+    if (req.query.since && Number(req.query.since) === v) return res.json({ version: v, unchanged: true });
     const state = await readState("b.issuer_id = $1", [m.id]);
-    res.json({ version: v, chainStamp: cs, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role, trusted: m.trusted, safe: m.safe_address || null } });
+    res.json({ version: v, ...state, issuer: { id: m.id, code: m.code, legalName: m.legal_name, status: m.status, role: m.role, trusted: m.trusted } });
   }));
 
   app.post("/api/commit", wrap(async (req, res) => {
@@ -1208,7 +1196,7 @@ if (APP === "issuer") {
         needsDocument(before, a);
         // A UCC-3 the issuer records comes with the filed copy (only its hash is kept).
         if (a.filingNumber && a.filingNumber !== before?.data?.filingNumber) {
-          if (!chain.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3 for " + a.id + ". Only its SHA-256 is kept.");
+          if (!records.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3 for " + a.id + ". Only its SHA-256 is kept.");
           a.filingNumber = String(a.filingNumber).trim();
         }
         // The issuer's first mailing of a record: the mail number, the date sent and the certified mail receipt.
@@ -1216,9 +1204,9 @@ if (APP === "issuer") {
         if (firstMailing) {
           const t = Date.parse(a.mailedOn || "");
           if (!t || t > Date.now()) throw new Reject(400, "Enter the date " + a.id + " was sent (not a future date).");
-          if (!chain.isHash(a.mailingDoc)) throw new Reject(400, "Attach the certified mail receipt for " + a.id + ". Only its SHA-256 is kept.");
+          if (!records.isHash(a.mailingDoc)) throw new Reject(400, "Attach the certified mail receipt for " + a.id + ". Only its SHA-256 is kept.");
         }
-        const n = chain.normalizeRecord(a);
+        const n = records.normalizeRecord(a);
         // The response period runs from the date sent.
         n.deliveredAt = before?.data?.deliveredAt
           || (n.deliveryRef && firstMailing ? new Date(Date.parse(a.mailedOn)).toISOString() : null);
@@ -1272,26 +1260,6 @@ if (APP === "issuer") {
       return { code };
     });
     res.json(out);
-  }));
-
-  // Recovery when a holder loses their device: clears the record's device key, on-chain too (signed
-  // through the issuer's Safe). The holder registers a new device at their next sign-in, usually
-  // with a new access code mailed after the issuer verifies them.
-
-
-  // Chain writes waiting on this issuer's Safe, and a signature for one of them.
-  app.get("/api/issuer/signing", wrap(async (req, res) => {
-    const m = await membership(req, req.query.issuer);
-    res.json({ safe: m.safe_address || null, items: await chain.awaitingSignature(pool, m.safe_address),
-      recent: await chain.recentForSafe(pool, m.safe_address), contract: chain.CONTRACT });
-  }));
-
-  app.post("/api/issuer/sign", wrap(async (req, res) => {
-    const m = await membership(req, req.body?.issuer);
-    if (!m.safe_address) throw new Reject(409, "This issuer doesn't sign through a Safe.");
-    const r = await chain.addSignature(pool, Number(req.body?.seq), m.safe_address, String(req.body?.signature || ""));
-    if (!r.ok) throw new Reject(422, r.error);
-    res.json(r);
   }));
 
   app.post("/api/issuer/clear-lockout", wrap(async (req, res) => {
@@ -1397,7 +1365,6 @@ if (APP === "platform") {
       const r = await c.query("update issuers set status = $2, reviewed_at = now(), reviewed_by = $3 where id = $1 returning code",
         [req.params.id, status, u.id]);
       if (!r.rowCount) throw new Reject(404, "No such issuer.");
-      await chain.queueIssuerStatus(c, req.params.id, r.rows[0].code, status);
       return bump(c);
     });
     res.json({ version: v });
@@ -1449,7 +1416,6 @@ if (APP === "platform") {
       if (b.status !== "approved") throw new Reject(409, "Approve the issuer before its bonds.");
       await c.query("update bonds set review = $2, review_note = $3, reviewed_by = $4, reviewed_at = now() where id = $1",
         [req.params.id, decision, note || null, u.id]);
-      if (decision === "approved") await chain.queueAnchor(c, req.params.id);
       const ev = decision === "approved" ? "BondApproved" : "BondRejected";
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, '—', $3)",
         [crypto.randomUUID(), req.params.id,
@@ -1457,43 +1423,6 @@ if (APP === "platform") {
       return bump(c);
     });
     res.json({ version: v });
-  }));
-
-  // The chain mirror: queue counts and anything the contract refused.
-  // Chain writes waiting on the platform's Safe (registering and suspending issuers), and a signature.
-  app.get("/api/platform/signing", wrap(async (req, res) => {
-    await needStaff(req);
-    res.json({ safe: chain.PLATFORM_SAFE, items: await chain.awaitingSignature(pool, chain.PLATFORM_SAFE),
-      recent: await chain.recentForSafe(pool, chain.PLATFORM_SAFE), contract: chain.CONTRACT });
-  }));
-
-  app.post("/api/platform/sign", wrap(async (req, res) => {
-    const u = await needStaff(req);
-    if (!isOwner(u)) throw new Reject(403, "Only the platform owner can sign for the platform.");
-    if (!chain.PLATFORM_SAFE) throw new Reject(409, "The platform doesn't sign through a Safe.");
-    const r = await chain.addSignature(pool, Number(req.body?.seq), chain.PLATFORM_SAFE, String(req.body?.signature || ""));
-    if (!r.ok) throw new Reject(422, r.error);
-    res.json(r);
-  }));
-
-  app.get("/api/platform/chain", wrap(async (req, res) => {
-    await needStaff(req);
-    res.json(await chain.summary(pool));
-  }));
-
-  // Freezes this contract so a new version can copy it. Owner only; approved through the platform's Safe.
-  app.post("/api/platform/chain/freeze", wrap(async (req, res) => {
-    const u = await needStaff(req);
-    if (!isOwner(u)) throw new Reject(403, "Only the platform owner can freeze the contract.");
-    try { await chain.freezeForMove(pool); } catch (e) { throw new Reject(e.status || 409, e.message); }
-    res.json({ ok: true });
-  }));
-
-  app.post("/api/platform/chain/retry", wrap(async (req, res) => {
-    const u = await needStaff(req);
-    if (!isOwner(u)) throw new Reject(403, "Only the platform owner can retry chain writes.");
-    if (!(await chain.retry(pool, Number(req.body?.seq)))) throw new Reject(404, "That write isn't waiting on a retry.");
-    res.json({ ok: true });
   }));
 
   app.get("/api/platform/staff", wrap(async (req, res) => {
@@ -1545,7 +1474,6 @@ app.use((err, req, res, next) => {
 migrate()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => console.log(`${APP} listening on ${PORT}`));
-    chain.startWorker(pool);
     if (APP === "issuer") {
       const run = () => takeEffectWhenDue().catch((e) => console.error("Taking effect:", e.message));
       setTimeout(run, 5000);
