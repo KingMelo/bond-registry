@@ -150,6 +150,15 @@ export async function syncIssuerFacts(pool, records) {
   }
 }
 
+/** The response period passed with no authenticated answer: recorded on the offer, nothing more. */
+export async function recordNoResponse(pool, recordId) {
+  const ref = await refOf(pool, recordId);
+  if (ref?.template !== "AssignmentOffer") return;
+  const platform = await localParty(pool, "platform");
+  const tx = await submit([platform], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "RecordNoResponse", choiceArgument: {} } }]);
+  await setRef(pool, recordId, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
+}
+
 // ------------------------------------------------------------------ the assignee's keys
 
 const jsonKey = (spki) => ({ format: "CRYPTO_KEY_FORMAT_DER_X509_SUBJECT_PUBLIC_KEY_INFO", keyData: spki, keySpec: "SIGNING_KEY_SPEC_EC_P256" });

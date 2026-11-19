@@ -185,8 +185,10 @@ export function useRegistry({ onNotice, issuer, beforeCommit } = {}) {
     issuerInfo: info.issuer, issuers: info.issuers, responseDays: info.responseDays };
 }
 
-// The date an issued assignment takes effect if the holder doesn't reject it, or null before mailing.
-export function effectiveDate(rec, days) {
+// The end of the response period: the date sent plus the response days, or null before mailing.
+// If no authenticated response is recorded by then, the register records only that; it doesn't
+// decide what follows, which is for counsel.
+export function responseDeadline(rec, days) {
   if (!rec?.deliveredAt) return null;
   const d = new Date(new Date(rec.deliveredAt).getTime() + days * 86400000);
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });

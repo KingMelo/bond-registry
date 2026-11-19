@@ -3,7 +3,7 @@ import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passk
 import { nextChildId } from "../src/registry.jsx";
 import { CantonSetup, CantonKeys, CantonAsk, signWaiting } from "./canton-keys-ui.jsx";
 import { printPacket } from "../src/print-packet.js";
-import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, shortHash, effectiveDate } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, shortHash, responseDeadline } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — holder portal
@@ -65,7 +65,7 @@ const settleParent = (reg, parentId) => {
 const LABEL = {
   AwaitingCredential: "Awaiting credential",
   CredentialRequested: "Credential requested",
-  Issued: "Issued",
+  Issued: "Offered",
   Accepted: "In effect",
   Locked: "Locked",
   PendingRedemption: "Pending redemption",
@@ -227,7 +227,7 @@ function MailingRow({ rec, onSave }) {
       <Field label="Certified mail number" value={num} onChange={(v) => { setNum(v); setErr(""); }} placeholder="9407 1000 0000 0000 0000 00" mono
         hint="The one mailing with the signed instrument and the sealed transfer code." />
       <Field label="Date sent" type="date" value={on} onChange={(v) => { setOn(v); setErr(""); }}
-        hint={rec.party + " has 30 days from this date to accept or reject; after that it takes effect."} />
+        hint={rec.party + " has 30 days from this date to accept or reject. If no authenticated response comes, the register records only that."} />
       <DocDrop label="Certified mail receipt" value={doc} onChange={(v) => { setDoc(v); setErr(""); }}
         hint="Hashed on this device; only the hash is kept, with the number and date." />
     </EditRow>
@@ -460,6 +460,7 @@ function VerifyRegister({ reg, bonds = [], events = [], issuerOf }) {
             ["Certified mailing", r.deliveryRef ? "Recorded" + (r.mailedOn ? ", sent " + r.mailedOn : "") + " (the tracking number is shown only to the assignee)" : "Not recorded"],
             ["Delivery receipt", r.receiptRef ? "Recorded by the assignee" + (r.receivedOn ? ", received " + r.receivedOn : "")
               + (r.receiptMatches === true ? " · its tracking number matches the recorded mailing ✓" : r.receiptMatches === false ? " · its tracking number differs from the recorded mailing" : "") : "Not recorded"],
+            r.noResponseAsOf && ["Response", "Offered; no authenticated response within the response period (recorded " + r.noResponseAsOf + ")"],
             ["Signed instrument fingerprint", shortHash(r.docHash)],
           ]} />
         </div>
@@ -625,8 +626,8 @@ export default function HolderPortal() {
     { target: "details", title: "The details on record",
       body: "Who assigned it and to whom, the date, the UCC-3 and the certified mailing. The document hash is the signed instrument's fingerprint; the Verify tab checks your copy against it." },
     { target: "deadline", title: "Your " + responseDays + " days",
-      body: (effectiveDate(rec, responseDays) ? "If you do nothing, it takes effect on " + effectiveDate(rec, responseDays) + ". " : "You have " + responseDays + " days from the date it was sent. ")
-        + "Accept or reject before then." },
+      body: (responseDeadline(rec, responseDays) ? "Accept or reject by " + responseDeadline(rec, responseDays) + ". " : "You have " + responseDays + " days from the date it was sent to accept or reject. ")
+        + "If there's no authenticated response by then, the register records only that it was offered and not answered." },
     { target: "receipt", title: "Record your delivery receipt",
       body: "Choose Edit, enter the certified mail number, the date you received the mailing, and attach the receipt. Confirm with your passkey; it's recorded on the register." },
     { target: "accept", title: "Accept",
@@ -1081,10 +1082,12 @@ export default function HolderPortal() {
           <div>
             <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Review this assignment</h1>
             <p data-tour="deadline" style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
-              {effectiveDate(open, responseDays)
-                ? "It takes effect on " + effectiveDate(open, responseDays) + " unless you reject it before then. "
-                : "It takes effect " + responseDays + " days after it's mailed, unless you reject it. "}
-              You can confirm it now, or reject it with a reason. Either way it's recorded with your signature.
+              {open.noResponseAsOf
+                ? "No authenticated response was recorded within " + responseDays + " days of the mailing; the register noted that on " + open.noResponseAsOf + ". You can still accept or reject. "
+                : responseDeadline(open, responseDays)
+                ? "Respond by " + responseDeadline(open, responseDays) + ". If no authenticated response is recorded by then, the register notes only that it was offered and not answered. "
+                : "You have " + responseDays + " days from the date it's sent to respond. "}
+              You can accept it, or reject it with a reason. Either way it's recorded with your signature.
             </p>
 
             <div data-tour="amount" className="mb-5 px-3 py-4" style={{ border: "2px solid " + T.ink, borderRadius: 2, background: T.white }}>
@@ -1139,7 +1142,7 @@ export default function HolderPortal() {
             <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
               Rejecting is final. {usd(open.units)} goes back {open.origin === "AssignOut" ? "to " + open.assignor + "'s record" : "to the bond"},
               and this record can't be revived. If the figures are simply wrong, you may prefer to
-              contact {open.assignor} first; until{effectiveDate(open, responseDays) ? " " + effectiveDate(open, responseDays) : " the response period ends"} nothing changes.
+              contact {open.assignor} first; nothing changes until you respond.
             </p>
             <Rows data={[
               ["Assignment", open.id],

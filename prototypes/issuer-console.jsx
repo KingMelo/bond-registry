@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { nextIssuedId } from "../src/registry.jsx";
 import { printPacket } from "../src/print-packet.js";
-import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, shortHash, effectiveDate } from "../src/registry.jsx";
+import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, shortHash, responseDeadline } from "../src/registry.jsx";
 
 /* ================================================================
    Bond Interest Registry — issuer console
@@ -43,7 +43,7 @@ const PENDING = ["AwaitingCredential", "CredentialRequested", "Issued"];
 const LABEL = {
   AwaitingCredential: "Awaiting credential",
   CredentialRequested: "Credential requested",
-  Issued: "Issued",
+  Issued: "Offered",
   Accepted: "In effect",
   Locked: "Locked",
   PendingRedemption: "Pending redemption",
@@ -1165,12 +1165,12 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
               a.issuedUnits !== a.units && ["Issued at", usd(a.issuedUnits)],
               pending.length > 0 && ["Pending transfers", pending.length + " · " + usd(pending.reduce((t, c) => t + c.units, 0))],
               ["Created", a.created],
-              a.status === "Issued" && ["Takes effect", effectiveDate(a, responseDays)
-                ? effectiveDate(a, responseDays) + " unless the assignee rejects it"
-                : responseDays + " days after the mailing is recorded, unless rejected"],
+              a.status === "Issued" && !a.noResponseAsOf && ["Response due", responseDeadline(a, responseDays)
+                ? responseDeadline(a, responseDays) + " (if none, the register records only that)"
+                : responseDays + " days after the mailing is recorded"],
+              a.status === "Issued" && a.noResponseAsOf && ["Response", "Offered; no authenticated response within " + responseDays + " days (recorded " + a.noResponseAsOf + ")"],
               a.status === "Rejected" && ["Rejected", (a.rejectedOn ? a.rejectedOn + ": " : "") + (a.rejectionReason || "")],
               a.status !== "Issued" && a.status !== "Rejected" && ["In effect since", a.effectiveOn || a.accepted || "—"],
-              a.effective === "deemed" && ["How", "No rejection within " + responseDays + " days"],
               ["Document hash", (a.docFile ? a.docFile + " · " : "") + shortHash(a.docHash)],
               ["UCC-3 filing", a.filingNumber ? a.filingNumber + (a.filedBy ? " · filed by " + a.filedBy : "") : a.filingRef ? shortHash(a.filingRef) : "Not yet filed"],
               ["Delivery ref", a.deliveryRef ? shortHash(a.deliveryRef) : "—"],
@@ -1361,7 +1361,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   placeholder="9407 1000 0000 0000 0000 00" mono
                   hint="One mailing: the signed instrument and the sealed transfer code." />
                 <Field label="Date sent" type="date" value={iMailOn} onChange={setIMailOn}
-                  hint={a.party + " has 30 days from this date to accept or reject; after that it takes effect."} />
+                  hint={a.party + " has 30 days from this date to accept or reject. If no authenticated response comes, the register records only that."} />
                 <FileHash label="Certified mail receipt" value={iMailDoc} onChange={setIMailDoc}
                   hint="Hashed in this browser; only its SHA-256 is kept, with the number." />
                 <Button variant="quiet" disabled={!iMail.trim() || !iMailOn || !iMailDoc} onClick={() => recordMailing(a)}>

@@ -227,7 +227,7 @@ const FN_LABEL = {
   registerIssuer: "Register issuer", anchorBond: "Anchor bond", recordPriorInstrument: "Record prior instrument",
   reversePriorInstrument: "Reverse prior instrument", issueAssignment: "Issue assignment", assignOut: "Assign out",
   replaceAssignment: "Replace assignment", setFilingRef: "Record UCC-3 filing", setDeliveryRef: "Record mailing", logChange: "Log a register change", recordFiling: "Assignee UCC-3",
-  accept: "Took effect", rejectAssignment: "Rejected by assignee", registerHolderKey: "Assignee device key", pause: "Freeze contract", importIssuer: "Copy issuer", importBond: "Copy bond",
+  accept: "Accepted by assignee", rejectAssignment: "Rejected by assignee", registerHolderKey: "Assignee device key", pause: "Freeze contract", importIssuer: "Copy issuer", importBond: "Copy bond",
   importPrior: "Copy prior instrument", importRecord: "Copy record", finishImport: "Finish the copy", rotateHolderKey: "Assignee device key changed", clearHolderKey: "Assignee device key reset", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
   issueCredential: "Issue credential", cancelAssignOut: "Cancel assign-out", issuerCancelAssignOut: "Cancel assign-out (issuer)",
   lock: "Lock", unlock: "Unlock", recordRotation: "Record passkey rotation", redeem: "Redeemed",

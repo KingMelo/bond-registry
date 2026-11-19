@@ -20,7 +20,7 @@ from Docker Hub: `docker create digitalasset/daml-sdk:3.4.0-rc2`, then copy `/ho
 cd canton
 daml build
 daml test                                                   # the template tests
-daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.2.0.dar &
+daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.3.0.dar &
 node pilot/passkey-signing.mjs                              # signing pilot (key in Node)
 BROWSER=1 node pilot/passkey-signing.mjs                    # the same, key made in Chromium's WebCrypto
 (cd pilot && npm install && node backup-key.mjs)            # backup key; uses the node's admin API (port 6866)
@@ -34,7 +34,7 @@ assign; only the issuer issues; nobody but the assignee acts on an assignment (t
 archive it); an assign-out needs its own paper and the one-dash number, and the remainder keeps the
 original paper with the new one listed; each holder controls only their portion; a rejection needs
 255+ characters and returns the units; outsiders see nothing, the assignee sees only its own, a
-trustee named on the bond reads but can't act; deemed acceptance only after 30 days from mailing;
+trustee named on the bond reads but can't act; after 30 days from mailing with no authenticated answer, only that fact is recorded;
 redemption needs the payment confirmation's hash.
 
 **Signing: a passkey can't sign for a Canton party; a browser key can.**
@@ -66,9 +66,9 @@ How the assignee would hold the backup is a product choice: a recovery key their
 at setup for them to print and keep offline, a second device of theirs (each device its own key), or both.
 
 **Model findings.**
-- *Deemed acceptance.* Canton can't create a contract signed by someone who hasn't signed. After 30
-  days the offer is marked in effect (it can no longer be rejected) and becomes an `Assignment` the
-  first time the assignee acts.
+- *No authenticated response.* Past the 30 days, the register and Canton record only that the
+  assignment was offered and not answered (`RecordNoResponse`). Neither says it was accepted or took
+  effect; that's for counsel. It stays an offer, and the assignee can still accept or reject.
 - *One-dash numbering.* One count across a whole tree under A00001 would have to be visible to every
   holder in it. The platform supplies the next number; the template checks its form, the register its uniqueness.
 - *Returning units privately.* A rejected assign-out leaves a `UnitsReturned` record that the assignor
@@ -79,7 +79,7 @@ at setup for them to print and keep offline, a second device of theirs (each dev
 ## The register and Canton together (Nov 19, 2026)
 
 `e2e/canton-e2e.mjs` runs the registry's three servers against the node, with browsers playing the
-assignees. All 44 checks pass:
+assignees. All 46 checks pass:
 
 - Issuing in the register puts the bond and an offer on Canton.
 - After the passkey, the assignee makes their keys: a device key the browser stores non-extractable,
@@ -101,11 +101,11 @@ assignees. All 44 checks pass:
 - "Lost a device? Replace it" with the code drops every other device key: the lost browser's key is
   refused by Canton from then on, the new one works. The register is unaffected throughout.
 
-Not mirrored yet: locks and unlocks, redemption, deemed acceptance, cancelling an unclaimed
+Not mirrored yet: locks and unlocks, redemption, cancelling an unclaimed
 assign-out, and records issued before the mirror is switched on. The hash check covers the value
 and node kinds these contracts produce (records, text, numbers, dates and times, parties,
 optionals, lists, contract IDs, creates, exercises, fetches); a transaction with anything else is
 refused rather than signed.
 
-The package is at 0.2.0: changing a template means a new version, since a shared Canton network
+The package is at 0.3.0: changing a template means a new version, since a shared Canton network
 keeps every version that was uploaded.

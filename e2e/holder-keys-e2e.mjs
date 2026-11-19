@@ -246,16 +246,25 @@ ok(e?.status === 404 || e?.status === 405, "the issuer can't reset an assignee's
 let a3 = await hrec("PENS-0001-BD-A00003");
 await hsave(s3b.token, fresh, { reg: [{ ...a3, status: "Accepted", accepted: "now", effective: "holder" }], events: [ev(a3.bond, a3.id, "Acknowledged")] });
 
-// 8. No answer within 30 days: it takes effect without anyone's signature, and not a day sooner.
+// 8. No answer within 30 days: the register records only that it was offered and not answered.
+// It doesn't say it was accepted or took effect, and not a day sooner.
 await issue("PENS-0001-BD-A00004", 1234, "AAAA-BBBB-CCCC-DDDD");
+const backdate = async (d) => { const db = new pg.Client({ connectionString: DB }); await db.connect();
+  await db.query(`update assignments set data = data || jsonb_build_object('deliveredAt', (now() - make_interval(days => $1))::text) where id = 'PENS-0001-BD-A00004'`, [d]); await db.end(); };
+await backdate(29);
+await new Promise((r) => setTimeout(r, 4000));
+ok(!(await rec("PENS-0001-BD-A00004")).noResponseAsOf, "29 days after the mailing, nothing is recorded");
+await backdate(31);
+let lapsed = null;
+for (let i = 0; i < 30 && !lapsed; i++) { await new Promise((r) => setTimeout(r, 1000)); const x = await rec("PENS-0001-BD-A00004"); if (x.noResponseAsOf) lapsed = x; }
+ok(!!lapsed && lapsed.status === "Issued" && !lapsed.effective && !lapsed.accepted,
+  "after 30 days with no authenticated response, the register records only that; it stays an offer, not accepted (" + lapsed?.status + ")");
 {
-  const db = new pg.Client({ connectionString: DB }); await db.connect();
-  await db.query(`update assignments set data = data || jsonb_build_object('deliveredAt', (now() - interval '31 days')::text) where id = 'PENS-0001-BD-A00004'`);
-  await db.end();
+  const evs = (await st()).events.filter((e) => e.id === "PENS-0001-BD-A00004" && e.actor === "SYSTEM").map((e) => e.ev + ": " + e.ref);
+  ok(evs.length === 1 && /^NoAuthenticatedResponse: Offered; mailed .*; no authenticated response within 30 days$/.test(evs[0]), "its event says exactly that (" + evs[0] + ")");
 }
-let deemed = null;
-for (let i = 0; i < 30 && !deemed; i++) { await new Promise((r) => setTimeout(r, 1000)); const x = await rec("PENS-0001-BD-A00004"); if (x.status === "Accepted") deemed = x; }
-ok(deemed?.effective === "deemed", "after 30 days without a rejection it took effect");
+await new Promise((r) => setTimeout(r, 3000));
+ok((await st()).events.filter((e) => e.id === "PENS-0001-BD-A00004" && e.ev === "NoAuthenticatedResponse").length === 1, "and it's recorded once");
 
 // 8a. The issuer corrects A00004's contact and address; no assignee signature is involved.
 {

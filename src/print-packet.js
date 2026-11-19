@@ -71,8 +71,9 @@ export function packetHtml({ rec, code, bond, from, issuer, site = ASSIGNEE_SITE
     <h2>What to do</h2>
     <ol>${steps.map((s) => `<li>${s}</li>`).join("")}</ol>
     <div class="callout">
-      <b>Respond within ${esc(days)} days.</b> If you neither accept nor reject within ${esc(days)} days of the date this was
-      sent (the date on your certified mail receipt), the assignment takes effect as if you had accepted it.
+      <b>Respond within ${esc(days)} days</b> of the date this was sent (the date on your certified mail receipt): accept or
+      reject, confirmed with your passkey. If no authenticated response is recorded by then, the register records only that
+      it was offered and not answered. It doesn't decide what that means for the assignment; that is a legal question.
     </div>
     <h2>Good to know</h2>
     <ul>

@@ -20,7 +20,7 @@ import DA.Optional (fromSomeNote)
 isHash : Text -> Bool
 isHash h = T.length h == 66 && T.isPrefixOf "0x" h && all (`elem` T.explode "0123456789abcdefABCDEF") (T.explode (T.drop 2 h))
 
--- How long an assignee has to accept or reject after the mailing.
+-- How long an assignee has to answer after the mailing.
 responseDays : Int
 responseDays = 30
 
@@ -69,7 +69,7 @@ template Bond
         offer <- create AssignmentOffer with
           issuer; platform; assignor = issuer; bondId; recordId; parentId = None
           units; instrumentHash = docHash; ucc3Hash; assigneeName; assignee
-          mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None; deemed = False; observers
+          mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None; noResponseAsOf = None; observers
         bond <- create this with unassigned = unassigned - units
         pure (bond, offer)
 
@@ -107,7 +107,7 @@ template AssignmentOffer
     deliveryRef : Optional Text -- fingerprint of the mailing: certified mail number and receipt copy
     receivedOn : Optional Date  -- the assignee's delivery receipt: the date received
     receiptRef : Optional Text  -- and its fingerprint: tracking number, date and receipt copy
-    deemed : Bool               -- in effect by default after the response period
+    noResponseAsOf : Optional Time -- set when the response period passed with no authenticated answer
     observers : [Party]
   where
     signatory issuer, assignor
@@ -172,7 +172,6 @@ template AssignmentOffer
       with reason : Text
       controller fromSomeNote "No assignee yet." assignee
       do
-        assertMsg "It's in effect already; it can't be rejected." (not deemed)
         assertMsg "Give a reason of at least 255 characters." (T.length reason >= 255)
         create UnitsReturned with issuer; assignor; bondId; recordId; parentId; units; why = reason
 
@@ -183,17 +182,17 @@ template AssignmentOffer
         assertMsg (assigneeName <> " has already claimed it.") (assignee == None)
         create UnitsReturned with issuer; assignor; bondId; recordId; parentId; units; why = "Cancelled by the sender"
 
-    -- No answer within the response period: in effect by default. Canton can't sign for the
-    -- assignee, so the offer stays an offer, marked in effect; it can no longer be rejected and
-    -- becomes an Assignment the first time the assignee acts.
-    choice DeemAccepted : ContractId AssignmentOffer
+    -- The response period passed with no authenticated answer: recorded as a fact, nothing more.
+    -- It doesn't accept, reject or put anything in effect; what follows is for counsel to determine,
+    -- and the assignee can still accept or reject.
+    choice RecordNoResponse : ContractId AssignmentOffer
       controller platform
       do
         now <- getTime
         let sent = fromSomeNote "No mailing is recorded." mailedOn
         assertMsg "The response period hasn't passed." (now >= addRelTime sent (days responseDays))
-        assertMsg "Already in effect." (not deemed)
-        create this with deemed = True
+        assertMsg "It's already recorded." (noResponseAsOf == None)
+        create this with noResponseAsOf = Some now
 
 -- Units on their way back from a rejected or cancelled offer, signed by the issuer and the sender.
 template UnitsReturned
@@ -256,7 +255,7 @@ template Assignment
           issuer; platform; assignor = assignee; bondId; recordId = childId; parentId = Some recordId
           units = childUnits; instrumentHash = childHash; ucc3Hash = None; assigneeName = childName
           assignee = childParty; mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None
-          deemed = False; observers
+          noResponseAsOf = None; observers
         pure (rest, offer)
 
     -- Units back from an assign-out that was rejected or cancelled (its paper stays listed:

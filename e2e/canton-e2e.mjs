@@ -8,7 +8,7 @@
 //      then replace the first browser as lost: its key stops working on Canton; the new one works.
 //
 // Needs Postgres on 127.0.0.1:54329, the apps built, and a Canton sandbox with the registry's DAR:
-//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.2.0.dar)
+//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.3.0.dar)
 // Run from the repo root: node e2e/canton-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -39,7 +39,7 @@ const procs = [];
 process.on("exit", () => { procs.forEach((c) => c.kill()); fs.rmSync(PROTOS, { recursive: true, force: true }); });
 const start = (app, port) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
-    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", CANTON_JSON_URL: CANTON, CANTON_ADMIN: "localhost:6866", CANTON_PROTOS: PROTOS } });
+    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", RESPONSE_CHECK_MS: "1500", CANTON_JSON_URL: CANTON, CANTON_ADMIN: "localhost:6866", CANTON_PROTOS: PROTOS } });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; process.env.VERBOSE && process.stdout.write("[" + app + "] " + d); if (out.includes("listening")) res(c); });
   c.stderr.on("data", (d) => process.stdout.write("[" + app + " err] " + d));
@@ -360,6 +360,22 @@ ok(!r.ok, "the lost browser's key no longer works on Canton, whoever has it now 
 r = await tryActWith(page2, 8);
 ok(r.ok, "the second browser's new key does (" + r.status + ")");
 await shot(page2, "c5-replaced");
+
+// An offer mailed 31 days ago and never answered: the register and Canton record only that.
+{
+  const A2 = "PENS-0001-BD-A00002";
+  await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A2, passkey: "EEEE-FFFF-GGGG-HHHH" });
+  const b = (await st()).bonds[0];
+  await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 2000 }], reg: [{ origin: "Issuer", parent: null, assignor: "Penson Trust", party: "Company E",
+    contact: "E", position: "", address: "addr", status: "Issued", created: "Oct 1, 2026", accepted: null, filingRef: null, deliveryRef: null,
+    instrumentMail: null, passkeyMail: null, id: A2, bond: "PENS-0001-BD", units: 2000, issuedUnits: 2000, docHash: H32() }] });
+  const sent = new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10);
+  await icommit({ reg: [{ ...(await st()).reg.find((a) => a.id === A2), instrumentMail: "9407 0002", passkeyMail: "9407 0002", mailedOn: sent, mailingDoc: H32() }] });
+  const noted = await until(async () => { const o = await onCanton("AssignmentOffer", A2); return o?.createArgument.noResponseAsOf ? o : null; }, 40000);
+  const r2 = (await st()).reg.find((a) => a.id === A2);
+  ok(r2.noResponseAsOf && r2.status === "Issued", "31 days after its mailing, the register records only that " + A2 + " was offered and not answered");
+  ok(!!noted && !(await onCanton("Assignment", A2)), "Canton notes the same on the offer, and it stays an offer: nothing is accepted for anyone");
+}
 
 // The register is untouched by all of this, and still in control.
 {

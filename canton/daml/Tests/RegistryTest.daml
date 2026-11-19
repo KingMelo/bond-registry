@@ -154,20 +154,25 @@ test_privacy = script do
   length <$> query @Bond c.outsider >>= (=== 0)
   pure ()
 
-test_deemed_acceptance = script do
+test_no_response = script do
   (c, bond) <- setup
   (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
     recordId = "PENS-0001-BD-A00003"; units = 700; docHash = h "a3"; ucc3Hash = None; assigneeName = "Company D"; assignee = None
-  submitMustFail c.platform $ exerciseCmd offer DeemAccepted   -- not mailed yet
+  submitMustFail c.platform $ exerciseCmd offer RecordNoResponse   -- not mailed yet
   now <- getTime
   offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now; mailingRef = h "mail"
   passTime (days 29)
-  submitMustFail c.platform $ exerciseCmd offer DeemAccepted   -- not a day sooner
+  submitMustFail c.platform $ exerciseCmd offer RecordNoResponse   -- not a day sooner
   passTime (days 2)
-  offer <- submit c.platform $ exerciseCmd offer DeemAccepted
+  submitMustFail c.issuer $ exerciseCmd offer RecordNoResponse     -- the platform records it, nobody else
+  offer <- submit c.platform $ exerciseCmd offer RecordNoResponse
+  submitMustFail c.platform $ exerciseCmd offer RecordNoResponse   -- once
+  -- It records a fact and decides nothing: it's still an offer, and the assignee can still answer either way.
+  Some o <- queryContractId c.issuer offer
+  assertMsg "the date is recorded" (o.noResponseAsOf /= None)
+  length <$> query @Assignment c.issuer >>= (=== 0)
   offer <- submit c.platform $ exerciseCmd offer Bind with party = c.bob
-  submitMustFail c.bob $ exerciseCmd offer Reject with reason = longReason   -- in effect: no rejecting now
-  _ <- submit c.bob $ exerciseCmd offer Accept
+  _ <- submit c.bob $ exerciseCmd offer Reject with reason = longReason
   pure ()
 
 test_redemption = script do

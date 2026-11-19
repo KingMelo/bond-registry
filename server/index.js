@@ -42,7 +42,8 @@ const pool = new pg.Pool({
 });
 
 const TERMINAL = ["Redeemed", "Superseded", "Cancelled", "Rejected"];
-// An assignment the holder doesn't reject within this many days of its mailing takes effect.
+// How long an assignee has to answer an offer after its mailing. Past it, the register records only
+// that no authenticated response came; it doesn't decide what that means.
 const RESPONSE_DAYS = Number(process.env.RESPONSE_DAYS || 30);
 // Never stored in the record itself: credential state lives in its own table.
 const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain", "deviceKey", "accessCode",
@@ -270,7 +271,7 @@ const MAILING_FIELDS = ["instrumentMail", "mailedOn", "mailingDoc", "mailingFile
 const RECEIPT_FIELDS = ["receiptMail", "receivedOn", "receiptDoc", "receiptFile", "receiptRef", "receiptMatches"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
   "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...RECEIPT_FIELDS];
-const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "address", "instrumentMail", "passkeyMail", "requestedContact"];
+const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "noResponseAsOf", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((k) => !IGNORED.includes(k) || k === "requestedContact")
@@ -373,29 +374,32 @@ async function readState(bondFilter, params) {
   };
 }
 
-/* An issued assignment the holder hasn't rejected takes effect once the response period after its
-   mailing has passed. Runs on the issuer service; each record is its own transaction, through the
-   same save path as any other change. */
-async function takeEffectWhenDue() {
+/* An offer the assignee hasn't answered within the response period after its mailing: the register
+   records exactly that, and nothing more. It doesn't say the assignment was accepted or took effect;
+   what follows from no authenticated response is for counsel to determine. The record stays an
+   offer, and the assignee can still accept or reject it. Runs on the issuer service. */
+async function recordNoResponseWhenDue() {
   const due = (await pool.query(
     `select id, bond, data, rev from assignments
-     where data->>'status' = 'Issued' and data->>'deliveredAt' is not null
+     where data->>'status' = 'Issued' and data->>'deliveredAt' is not null and data->>'noResponseAsOf' is null
        and (data->>'deliveredAt')::timestamptz + make_interval(days => $1) <= now()
      order by created_at limit 50`, [RESPONSE_DAYS])).rows;
   for (const r of due) {
     try {
+      const asOf = new Date().toISOString().slice(0, 10);
       await tx(async (c) => {
         await applyCommit(c, {
           bonds: [],
-          reg: [{ ...r.data, status: "Accepted", effective: "deemed", effectiveOn: stampNow().split(" ").slice(0, 3).join(" "), rev: Number(r.rev) }],
-          events: [{ eid: crypto.randomUUID(), bond: r.bond, id: r.id, t: stampNow(), ev: "TookEffect", actor: "SYSTEM",
-            ref: "No rejection within " + RESPONSE_DAYS + " days of mailing" }],
+          reg: [{ ...r.data, noResponseAsOf: asOf, rev: Number(r.rev) }],
+          events: [{ eid: crypto.randomUUID(), bond: r.bond, id: r.id, t: stampNow(), ev: "NoAuthenticatedResponse", actor: "SYSTEM",
+            ref: "Offered; mailed " + String(r.data.mailedOn || r.data.deliveredAt).slice(0, 10) + "; no authenticated response within " + RESPONSE_DAYS + " days" }],
         });
         await bump(c);
       });
-      console.log(`${r.id} took effect: no rejection within ${RESPONSE_DAYS} days`);
+      console.log(`${r.id}: offered, no authenticated response within ${RESPONSE_DAYS} days`);
+      if (canton.enabled) await canton.recordNoResponse(pool, r.id).catch((e) => console.error("Canton: no response", r.id, "-", e.message));
     } catch (e) {
-      if (e.status !== 409) console.error("Taking effect", r.id, e.message); // 409: someone changed it meanwhile; next round
+      if (e.status !== 409) console.error("Recording no response", r.id, e.message); // 409: someone changed it meanwhile; next round
     }
   }
 }
@@ -612,6 +616,8 @@ if (APP === "holder") {
         for (const k of ["deliveryRef", "mailedOn", "mailingDoc", "mailingFile"]) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
       if (before?.receiptRef && (a.receivedOn == null || a.receivedOn === before.receivedOn))
         for (const k of RECEIPT_FIELDS) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
+      // The record of no authenticated response is the server's alone.
+      if (before?.noResponseAsOf) a.noResponseAsOf = before.noResponseAsOf; else delete a.noResponseAsOf;
       const changed = before ? changedFields(before, a) : [];
       {
         if (!session) throw new Reject(401, "Sign in with your assignment ID and access code first.");
@@ -1244,6 +1250,7 @@ if (APP === "issuer") {
         // The response period runs from the date sent.
         n.deliveredAt = before?.data?.deliveredAt
           || (n.deliveryRef && firstMailing ? new Date(Date.parse(a.mailedOn)).toISOString() : null);
+        n.noResponseAsOf = before?.data?.noResponseAsOf || null; // the server's record, never a page's
         // A receipt the assignee recorded first: check its tracking number against this mailing.
         if (before?.data?.receiptMail && (n.instrumentMail || n.passkeyMail)) n.receiptMatches = mailMatches(n, before.data.receiptMail);
         clean.push(n);
@@ -1518,7 +1525,7 @@ migrate()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => console.log(`${APP} listening on ${PORT}`));
     if (APP === "issuer") {
-      const run = () => takeEffectWhenDue().catch((e) => console.error("Taking effect:", e.message));
+      const run = () => recordNoResponseWhenDue().catch((e) => console.error("Recording no response:", e.message));
       setTimeout(run, 5000);
       setInterval(run, Number(process.env.RESPONSE_CHECK_MS || 10 * 60_000));
     }
