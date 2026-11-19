@@ -9,6 +9,7 @@ live registry yet. The design is in the [Canton design doc](https://claude.ai/ar
 - `daml/Tests/RegistryTest.daml`: the rules, checked on Canton's engine.
 - `pilot/passkey-signing.mjs`: whether an assignee's own key can act for them on a real Canton
   node, with the node unable to sign for them.
+- `pilot/backup-key.mjs`: a backup key, so a lost browser key isn't a lost assignment.
 
 ## Running it
 
@@ -22,6 +23,7 @@ daml test                                                   # the template tests
 daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.1.0.dar &
 node pilot/passkey-signing.mjs                              # signing pilot (key in Node)
 BROWSER=1 node pilot/passkey-signing.mjs                    # the same, key made in Chromium's WebCrypto
+(cd pilot && npm install && node backup-key.mjs)            # backup key; uses the node's admin API (port 6866)
 ```
 
 ## Results (Nov 19, 2026)
@@ -44,8 +46,23 @@ redemption needs the payment confirmation's hash.
 
 So the assignee's Canton key is a WebCrypto key their browser makes and can never export; the
 passkey can stay for signing in. The cost: a browser key doesn't sync like a passkey, so a cleared
-browser or lost device means a lost key. Canton lets a party hold more than one key, so a second
-(backup) key is the next thing to test.
+browser or lost device means a lost key, unless there's a backup key (below).
+
+**Backup key: it works, and the node still can't act on its own.**
+
+| Step | Result |
+|---|---|
+| Backup key B, before it's added | Can't act for the assignee |
+| Adding B with only A's signature | Refused: Canton wants B's own signature too ("missing authorizations by … keys"), so nobody can name a key they don't hold |
+| A and B add B, both to sign the party's transactions and to change its keys | Done; A keeps working |
+| A is lost: B alone accepts an assignment | Accepted |
+| B (with the new key C signing for itself) replaces A with C | Done |
+| The lost key A afterwards | Refused, whoever has it now |
+| C | Accepted |
+| A key that was never registered | Refused, and can't add itself ("not properly authorized by any namespace key") |
+
+How the assignee would hold the backup is a product choice: a recovery key their browser makes once
+at setup for them to print and keep offline, a second device of theirs (each device its own key), or both.
 
 **Model findings.**
 - *Deemed acceptance.* Canton can't create a contract signed by someone who hasn't signed. After 30
