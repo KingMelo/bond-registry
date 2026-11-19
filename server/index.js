@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { ISSUERS, BONDS, ASSIGNMENTS, PASSKEYS, EVENTS } from "./seed.js";
 import * as records from "./records.js";
+import * as canton from "./canton.js";
 import * as holderKeys from "./holder-keys.js";
 
 const APP = ["issuer", "platform"].includes(process.env.APP) ? process.env.APP : "holder";
@@ -64,6 +65,7 @@ async function migrate() {
     await c.query(`
       create table if not exists meta (k text primary key, version bigint not null);
       ${records.SCHEMA}
+      ${canton.SCHEMA}
       create table if not exists bonds (id text primary key, data jsonb not null);
       create table if not exists assignments (
         id text primary key, bond text not null, data jsonb not null,
@@ -882,6 +884,37 @@ if (APP === "holder") {
     });
     res.json(out);
   }));
+
+  // ---- Canton (pilot): the assignee's own keys, and their acts signed on Canton.
+  // Off unless CANTON_JSON_URL is set. The register stays in control; these only mirror it.
+  const cantonRecord = async (body) => {
+    if (!canton.enabled) throw new Reject(404, "Canton isn't switched on for this registry.");
+    const session = needSession(body?.token);
+    const rec = (await pool.query("select data from assignments where id = $1", [session.id])).rows[0]?.data;
+    if (!rec) throw new Reject(404, "No such record.");
+    if (!activeKey(rec)) throw new Reject(409, "Set up your passkey first.");
+    return rec;
+  };
+  const cantonCall = (fn) => wrap(async (req, res) => {
+    const rec = await cantonRecord(req.body);
+    try { res.json(await fn(rec, req.body || {})); }
+    catch (e) { if (e.status) throw new Reject(e.status, e.message); throw e; }
+  });
+  app.post("/api/holder/canton/status", wrap(async (req, res) => {
+    if (!canton.enabled) return res.json({ enabled: false });
+    const rec = await cantonRecord(req.body);
+    res.json(await canton.status(pool, rec));
+  }));
+  const b64 = (v) => (typeof v === "string" && /^[A-Za-z0-9+/=_-]{16,}$/.test(v) ? v : (() => { throw new Reject(400, "A key or signature is missing."); })());
+  app.post("/api/holder/canton/onboard/start", cantonCall((rec, b) => canton.onboardStart(pool, rec,
+    { recoverySpki: b64(b.recoverySpki), deviceSpki: b64(b.deviceSpki), deviceLabel: String(b.deviceLabel || "").slice(0, 60) })));
+  app.post("/api/holder/canton/onboard/allocate", cantonCall((rec, b) => canton.onboardAllocate(pool, rec, { recoverySignature: b64(b.recoverySignature) })));
+  app.post("/api/holder/canton/onboard/finish", cantonCall((rec, b) => canton.onboardFinish(pool, rec, { signatures: b.signatures || [] })));
+  app.post("/api/holder/canton/accept/prepare", cantonCall((rec) => canton.prepareAccept(pool, rec)));
+  app.post("/api/holder/canton/accept/execute", cantonCall((rec, b) => canton.executeAccept(pool, rec, { signature: b64(b.signature), signedBy: String(b.signedBy || "") })));
+  app.post("/api/holder/canton/keys/start", cantonCall((rec, b) => canton.keysStart(pool, rec,
+    { mode: b.mode, newSpki: b64(b.newSpki), label: String(b.label || "").slice(0, 60) })));
+  app.post("/api/holder/canton/keys/finish", cantonCall((rec, b) => canton.keysFinish(pool, rec, { signatures: b.signatures || [] })));
 }
 
 /* ======================= accounts (issuer and platform consoles) ======================= */
@@ -1161,6 +1194,7 @@ if (APP === "issuer") {
   app.post("/api/commit", wrap(async (req, res) => {
     const { issuer, base, bonds = [], reg = [], events = [] } = req.body || {};
     const m = await membership(req, issuer);
+    let newlyIssued = [];
     if (m.status === "suspended") throw new Reject(403, "This issuer is suspended. Contact the platform.");
     if (m.status !== "approved") throw new Reject(403, "You can register bonds once the platform approves your issuer account.");
     const nv = await tx(async (c) => {
@@ -1216,8 +1250,13 @@ if (APP === "issuer") {
       }
       for (const e of events) if (!review.has(e.bond)) throw new Reject(403, "That event belongs to another issuer.");
       const revs = await applyCommit(c, { bonds, reg: clean, events, issuerId: m.id, autoApprove: m.trusted });
+      newlyIssued = clean.filter((a) => a.origin === "Issuer" && revs.reg[a.id] != null && a.rev == null);
       return { version: await bump(c), revs };
     });
+    // Canton (pilot): each new issuer-made assignment becomes an offer there. The register has saved
+    // already; a failure here is logged and doesn't undo it.
+    if (canton.enabled && newlyIssued.length)
+      await canton.mirrorIssued(pool, newlyIssued).catch((e) => console.error("Canton: issuing", newlyIssued.map((a) => a.id).join(", "), "-", e.message));
     res.json(nv);
   }));
 

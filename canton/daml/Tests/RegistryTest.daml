@@ -27,7 +27,7 @@ setup = do
   outsider <- allocateParty "Outsider"
   bond <- submitMulti [issuer, platform] [] $ createCmd Bond with
     issuer; platform; bondId = "PENS-0001-BD"; total = 10_000_000_000; unassigned = 10_000_000_000; redeemed = 0
-    instrumentHash = h "bond"; ucc1Hash = h "ucc1"; nextAssignment = 1; observers = [trustee]
+    instrumentHash = h "bond"; ucc1Hash = h "ucc1"; observers = [trustee]
   let cast = Cast with issuer; platform; alice; bob; trustee; outsider
   pure (cast, bond)
 
@@ -35,7 +35,7 @@ setup = do
 issueAndAccept : Cast -> ContractId Bond -> Script (ContractId Bond, ContractId Assignment)
 issueAndAccept c bond = do
   (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
-    units = 1_000_000; docHash = h "a00001"; ucc3Hash = Some (h "ucc3a"); assigneeName = "Company A"; assignee = None
+    recordId = "PENS-0001-BD-A00001"; units = 1_000_000; docHash = h "a00001"; ucc3Hash = Some (h "ucc3a"); assigneeName = "Company A"; assignee = None
   now <- getTime
   offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now
   -- After the transfer code and their key, the platform names their party on the offer.
@@ -47,13 +47,13 @@ test_paper_and_units = script do
   (c, bond) <- setup
   -- No paper, no record.
   submitMustFail c.issuer $ exerciseCmd bond Issue with
-    units = 1; docHash = "not a hash"; ucc3Hash = None; assigneeName = "X"; assignee = None
+    recordId = "PENS-0001-BD-A00002"; units = 1; docHash = "not a hash"; ucc3Hash = None; assigneeName = "X"; assignee = None
   -- Never more than is left to assign.
   submitMustFail c.issuer $ exerciseCmd bond Issue with
-    units = 10_000_000_001; docHash = h "big"; ucc3Hash = None; assigneeName = "X"; assignee = None
+    recordId = "PENS-0001-BD-A00002"; units = 10_000_000_001; docHash = h "big"; ucc3Hash = None; assigneeName = "X"; assignee = None
   -- Only the issuer issues.
   submitMustFail c.platform $ exerciseCmd bond Issue with
-    units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
+    recordId = "PENS-0001-BD-A00002"; units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
   (bond, a1) <- issueAndAccept c bond
   Some b <- queryContractId c.issuer bond
   b.unassigned === 10_000_000_000 - 1_000_000
@@ -124,7 +124,7 @@ test_reject_returns_units = script do
   r.units === 1_000_000
   -- An issuer-made offer that's rejected goes back to the bond.
   (bond, o) <- submit c.issuer $ exerciseCmd bond Issue with
-    units = 500; docHash = h "a2"; ucc3Hash = None; assigneeName = "Company D"; assignee = Some c.bob
+    recordId = "PENS-0001-BD-A00002"; units = 500; docHash = h "a2"; ucc3Hash = None; assigneeName = "Company D"; assignee = Some c.bob
   back <- submit c.bob $ exerciseCmd o Reject with reason = longReason
   bond <- submit c.issuer $ exerciseCmd bond ReclaimToBond with returnedCid = back
   Some b <- queryContractId c.issuer bond
@@ -156,7 +156,7 @@ test_privacy = script do
 test_deemed_acceptance = script do
   (c, bond) <- setup
   (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
-    units = 700; docHash = h "a3"; ucc3Hash = None; assigneeName = "Company D"; assignee = None
+    recordId = "PENS-0001-BD-A00003"; units = 700; docHash = h "a3"; ucc3Hash = None; assigneeName = "Company D"; assignee = None
   submitMustFail c.platform $ exerciseCmd offer DeemAccepted   -- not mailed yet
   now <- getTime
   offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now
@@ -177,4 +177,15 @@ test_redemption = script do
   [(_, b)] <- query @Bond c.issuer
   b.redeemed === 1_000_000
   length <$> query @Assignment c.alice >>= (=== 0)
+  pure ()
+
+test_issue_numbering = script do
+  (c, bond) <- setup
+  -- The register numbers assignments; Canton checks the form: <bond>-A plus five digits.
+  submitMustFail c.issuer $ exerciseCmd bond Issue with
+    recordId = "PENS-0001-BD-A1"; units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
+  submitMustFail c.issuer $ exerciseCmd bond Issue with
+    recordId = "OTHER-0001-BD-A00001"; units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
+  _ <- submit c.issuer $ exerciseCmd bond Issue with
+    recordId = "PENS-0001-BD-A00007"; units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
   pure ()

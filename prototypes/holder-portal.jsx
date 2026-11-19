@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
 import { nextChildId } from "../src/registry.jsx";
+import { CantonSetup, CantonKeys, signAcceptOnCanton } from "./canton-keys-ui.jsx";
 import { printPacket } from "../src/print-packet.js";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, shortHash, effectiveDate } from "../src/registry.jsx";
 
@@ -516,11 +517,34 @@ function VerifyRegister({ reg, bonds = [], events = [], issuerOf }) {
 
 /* ---------------- app ---------------- */
 
+// What the Canton screens borrow from this page's look.
+const cantonUi = { T, serif, sans, Button, Field, Rows, Note };
+
 export default function HolderPortal() {
   // The signed-in record's session and device key. Every save is signed on the device first: the
   // server says what to sign (what the contract will check), the device signs, the save carries it.
   const session = useRef(null);
   const [device, setDevice] = useState(null); // { fingerprint } once this record has a device key
+  // Canton (pilot): the record's standing there, when the registry runs with it switched on.
+  const [canton, setCanton] = useState(null);
+  const loadCanton = async () => {
+    const s = session.current;
+    if (!s) return null;
+    const st = await api.canton("status", { token: s.token }).catch(() => null);
+    setCanton(st);
+    return st;
+  };
+  // Where to go once signed in with a passkey: first the Canton keys, if they aren't set up yet.
+  const afterPasskey = async (rec) => {
+    const st = await loadCanton();
+    if (st?.enabled && st.onCanton && !st.party) return setView("cantonSetup");
+    setView(rec.status === "Issued" ? "claim" : "position");
+    if (st?.enabled && st.party && rec.status === "Accepted") signAcceptOnCanton(rec.id, session.current.token).then(cantonOutcome).catch((e) => flash(e.message));
+  };
+  const cantonOutcome = (r) => {
+    if (r?.done) loadCanton();
+    if (r?.noKey) flash("Signed in the register. To sign it on Canton too, add this browser with your recovery code.");
+  };
   const [myMail, setMyMail] = useState(null); // the signed-in record's certified mail number(s)
   // The readable numbers behind the register's hashes: the UCC-3 filing number is public; the
   // certified mail number only for the record's own signed-in holder.
@@ -711,7 +735,9 @@ export default function HolderPortal() {
     api.holderMine(res.token).then(setMyMail).catch(() => setMyMail(null));
     setDevice(res.device);
     setOpenId(fresh.id);
-    setView(res.device ? (fresh.status === "Issued" ? "claim" : "position") : "device");
+    setCanton(null);
+    if (res.device) await afterPasskey(fresh);
+    else setView("device");
   }
 
   async function signInWithCode() {
@@ -761,6 +787,8 @@ export default function HolderPortal() {
       setDevice({ fingerprint: r.fingerprint, credId: r.credId, since: r.since });
       await reload().catch(() => {});
       flash("Passkey set up. The transfer code no longer works; from now on your passkey opens this assignment.");
+      const st = await loadCanton();
+      if (st?.enabled && st.onCanton && !st.party) return setView("cantonSetup");
       setView(open?.status === "Issued" ? "claim" : "position");
       if (open?.status === "Issued") setTour("offer");
     } catch (e) { setDevErr(e.message); } finally { setDevBusy(false); }
@@ -776,6 +804,7 @@ export default function HolderPortal() {
     emit(open.bond, open.id, "Acknowledged", "RELAYER");
     setView("position");
     flash("Confirmed. The assignment is in effect.");
+    if (canton?.enabled && canton.party) signAcceptOnCanton(open.id, session.current.token).then(cantonOutcome).catch((e) => flash("Canton: " + e.message));
   }
 
   // The only way to refuse an assignment: explicitly, with a reason. The amount goes back to
@@ -1025,6 +1054,12 @@ export default function HolderPortal() {
           </div>
         )}
 
+        {/* ============ Canton keys (pilot) ============ */}
+        {inHolder && view === "cantonSetup" && open && session.current && (
+          <CantonSetup recordId={open.id} token={session.current.token} ui={cantonUi}
+            onDone={async () => { await loadCanton(); flash("Your keys are set up. Keep the recovery code offline."); setView(open.status === "Issued" ? "claim" : "position"); if (open.status === "Issued") setTour("offer"); }} />
+        )}
+
         {/* ============ claim ============ */}
         {inHolder && view === "claim" && open && (
           <div>
@@ -1130,6 +1165,15 @@ export default function HolderPortal() {
                 Signed with your passkey <span style={{ color: T.ink, fontVariantNumeric: "tabular-nums" }}>{device.fingerprint}</span>
                 {(device.since || open.deviceKey?.since) ? " · set up " + (device.since || open.deviceKey?.since) : ""}
               </div>
+            )}
+            {canton?.enabled && canton.party && session.current && (
+              <>
+                <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }} data-testid="canton-standing">
+                  On Canton: {canton.contract === "Assignment" ? "in effect, signed with your own key" : canton.toSign?.length ? "waiting for your key's signature" : "offered to you"}
+                </div>
+                <CantonKeys recordId={open.id} token={session.current.token} status={canton} ui={cantonUi}
+                  onChanged={async (m) => { flash(m); const st = await loadCanton(); if (st?.toSign?.includes("accept")) signAcceptOnCanton(open.id, session.current.token).then(cantonOutcome); }} />
+              </>
             )}
 
             {open.status === "Locked" && (

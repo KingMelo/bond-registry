@@ -1,7 +1,7 @@
 # Canton pilot (phase two)
 
-The registry's contract model in Daml, run on a local Canton node. Nothing here is wired to the
-live registry yet. The design is in the [Canton design doc](https://claude.ai/artifact/WCxQLzY9Zx8MUep8tTVioe).
+The registry's contract model in Daml, run on a local Canton node. The registry's servers can mirror
+to it when `CANTON_JSON_URL` is set (see `server/canton.js`); the live sites don't set it. The design is in the [Canton design doc](https://claude.ai/artifact/WCxQLzY9Zx8MUep8tTVioe).
 
 - `daml/Registry.daml`: the templates. `Bond`, `AssignmentOffer`, `Assignment` and `UnitsReturned`.
   One contract per assignment, one signed paper each (`instrumentHash`); an assign-out needs its
@@ -24,6 +24,7 @@ daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.1.0.dar &
 node pilot/passkey-signing.mjs                              # signing pilot (key in Node)
 BROWSER=1 node pilot/passkey-signing.mjs                    # the same, key made in Chromium's WebCrypto
 (cd pilot && npm install && node backup-key.mjs)            # backup key; uses the node's admin API (port 6866)
+cd .. && node e2e/canton-e2e.mjs                            # the register and Canton together, in a browser
 ```
 
 ## Results (Nov 19, 2026)
@@ -74,3 +75,22 @@ at setup for them to print and keep offline, a second device of theirs (each dev
   reclaims, so the new assignee never sees the assignor's own contract.
 - *Redemption* is the issuer's choice under the template's terms, as it is today; whether the
   assignee's consent should also be required is for counsel.
+
+## The register and Canton together (Nov 19, 2026)
+
+`e2e/canton-e2e.mjs` runs the registry's three servers against the node, with a browser playing the
+assignee. All 21 checks pass:
+
+- Issuing in the register puts the bond and an offer on Canton.
+- After the passkey, the assignee makes their keys: a device key the browser stores non-extractable,
+  and a recovery code shown once (14 groups of four, with a check so typos are caught), which they
+  must confirm by typing its last group. The server keeps only public halves; the code never reaches it.
+- Accepting in the register is then signed on Canton with the device key; Canton holds the
+  Assignment with the same amount and the signed paper's fingerprint.
+- On a second browser (passkey synced to it), the recovery code adds that browser's own key; both work.
+- "Lost a device? Replace it" with the code drops every other device key: the lost browser's key is
+  refused by Canton from then on, the new one works. The register is unaffected throughout.
+
+Not mirrored yet: assign-outs, rejections, mailings, receipts, UCC-3s after issuance, and records
+issued before the mirror is switched on. Before production, the page should also show the assignee
+what each Canton hash they sign stands for, rather than trusting the server's word for it.

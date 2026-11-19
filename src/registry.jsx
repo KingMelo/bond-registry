@@ -39,6 +39,8 @@ export const api = {
   assigneeCode: (token, id) => call("POST", "/api/holder/assignee-code", { token, id }),
   holderKeyPrepare: (body) => call("POST", "/api/holder/key/prepare", body),
   holderKey: (body) => call("POST", "/api/holder/key", body),
+  // Canton (pilot): status, key setup and changes, and acts signed on Canton.
+  canton: (step, body) => call("POST", "/api/holder/canton/" + step, body),
   setPasskey: (issuer, id, passkey) => call("POST", "/api/issuer/passkey", { issuer, id, passkey }),
   revealAccessCode: (issuer, id) => call("POST", "/api/issuer/access-code/reveal", { issuer, id }),
   clearLockout: (issuer, id) => call("POST", "/api/issuer/clear-lockout", { issuer, id }),

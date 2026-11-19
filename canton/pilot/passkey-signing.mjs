@@ -38,7 +38,13 @@ const must = async (method, path, body) => {
 };
 
 // ---- the node, its synchronizer, the issuer and platform
-const sync = (await must("GET", "/v2/state/connected-synchronizers")).connectedSynchronizers[0].synchronizerId;
+// A freshly started node answers before it has joined its synchronizer: wait for it.
+let sync;
+for (let i = 0; i < 60 && !sync; i++) {
+  sync = (await call("GET", "/v2/state/connected-synchronizers")).body?.connectedSynchronizers?.[0]?.synchronizerId;
+  if (!sync) await new Promise((r) => setTimeout(r, 1000));
+}
+if (!sync) throw new Error("The Canton node isn't connected to a synchronizer.");
 const local = async (hint) => (await must("POST", "/v2/parties", { partyIdHint: hint + "-" + Date.now(), identityProviderId: "" })).partyDetails.party;
 const issuer = await local("Issuer"), platform = await local("Platform");
 await must("POST", "/v2/users/" + USER + "/rights", { userId: USER, identityProviderId: "",
@@ -95,11 +101,11 @@ const submit = async (actAs, commands) => must("POST", "/v2/commands/submit-and-
 const created = (tx, tpl) => tx.transaction.events.map((e) => e.CreatedEvent).filter(Boolean).find((e) => e.templateId.endsWith(":" + tpl));
 let tx = await submit([issuer, platform], [{ CreateCommand: { templateId: PKG + ":Registry:Bond", createArguments: {
   issuer, platform, bondId: "PENS-0001-BD", total: "10000000000", unassigned: "10000000000", redeemed: "0",
-  instrumentHash: hash("bond"), ucc1Hash: hash("ucc1"), nextAssignment: "1", observers: [] } } }]);
+  instrumentHash: hash("bond"), ucc1Hash: hash("ucc1"), observers: [] } } }]);
 const bond = created(tx, "Bond").contractId;
 const issue = async (n) => {
   const t = await submit([issuer], [{ ExerciseCommand: { templateId: PKG + ":Registry:Bond", contractId: n.bond, choice: "Issue",
-    choiceArgument: { units: "1000000", docHash: hash("a" + n.i), ucc3Hash: null, assigneeName: "Company A", assignee } } }]);
+    choiceArgument: { recordId: "PENS-0001-BD-A" + String(n.i).padStart(5, "0"), units: "1000000", docHash: hash("a" + n.i), ucc3Hash: null, assigneeName: "Company A", assignee } } }]);
   return { offer: created(t, "AssignmentOffer").contractId, bond: created(t, "Bond").contractId };
 };
 let st = await issue({ bond, i: 1 });

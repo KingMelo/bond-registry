@@ -60,7 +60,13 @@ const sign = (key, bytes) => crypto.sign("sha256", bytes, { key: key.privateKey,
 const sig = (key, bytes) => ({ format: "SIGNATURE_FORMAT_DER", signature: sign(key, bytes), signed_by: key.fp,
   signing_algorithm_spec: "SIGNING_ALGORITHM_SPEC_EC_DSA_SHA_256" });
 
-const sync = (await must("GET", "/v2/state/connected-synchronizers")).connectedSynchronizers[0].synchronizerId;
+// A freshly started node answers before it has joined its synchronizer: wait for it.
+let sync;
+for (let i = 0; i < 60 && !sync; i++) {
+  sync = (await call("GET", "/v2/state/connected-synchronizers")).body?.connectedSynchronizers?.[0]?.synchronizerId;
+  if (!sync) await new Promise((r) => setTimeout(r, 1000));
+}
+if (!sync) throw new Error("The Canton node isn't connected to a synchronizer.");
 const jsonKey = (k) => ({ format: "CRYPTO_KEY_FORMAT_DER_X509_SUBJECT_PUBLIC_KEY_INFO", keyData: b64(k.spki), keySpec: "SIGNING_KEY_SPEC_EC_P256" });
 const topologyFor = (k) => must("POST", "/v2/parties/external/generate-topology", {
   synchronizer: sync, partyHint: "CompanyA-" + crypto.randomUUID().slice(0, 8), localParticipantObservationOnly: false, confirmationThreshold: 1, publicKey: jsonKey(k) });
@@ -99,10 +105,11 @@ const submit = (actAs, commands) => must("POST", "/v2/commands/submit-and-wait-f
 const created = (tx, tpl) => tx.transaction.events.map((e) => e.CreatedEvent).filter(Boolean).find((e) => e.templateId.endsWith(":" + tpl));
 let bond = created(await submit([issuer, platform], [{ CreateCommand: { templateId: PKG + ":Registry:Bond", createArguments: {
   issuer, platform, bondId: "PENS-0001-BD", total: "10000000000", unassigned: "10000000000", redeemed: "0",
-  instrumentHash: hash("bond"), ucc1Hash: hash("ucc1"), nextAssignment: "1", observers: [] } } }]), "Bond").contractId;
+  instrumentHash: hash("bond"), ucc1Hash: hash("ucc1"), observers: [] } } }]), "Bond").contractId;
+let issued = 0;
 async function offer() {
   const t = await submit([issuer], [{ ExerciseCommand: { templateId: PKG + ":Registry:Bond", contractId: bond, choice: "Issue",
-    choiceArgument: { units: "1000", docHash: hash(crypto.randomUUID()), ucc3Hash: null, assigneeName: "Company A", assignee: party } } }]);
+    choiceArgument: { recordId: "PENS-0001-BD-A" + String(++issued).padStart(5, "0"), units: "1000", docHash: hash(crypto.randomUUID()), ucc3Hash: null, assigneeName: "Company A", assignee: party } } }]);
   bond = created(t, "Bond").contractId;
   return created(t, "AssignmentOffer").contractId;
 }

@@ -41,7 +41,6 @@ template Bond
     redeemed : Int
     instrumentHash : Text   -- the bond instrument
     ucc1Hash : Text         -- the filed UCC-1
-    nextAssignment : Int    -- the next A0000n
     observers : [Party]     -- e.g. a trustee or auditor
   where
     signatory issuer, platform
@@ -52,6 +51,7 @@ template Bond
     -- The issuer issues an assignment: an offer to a party who may not be on Canton yet.
     choice Issue : (ContractId Bond, ContractId AssignmentOffer)
       with
+        recordId : Text             -- <bond>-A00001, -A00002…: the register numbers it
         units : Int
         docHash : Text              -- the signed assignment instrument
         ucc3Hash : Optional Text    -- the issuer's UCC-3, if filed already
@@ -62,12 +62,14 @@ template Bond
         assertMsg "Attach the signed assignment instrument (its SHA-256)." (isHash docHash)
         assertMsg "The amount must be above zero." (units > 0)
         assertMsg "Not enough left to assign on this bond." (units <= unassigned)
-        let recordId = bondId <> "-A" <> T.replace " " "0" (padLeft 5 (show nextAssignment))
+        let n = T.drop (T.length bondId + 2) recordId
+        assertMsg ("An issued assignment is numbered " <> bondId <> "-A00001, -A00002 and so on.")
+          (T.isPrefixOf (bondId <> "-A") recordId && T.length n == 5 && T.isDigit n)
         offer <- create AssignmentOffer with
           issuer; platform; assignor = issuer; bondId; recordId; parentId = None
           units; instrumentHash = docHash; ucc3Hash; assigneeName; assignee
           mailedOn = None; deemed = False; observers
-        bond <- create this with unassigned = unassigned - units; nextAssignment = nextAssignment + 1
+        bond <- create this with unassigned = unassigned - units
         pure (bond, offer)
 
     -- Units back from an issuer-made offer that was rejected or cancelled.
@@ -84,9 +86,6 @@ template Bond
       with units : Int
       controller issuer
       do create this with redeemed = redeemed + units
-
-padLeft : Int -> Text -> Text
-padLeft n t = T.implode (replicate (n - T.length t) " ") <> t
 
 ------------------------------------------------------------------ offer
 
