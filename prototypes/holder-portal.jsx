@@ -921,6 +921,7 @@ export default function HolderPortal() {
     }));
     emit(child.bond, child.id, "AssignOutCancelled", "RELAYER", "—");
     flash("Cancelled. " + usd(child.units) + " returned to your record.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   function lock() {
@@ -935,6 +936,7 @@ export default function HolderPortal() {
     flash(lockRotate
       ? "Locked, and a new access code requested. Only the issuer can unlock it."
       : "Locked. Only the issuer can unlock it.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   // Holder requests are register entries for the issuer queue.

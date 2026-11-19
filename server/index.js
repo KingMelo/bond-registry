@@ -271,7 +271,7 @@ const MAILING_FIELDS = ["instrumentMail", "mailedOn", "mailingDoc", "mailingFile
 const RECEIPT_FIELDS = ["receiptMail", "receivedOn", "receiptDoc", "receiptFile", "receiptRef", "receiptMatches"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
   "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...RECEIPT_FIELDS];
-const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "noResponseAsOf", "address", "instrumentMail", "passkeyMail", "requestedContact"];
+const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "noResponseAsOf", "cancelledBy", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((k) => !IGNORED.includes(k) || k === "requestedContact")
@@ -616,8 +616,9 @@ if (APP === "holder") {
         for (const k of ["deliveryRef", "mailedOn", "mailingDoc", "mailingFile"]) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
       if (before?.receiptRef && (a.receivedOn == null || a.receivedOn === before.receivedOn))
         for (const k of RECEIPT_FIELDS) { if (before[k] === undefined) delete a[k]; else a[k] = before[k]; }
-      // The record of no authenticated response is the server's alone.
+      // The record of no authenticated response, and of who cancelled, are the server's alone.
       if (before?.noResponseAsOf) a.noResponseAsOf = before.noResponseAsOf; else delete a.noResponseAsOf;
+      if (before?.cancelledBy) a.cancelledBy = before.cancelledBy; else delete a.cancelledBy;
       const changed = before ? changedFields(before, a) : [];
       {
         if (!session) throw new Reject(401, "Sign in with your assignment ID and access code first.");
@@ -664,6 +665,7 @@ if (APP === "holder") {
         if (before && changed.some((k) => !may.includes(k))) throw new Reject(403, "You can't change " + changed.filter((k) => !may.includes(k)).join(", ") + " on " + a.id + ".");
         // The assignor can only cancel an assign-out; the parent of a new holder only closes when emptied.
         if (role === "assignor" && before && a.status !== before.status && a.status !== "Cancelled") throw new Reject(403, "Only the new assignee can do that.");
+        if (role === "assignor" && before && a.status === "Cancelled" && before.status !== "Cancelled") a.cancelledBy = "assignor";
         if (role === "assignor" && before && a.status === "Cancelled" && activeKey(before))
           throw new Reject(409, a.party + " has already claimed " + a.id + "; only they can accept or reject it now.");
         if (role === "holder" && before?.origin === "AssignOut" && a.status === "Cancelled") throw new Reject(403, "The assignee can reject it, not cancel it.");
@@ -1251,6 +1253,7 @@ if (APP === "issuer") {
         n.deliveredAt = before?.data?.deliveredAt
           || (n.deliveryRef && firstMailing ? new Date(Date.parse(a.mailedOn)).toISOString() : null);
         n.noResponseAsOf = before?.data?.noResponseAsOf || null; // the server's record, never a page's
+        n.cancelledBy = before?.data?.cancelledBy || (n.status === "Cancelled" && before?.data && before.data.status !== "Cancelled" ? "issuer" : null);
         // A receipt the assignee recorded first: check its tracking number against this mailing.
         if (before?.data?.receiptMail && (n.instrumentMail || n.passkeyMail)) n.receiptMatches = mailMatches(n, before.data.receiptMail);
         clean.push(n);
@@ -1264,10 +1267,11 @@ if (APP === "issuer") {
     // already; a failure here is logged and doesn't undo it.
     if (canton.enabled && newlyIssued.length)
       await canton.mirrorIssued(pool, newlyIssued).catch((e) => console.error("Canton: issuing", newlyIssued.map((a) => a.id).join(", "), "-", e.message));
-    // Its mailings and UCC-3s for its own assignments, likewise.
-    const issuerMade = canton.enabled ? (await pool.query("select data from assignments where id = any($1)", [reg.map((a) => a.id)])).rows.map((r) => r.data) : [];
-    if (issuerMade.length)
-      await canton.syncIssuerFacts(pool, issuerMade).catch((e) => console.error("Canton: mailing/UCC-3", "-", e.message));
+    // Its other acts, likewise: mailings and UCC-3s for its own assignments, unlocks, redemptions
+    // and cancelled assign-outs.
+    const savedRecords = canton.enabled ? (await pool.query("select data from assignments where id = any($1)", [reg.map((a) => a.id)])).rows.map((r) => r.data) : [];
+    if (savedRecords.length)
+      await canton.syncIssuerFacts(pool, savedRecords).catch((e) => console.error("Canton: issuer acts", "-", e.message));
     res.json(nv);
   }));
 

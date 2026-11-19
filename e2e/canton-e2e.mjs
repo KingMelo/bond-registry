@@ -8,7 +8,7 @@
 //      then replace the first browser as lost: its key stops working on Canton; the new one works.
 //
 // Needs Postgres on 127.0.0.1:54329, the apps built, and a Canton sandbox with the registry's DAR:
-//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.3.0.dar)
+//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.4.0.dar)
 // Run from the repo root: node e2e/canton-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -171,7 +171,7 @@ await page.getByRole("button", { name: /^Accept: confirm with your passkey/ }).c
 // Before the key signs, the page checks the transaction against its hash and says what it does.
 async function answerCanton(pg, expect, name) {
   const dlg = pg.getByTestId("canton-ask");
-  await dlg.waitFor({ timeout: 40000 }).catch(() => {});
+  await dlg.waitFor({ timeout: 40000 }).catch(async () => { if (SHOTS) await pg.screenshot({ path: SHOTS + "/missing-" + name.replace(/\W+/g, "-").slice(0, 30) + ".png", fullPage: true }); });
   const said = (await dlg.innerText().catch(() => "")).replace(/\s+/g, " ");
   ok(expect.test(said) && (await pg.getByText(/Checked in this browser/).count()) > 0, name + ": the page checks it and shows what it does (" + said.slice(0, 150) + ")");
   if (SHOTS) await pg.screenshot({ path: SHOTS + "/ask-" + name.replace(/\W+/g, "-").slice(0, 30) + ".png" });
@@ -381,6 +381,79 @@ await shot(page2, "c5-replaced");
 {
   const rec = (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1);
   ok(rec.status === "Accepted" && rec.units === 1_000_000, "the register still shows " + A1 + " in effect at $10,000.00");
+}
+
+// ---- locks, unlocks, a redemption, and cancelled assign-outs (Company A now acts from the second browser)
+{
+  const held = async () => Number((await onCanton("Assignment", A1))?.createArgument.units);
+  const signIn2 = async () => {
+    await page2.reload();
+    await page2.getByRole("button", { name: "Sign in with your passkey" }).click({ timeout: 15000 });
+    await page2.getByTestId("canton-keys").waitFor({ timeout: 20000 });
+  };
+  const assignOut2 = async (amount, name) => {
+    await page2.getByRole("button", { name: "Assign out" }).click();
+    await page2.getByLabel("Amount to assign").fill(amount);
+    await page2.getByLabel("Legal name").fill(name);
+    await page2.getByLabel("Attention of").fill("J. Roe");
+    await page2.getByLabel("Mailing address").fill(name + "\n2 Main St\nDover, DE 19901");
+    await page2.locator('input[type="file"]').first().setInputFiles({ name: "to-" + name + ".pdf", mimeType: "application/pdf", buffer: Buffer.from("signed to " + name) });
+    await page2.getByRole("button", { name: "Create the assignment" }).click();
+  };
+  // An assign-out nobody has claimed, cancelled by its assignor: one signature, the units come straight back.
+  const before = await held();
+  await assignOut2("5.00", "Company F, LLC");
+  await answerCanton(page2, /Assign \$5\.00 of PENS-0001-BD-A00001 to Company F, LLC, as PENS-0001-BD-A00001-2\./, "second assign-out");
+  await until(async () => await onCanton("AssignmentOffer", A1 + "-2"));
+  await page2.getByRole("button", { name: "Back to my record" }).click().catch(() => {});
+  await page2.getByRole("button", { name: "Cancel — return $5.00" }).click();
+  await answerCanton(page2, /Cancel your unclaimed assign-out; its units come back to PENS-0001-BD-A00001, which then holds \$/, "cancelling");
+  await until(async () => !(await onCanton("AssignmentOffer", A1 + "-2")), 30000);
+  ok(!(await onCanton("AssignmentOffer", A1 + "-2")) && (await held()) === before, "the cancelled assign-out is gone from Canton and its $5.00 is back on A00001, in one signed act");
+  ok((await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1 + "-2").cancelledBy === "assignor", "the register keeps who cancelled it: the assignor");
+
+  // A disputed assign-out, cancelled by the issuer: its units wait for the assignor to take back, with their key.
+  await assignOut2("3.00", "Company G, LLC");
+  await answerCanton(page2, /Assign \$3\.00 of PENS-0001-BD-A00001 to Company G, LLC, as PENS-0001-BD-A00001-3\./, "third assign-out");
+  await until(async () => await onCanton("AssignmentOffer", A1 + "-3"));
+  {
+    const regNow = (await st()).reg;
+    const kid = regNow.find((a) => a.id === A1 + "-3"), par = regNow.find((a) => a.id === A1);
+    await icommit({ reg: [{ ...kid, status: "Cancelled", cancelReason: "Disputed by the assignor's lender" }, { ...par, units: par.units + kid.units }],
+      events: [{ eid: "c" + Date.now(), bond: kid.bond, id: kid.id, t: "now", ev: "AssignOutCancelled", actor: "ISSUER", ref: "—" }] });
+  }
+  const back = await until(async () => await onCanton("UnitsReturned", A1 + "-3"));
+  ok(!!back && back.createArgument.why === "Disputed by the assignor's lender" && !(await onCanton("AssignmentOffer", A1 + "-3")),
+    "the issuer's cancel of a disputed assign-out is on Canton as its own act, with its reason");
+  await signIn2();
+  await answerCanton(page2, /Take back the units of a rejected assign-out into PENS-0001-BD-A00001/, "taking back after the issuer's cancel");
+  await until(async () => !(await onCanton("UnitsReturned", A1 + "-3")), 30000);
+  ok((await held()) === before, "and Company A takes the $3.00 back with its own key");
+
+  // Locked by Company A; unlocked by the issuer on the paperwork.
+  await page2.getByRole("button", { name: "Lock this record" }).click();
+  await page2.getByRole("button", { name: "Lock it" }).click();
+  await answerCanton(page2, /Lock PENS-0001-BD-A00001 \(pledge: .*\)\. While it's locked nothing can be assigned out or redeemed; only the issuer can unlock it\./, "locking");
+  const locked = await until(async () => { const a = await onCanton("Assignment", A1); return a?.createArgument.locked ? a : null; });
+  ok(!!locked, "Company A's lock is on Canton, signed with its key (" + locked?.createArgument.locked + ")");
+  {
+    const r = (await st()).reg.find((a) => a.id === A1);
+    await icommit({ reg: [{ ...r, status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, unlockRef: "First Bank release, signed Nov 19" }],
+      events: [{ eid: "u" + Date.now(), bond: r.bond, id: r.id, t: "now", ev: "Unlocked", actor: "ISSUER", ref: "First Bank release, signed Nov 19" }] });
+  }
+  const unlocked = await until(async () => { const a = await onCanton("Assignment", A1); return a && a.createArgument.locked == null ? a : null; });
+  ok(!!unlocked, "the issuer's unlock is on Canton as its own act");
+
+  // Redeemed by the issuer, with the payment confirmation's fingerprint.
+  {
+    const bondBefore = Number((await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:Bond")).createArgument.redeemed);
+    const s0 = await st(), r = s0.reg.find((a) => a.id === A1), b0 = s0.bonds[0], paid = H32();
+    await icommit({ bonds: [{ ...b0, redeemed: b0.redeemed + r.units }], reg: [{ ...r, status: "Redeemed", redeemedOn: "now", redemptionDoc: "wire.pdf", redemptionHash: paid }],
+      events: [{ eid: "r" + Date.now(), bond: r.bond, id: r.id, t: "now", ev: "Redeemed", actor: "ISSUER", ref: paid }] });
+    const gone = await until(async () => !(await onCanton("Assignment", A1)), 30000);
+    const bondAfter = Number((await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:Bond")).createArgument.redeemed);
+    ok(gone && bondAfter === bondBefore + before, "the issuer's redemption is on Canton: A00001 is retired and the bond's redeemed total rises by its amount");
+  }
 }
 
 await browser.close();

@@ -375,7 +375,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     const parent = reg.find((x) => x.id === a.parent);
     if (!reason.trim() || !parent || parent.status === "PendingRedemption") return;
     setReg((r) => r.map((x) => {
-      if (x.id === a.id) return { ...x, status: "Cancelled" };
+      if (x.id === a.id) return { ...x, status: "Cancelled", cancelReason: reason.trim() };
       if (x.id === parent.id) return { ...x, units: x.units + a.units };
       return x;
     }));
@@ -385,7 +385,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   function unlock(a) {
     if (!docRef.trim()) return;
-    patch(a.id, { status: "Accepted", lockKind: null, lockReason: null, lockedOn: null,
+    patch(a.id, { status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, unlockRef: docRef.trim(),
       rotationRequested: false, unlockRequested: false });
     emit(a.bond, a.id, "Unlocked", "ISSUER", docRef.trim());
     done("Unlocked. Back in effect.");
@@ -415,7 +415,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   const [rdDoc, setRdDoc] = useState(null);
   function redeem(a) {
     if (!rdDoc || a.status !== "Accepted" || pendingOf(a.id).length > 0 || a.units <= 0) return;
-    patch(a.id, { status: "Redeemed", redeemedOn: today(), redemptionDoc: rdDoc.name });
+    patch(a.id, { status: "Redeemed", redeemedOn: today(), redemptionDoc: rdDoc.name, redemptionHash: rdDoc.hash });
     // Retired for good: redeemed units never return to the issuable pool.
     setBonds((bs) => bs.map((b) => (b.id === a.bond ? { ...b, redeemed: b.redeemed + a.units } : b)));
     emit(a.bond, a.id, "Redeemed", "ISSUER", rdDoc.hash);

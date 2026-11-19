@@ -224,3 +224,34 @@ test_mailing_receipt_ucc3 = script do
   v.receivedOn === Some today
   v.ucc3Hash === Some (h "ucc3")
   pure ()
+
+test_lock_cancel_redeem = script do
+  (c, bond) <- setup
+  (bond, a1) <- issueAndAccept c bond
+  -- An unclaimed assign-out, cancelled by its assignor in one act: the units come straight back.
+  (rest, offer) <- submit c.alice $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1040; childHash = h "d1"; childName = "Company D"; childParty = None
+  submitMustFail c.bob $ exerciseCmd rest CancelAssignOut with offerCid = offer
+  rest <- submit c.alice $ exerciseCmd rest CancelAssignOut with offerCid = offer
+  Some r <- queryContractId c.alice rest
+  r.units === 1_000_000
+  -- Once claimed, the assignor can't cancel it; the issuer can, for a dispute, and the assignor takes the units back.
+  (rest, offer) <- submit c.alice $ exerciseCmd rest AssignOut with
+    childId = "PENS-0001-BD-A00001-2"; childUnits = 500; childHash = h "d2"; childName = "Company D"; childParty = Some c.bob
+  submitMustFail c.alice $ exerciseCmd rest CancelAssignOut with offerCid = offer
+  submitMustFail c.alice $ exerciseCmd offer IssuerCancel with reason = "Disputed"
+  back <- submit c.issuer $ exerciseCmd offer IssuerCancel with reason = "Disputed by the assignor's lender"
+  rest <- submit c.alice $ exerciseCmd rest ReclaimToAssignment with returnedCid = back
+  -- Locked by the assignee: no assign-outs, no redemption; only the issuer unlocks.
+  submitMustFail c.issuer $ exerciseCmd rest Lock with kind = "pledge"; reason = "x"
+  rest <- submit c.alice $ exerciseCmd rest Lock with kind = "pledge"; reason = "Pledged to First Bank"
+  submitMustFail c.alice $ exerciseCmd rest AssignOut with
+    childId = "PENS-0001-BD-A00001-3"; childUnits = 1; childHash = h "d3"; childName = "X"; childParty = None
+  submitMustFail c.issuer $ exerciseCmd rest Redeem with paymentHash = h "paid"; bondCid = bond
+  submitMustFail c.alice $ exerciseCmd rest Unlock with release = "x"
+  submitMustFail c.issuer $ exerciseCmd rest Unlock with release = ""
+  rest <- submit c.issuer $ exerciseCmd rest Unlock with release = "First Bank release, signed Nov 19"
+  submit c.issuer $ exerciseCmd rest Redeem with paymentHash = h "paid"; bondCid = bond
+  [(_, b)] <- query @Bond c.issuer
+  b.redeemed === 1_000_000
+  pure ()

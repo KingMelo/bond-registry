@@ -47,12 +47,21 @@ export function sayActs(summary) {
       const on = (made("AssignmentOffer")[0] || made("Assignment")[0])?.args || {};
       lines.push("Record your delivery receipt for " + on.recordId + ", received " + a.args.received + ".");
       lines.push("Its fingerprint: " + short(a.args.ref) + ".");
-    } else if (a.choice !== "Archive") lines.push(a.choice + " on " + a.template + ".");
+    } else if (a.template === "Assignment" && a.choice === "Lock") {
+      const on = made("Assignment")[0]?.args || {};
+      lines.push("Lock " + on.recordId + " (" + a.args.kind + ": " + a.args.reason + ").");
+      lines.push("While it's locked nothing can be assigned out or redeemed; only the issuer can unlock it.");
+    } else if (a.template === "Assignment" && a.choice === "CancelAssignOut") {
+      const rest = made("Assignment")[0]?.args || {};
+      lines.push("Cancel your unclaimed assign-out; its units come back to " + rest.recordId + ", which then holds " + dollars(rest.units) + ".");
+    } else if (a.choice === "Cancel" || a.choice === "Archive") {
+      // part of cancelling an assign-out, said above
+    } else lines.push(a.choice + " on " + a.template + ".");
   }
   return lines;
 }
 const SAY_KIND = { accept: "your acceptance", reject: "your rejection", assignOut: "your assign-out", reclaim: "taking back the units",
-  mailing: "the mailing", ucc3: "the UCC-3", receipt: "your delivery receipt" };
+  mailing: "the mailing", ucc3: "the UCC-3", receipt: "your delivery receipt", lock: "your lock", cancelOut: "cancelling your assign-out" };
 
 /**
  * Signs, one by one, the acts the register has and Canton doesn't. Each transaction is checked

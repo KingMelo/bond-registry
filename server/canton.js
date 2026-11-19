@@ -128,35 +128,58 @@ export async function mirrorIssued(pool, records) {
 }
 
 /**
- * The issuer's own acts on its assignments, after a save: the certified mailing and the UCC-3 it
- * records go on Canton as the issuer's party (held by the node), so nobody else is asked to sign.
- * Compared with what Canton holds, so each is recorded once.
+ * The issuer's own acts, after a save, go on Canton as the issuer's party (held by the node), so
+ * nobody else is asked to sign: the certified mailing and UCC-3 of an assignment it made, an unlock,
+ * a redemption (with the payment confirmation's fingerprint) and cancelling a disputed assign-out;
+ * and the platform's note that an offer went unanswered past its response period.
+ * Each is compared with what Canton holds, so it's recorded once.
  */
 export async function syncIssuerFacts(pool, records) {
-  for (const rec of records.filter((r) => r.origin === "Issuer")) {
+  for (const rec of records) {
     const ref = await refOf(pool, rec.id);
     if (ref?.template !== "AssignmentOffer" && ref?.template !== "Assignment") continue;
     const issuer = await issuerPartyOf(pool, rec.bond);
-    const on = (await heldOnCanton(pool, rec.bond)).get(rec.id);
-    if (!on) continue;
-    if (rec.deliveryRef && on.deliveryRef == null && on.template === "AssignmentOffer")
-      await submit([issuer], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: on.cid, choice: "RecordMailing",
-        choiceArgument: { sentOn: asTime(rec.mailedOn || rec.deliveredAt), mailingRef: rec.deliveryRef } } }]);
-    const now = (await heldOnCanton(pool, rec.bond)).get(rec.id);
-    if (isHash(rec.filingDoc) && now && now.ucc3Hash == null)
-      await submit([issuer], [{ ExerciseCommand: { templateId: tpl(now.template), contractId: now.cid,
-        choice: now.template === "Assignment" ? "RecordUcc3OnAssignment" : "RecordUcc3", choiceArgument: { filedHash: rec.filingDoc } } }]);
+    const on = async () => (await heldOnCanton(pool, rec.bond)).get(rec.id);
+    let now = await on();
+    if (!now) continue;
+    const act = async (choice, choiceArgument) => {
+      const tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl(now.template), contractId: now.cid, choice, choiceArgument } }]);
+      now = await on();
+      return tx;
+    };
+    if (rec.origin === "Issuer" && rec.deliveryRef && now.deliveryRef == null && now.template === "AssignmentOffer")
+      await act("RecordMailing", { sentOn: asTime(rec.mailedOn || rec.deliveredAt), mailingRef: rec.deliveryRef });
+    // The response period passed with no authenticated answer: noted by the platform, after the mailing it runs from.
+    if (rec.noResponseAsOf && now?.template === "AssignmentOffer" && now.noResponseAsOf == null && now.mailedOn != null) {
+      const platform = await localParty(pool, "platform");
+      await submit([platform], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: now.cid, choice: "RecordNoResponse", choiceArgument: {} } }]);
+      now = await on();
+    }
+    if (rec.origin === "Issuer" && isHash(rec.filingDoc) && now && now.ucc3Hash == null)
+      await act(now.template === "Assignment" ? "RecordUcc3OnAssignment" : "RecordUcc3", { filedHash: rec.filingDoc });
+    if (now?.template === "Assignment" && now.locked != null && rec.status === "Accepted")
+      await act("Unlock", { release: rec.unlockRef || "Unlocked by the issuer" });
+    if (now?.template === "Assignment" && rec.status === "Redeemed" && isHash(rec.redemptionHash)) {
+      const bond = await refOf(pool, rec.bond);
+      const tx = await act("Redeem", { paymentHash: rec.redemptionHash, bondCid: bond.cid });
+      const nb = createdOf(tx, "Bond");
+      if (nb) await setRef(pool, rec.bond, "Bond", nb.contractId);
+      await setRef(pool, rec.id, "Closed", "-");
+      continue;
+    }
+    if (now?.template === "AssignmentOffer" && rec.status === "Cancelled" && rec.cancelledBy === "issuer" && rec.origin === "AssignOut") {
+      const tx = await act("IssuerCancel", { reason: rec.cancelReason || "Cancelled by the issuer" });
+      await setRef(pool, rec.id, "UnitsReturned", createdOf(tx, "UnitsReturned").contractId); // its assignor takes the units back
+      continue;
+    }
     await refresh(pool, issuer, rec.id);
   }
 }
 
-/** The response period passed with no authenticated answer: recorded on the offer, nothing more. */
+/** The response period passed with no authenticated answer: brought onto the offer with everything else it waits on. */
 export async function recordNoResponse(pool, recordId) {
-  const ref = await refOf(pool, recordId);
-  if (ref?.template !== "AssignmentOffer") return;
-  const platform = await localParty(pool, "platform");
-  const tx = await submit([platform], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "RecordNoResponse", choiceArgument: {} } }]);
-  await setRef(pool, recordId, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
+  const rec = (await pool.query("select data from assignments where id = $1", [recordId])).rows[0]?.data;
+  if (rec) await syncIssuerFacts(pool, [rec]);
 }
 
 // ------------------------------------------------------------------ the assignee's keys
@@ -221,6 +244,7 @@ async function waiting(pool, rec, ref) {
   const mine = held.get(rec.id);
   const live = ref?.template === "AssignmentOffer" || ref?.template === "Assignment";
   if (live && rec.receiptRef && mine && mine.receiptRef == null && rec.status !== "Rejected") out.push({ kind: "receipt" });
+  if (ref?.template === "Assignment" && rec.status === "Locked" && mine && mine.locked == null) out.push({ kind: "lock" });
   if (ref?.template === "AssignmentOffer" && rec.status === "Accepted") out.push({ kind: "accept" });
   if (ref?.template === "AssignmentOffer" && rec.status === "Rejected") out.push({ kind: "reject" });
   if (ref?.template === "Assignment") {
@@ -229,6 +253,7 @@ async function waiting(pool, rec, ref) {
       const cref = await refOf(pool, c.id), on = held.get(c.id);
       if (!cref) { out.push({ kind: "assignOut", child: c.id }); continue; }
       if (cref.template === "UnitsReturned") { out.push({ kind: "reclaim", child: c.id }); continue; }
+      if (cref.template === "AssignmentOffer" && c.status === "Cancelled" && c.cancelledBy === "assignor") { out.push({ kind: "cancelOut", child: c.id }); continue; }
       if (cref.template === "AssignmentOffer" && c.deliveryRef && on && on.deliveryRef == null) out.push({ kind: "mailing", child: c.id });
       if ((cref.template === "AssignmentOffer" || cref.template === "Assignment") && isHash(c.filingDoc) && on && on.ucc3Hash == null)
         out.push({ kind: "ucc3", child: c.id });
@@ -325,7 +350,14 @@ async function refresh(pool, issuer, recordId) {
 }
 
 export async function prepareAct(pool, rec, { kind, child: childId }) {
-  const ref = await refOf(pool, rec.id), holder = await holderOf(pool, rec.id);
+  const holder = await holderOf(pool, rec.id);
+  // Act on the contracts as Canton holds them now, not as last noted: something may have changed them since.
+  const live = await heldOnCanton(pool, rec.bond);
+  const liveRef = async (id) => {
+    const r = await refOf(pool, id), l = live.get(id);
+    return r && l && (r.template === "AssignmentOffer" || r.template === "Assignment") ? { template: l.template, cid: l.cid } : r;
+  };
+  const ref = await liveRef(rec.id);
   if (!holder) throw new CantonError("This assignment has no keys on Canton yet.", 409);
   const due = await waiting(pool, rec, ref);
   if (!due.some((d) => d.kind === kind && (d.child || null) === (childId || null))) throw new CantonError("There's nothing like that to sign on Canton for this assignment.", 409);
@@ -343,11 +375,17 @@ export async function prepareAct(pool, rec, { kind, child: childId }) {
       choiceArgument: { received: asDate(rec.receivedOn), ref: rec.receiptRef } };
   }
   if (kind === "mailing" || kind === "ucc3") {
-    const c = await child(pool, rec, childId), cref = await refOf(pool, childId);
+    const c = await child(pool, rec, childId), cref = await liveRef(childId);
     command = kind === "mailing"
       ? { templateId: tpl("AssignmentOffer"), contractId: cref.cid, choice: "RecordMailing", choiceArgument: { sentOn: asTime(c.mailedOn || c.deliveredAt), mailingRef: c.deliveryRef } }
       : { templateId: tpl(cref.template), contractId: cref.cid, choice: cref.template === "Assignment" ? "RecordUcc3OnAssignment" : "RecordUcc3",
           choiceArgument: { filedHash: c.filingDoc } };
+  }
+  if (kind === "lock") command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "Lock",
+    choiceArgument: { kind: rec.lockKind || "other", reason: rec.lockReason || "Locked by the assignee" } };
+  if (kind === "cancelOut") {
+    await child(pool, rec, childId);
+    command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "CancelAssignOut", choiceArgument: { offerCid: (await liveRef(childId)).cid } };
   }
   if (kind === "reclaim") {
     await child(pool, rec, childId);
@@ -369,7 +407,7 @@ export async function executeAct(pool, rec, { signature, signedBy }) {
   steps.delete(rec.id + ":act");
   // What the act created, as the issuer's party sees it, so the register knows where each record now is.
   const issuer = await issuerPartyOf(pool, rec.bond);
-  if (s.act === "accept" || s.act === "assignOut" || s.act === "reclaim") {
+  if (s.act === "accept" || s.act === "assignOut" || s.act === "reclaim" || s.act === "lock" || s.act === "cancelOut") {
     const mine = await findContract(issuer, "Assignment", rec.id);
     if (mine) await setRef(pool, rec.id, "Assignment", mine.contractId);
   }
@@ -377,7 +415,7 @@ export async function executeAct(pool, rec, { signature, signedBy }) {
     const offer = await findContract(issuer, "AssignmentOffer", s.child);
     if (offer) await setRef(pool, s.child, "AssignmentOffer", offer.contractId);
   }
-  if (s.act === "reclaim") await setRef(pool, s.child, "Closed", "-");
+  if (s.act === "reclaim" || s.act === "cancelOut") await setRef(pool, s.child, "Closed", "-");
   if (s.act === "receipt") await refresh(pool, issuer, rec.id);
   if (s.act === "mailing" || s.act === "ucc3") await refresh(pool, issuer, s.child);
   if (s.act === "reject") {

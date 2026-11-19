@@ -163,7 +163,7 @@ template AssignmentOffer
       controller fromSomeNote "No assignee yet." assignee
       do create Assignment with
            issuer; platform; assignee = fromSomeNote "" assignee; assignor; assigneeName; bondId; recordId; parentId
-           units; instrumentHash; carveOuts = []; ucc3Hash; mailedOn; deliveryRef; receivedOn; receiptRef; observers
+           units; instrumentHash; carveOuts = []; ucc3Hash; mailedOn; deliveryRef; receivedOn; receiptRef; locked = None; observers
 
     -- The assignee rejects, with a reason of 255+ characters. The units go back where they came
     -- from: a UnitsReturned record the assignor (or the issuer) reclaims. The assignee never sees
@@ -173,6 +173,16 @@ template AssignmentOffer
       controller fromSomeNote "No assignee yet." assignee
       do
         assertMsg "Give a reason of at least 255 characters." (T.length reason >= 255)
+        create UnitsReturned with issuer; assignor; bondId; recordId; parentId; units; why = reason
+
+    -- The issuer cancels a disputed assign-out, with its reason. The units wait for the assignor to
+    -- take back, as after a rejection.
+    choice IssuerCancel : ContractId UnitsReturned
+      with reason : Text
+      controller issuer
+      do
+        assertMsg "An issuer cancels an assign-out, not its own offer (it can simply not mail it)." (parentId /= None)
+        assertMsg "Give the reason." (T.length reason > 0)
         create UnitsReturned with issuer; assignor; bondId; recordId; parentId; units; why = reason
 
     -- The sender takes it back while nobody has claimed it.
@@ -227,6 +237,7 @@ template Assignment
     deliveryRef : Optional Text
     receivedOn : Optional Date
     receiptRef : Optional Text
+    locked : Optional Text    -- the assignee's lock and why (a pledge, a pending sale…); only the issuer unlocks
     observers : [Party]
   where
     signatory issuer, assignee
@@ -244,6 +255,7 @@ template Assignment
         childParty : Optional Party
       controller assignee
       do
+        assertMsg "It's locked; nothing can be assigned out until the issuer unlocks it." (locked == None)
         assertMsg "Attach the new signed instrument (its SHA-256)." (isHash childHash)
         assertMsg "The amount must be above zero." (childUnits > 0)
         assertMsg "You can't assign more than you hold." (childUnits <= units)
@@ -257,6 +269,38 @@ template Assignment
           assignee = childParty; mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None
           noResponseAsOf = None; observers
         pure (rest, offer)
+
+    -- Cancel an assign-out nobody has claimed yet: its units come straight back, in one act.
+    choice CancelAssignOut : ContractId Assignment
+      with offerCid : ContractId AssignmentOffer
+      controller assignee
+      do
+        o <- fetch offerCid
+        assertMsg "That isn't an assign-out of this assignment." (o.parentId == Some recordId && o.assignor == assignee)
+        back <- exercise offerCid Cancel
+        r <- fetch back
+        archive back
+        create this with units = units + r.units
+
+    -- The assignee locks it (a pledge, a pending sale, a suspected compromise): no assign-outs and
+    -- no redemption until the issuer unlocks it.
+    choice Lock : ContractId Assignment
+      with
+        kind : Text
+        reason : Text
+      controller assignee
+      do
+        assertMsg "It's already locked." (locked == None)
+        create this with locked = Some (kind <> ": " <> reason)
+
+    -- The issuer unlocks it, on the paperwork (a lender's release, an identity check).
+    choice Unlock : ContractId Assignment
+      with release : Text
+      controller issuer
+      do
+        assertMsg "It isn't locked." (locked /= None)
+        assertMsg "Record what the unlock rests on." (T.length release > 0)
+        create this with locked = None
 
     -- Units back from an assign-out that was rejected or cancelled (its paper stays listed:
     -- the carve-out instrument exists, it just never took effect).
@@ -299,6 +343,7 @@ template Assignment
         bondCid : ContractId Bond
       controller issuer
       do
+        assertMsg "It's locked; unlock it before redeeming." (locked == None)
         assertMsg "Attach the payment confirmation (its SHA-256)." (isHash paymentHash)
         _ <- exercise bondCid Retire with units
         pure ()
