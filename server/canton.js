@@ -36,6 +36,16 @@ export const SCHEMA = `
     updated_at timestamptz not null default now());
 `;
 
+// The server's own writes for one bond go to Canton one at a time: two passes acting on the same
+// contract at once would have one of them refused (the other just replaced it).
+const queues = new Map();
+function onBond(bondId, fn) {
+  const prev = queues.get(bondId) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  queues.set(bondId, run.catch(() => {}));
+  return run;
+}
+
 class CantonError extends Error { constructor(m, status = 502) { super(m); this.status = status; } }
 
 async function json(method, p, body) {
@@ -105,19 +115,27 @@ const tpl = (name) => PKG + ":Registry:" + name;
  * Canton with its first such record; assignments from before the mirror was switched on aren't copied.
  */
 export async function mirrorIssued(pool, records) {
-  for (const rec of records) {
+  for (const bondId of [...new Set(records.map((r) => r.bond))])
+    await onBond(bondId, () => mirrorIssuedOn(pool, records.filter((r) => r.bond === bondId), records));
+}
+async function mirrorIssuedOn(pool, mine, records) {
+  for (const rec of mine) {
     if (await refOf(pool, rec.id)) continue;
     const b = (await pool.query("select b.data, i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [rec.bond])).rows[0];
     if (!b) continue;
     const issuer = await localParty(pool, "issuer-" + b.code), platform = await localParty(pool, "platform");
     let bond = await refOf(pool, rec.bond);
     if (!bond) {
+      // What's left to assign on Canton starts as the register's plus what this save issues and what
+      // prior instruments hold; those are then recorded on Canton one by one (syncBond).
       const pending = records.filter((r) => r.bond === rec.bond).reduce((t, r) => t + Number(r.units), 0);
+      const priorHeld = (b.data.prior || []).filter((p) => !p.reversed).reduce((t, p) => t + Number(p.units), 0);
       const tx = await submit([issuer, platform], [{ CreateCommand: { templateId: tpl("Bond"), createArguments: {
-        issuer, platform, bondId: rec.bond, total: String(b.data.total), unassigned: String(Number(b.data.unassigned) + pending),
-        redeemed: String(b.data.redeemed || 0), instrumentHash: b.data.instrumentHash, ucc1Hash: b.data.ucc1?.hash, observers: [] } } }]);
+        issuer, platform, bondId: rec.bond, total: String(b.data.total), unassigned: String(Number(b.data.unassigned) + pending + priorHeld),
+        redeemed: String(b.data.redeemed || 0), prior: "0", instrumentHash: b.data.instrumentHash, ucc1Hash: b.data.ucc1?.hash, observers: [] } } }]);
       bond = { cid: createdOf(tx, "Bond").contractId };
       await setRef(pool, rec.bond, "Bond", bond.cid);
+      await syncBondNow(pool, rec.bond);
     }
     const tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "Issue", choiceArgument: {
       recordId: rec.id, units: String(rec.units), docHash: rec.docHash, ucc3Hash: isHash(rec.filingDoc) ? rec.filingDoc : null,
@@ -130,11 +148,16 @@ export async function mirrorIssued(pool, records) {
 /**
  * The issuer's own acts, after a save, go on Canton as the issuer's party (held by the node), so
  * nobody else is asked to sign: the certified mailing and UCC-3 of an assignment it made, an unlock,
- * a redemption (with the payment confirmation's fingerprint) and cancelling a disputed assign-out;
+ * a redemption (with the payment confirmation's fingerprint), a replacement and cancelling a
+ * disputed assign-out;
  * and the platform's note that an offer went unanswered past its response period.
  * Each is compared with what Canton holds, so it's recorded once.
  */
 export async function syncIssuerFacts(pool, records) {
+  for (const bondId of [...new Set(records.map((r) => r.bond))])
+    await onBond(bondId, () => syncIssuerFactsOn(pool, records.filter((r) => r.bond === bondId)));
+}
+async function syncIssuerFactsOn(pool, records) {
   for (const rec of records) {
     const ref = await refOf(pool, rec.id);
     if (ref?.template !== "AssignmentOffer" && ref?.template !== "Assignment") continue;
@@ -147,7 +170,8 @@ export async function syncIssuerFacts(pool, records) {
       now = await on();
       return tx;
     };
-    if (rec.origin === "Issuer" && rec.deliveryRef && now.deliveryRef == null && now.template === "AssignmentOffer")
+    const issuerMade = rec.origin === "Issuer" || rec.origin === "Replacement";
+    if (issuerMade && rec.deliveryRef && now.deliveryRef == null && now.template === "AssignmentOffer")
       await act("RecordMailing", { sentOn: asTime(rec.mailedOn || rec.deliveredAt), mailingRef: rec.deliveryRef });
     // The response period passed with no authenticated answer: noted by the platform, after the mailing it runs from.
     if (rec.noResponseAsOf && now?.template === "AssignmentOffer" && now.noResponseAsOf == null && now.mailedOn != null) {
@@ -155,7 +179,7 @@ export async function syncIssuerFacts(pool, records) {
       await submit([platform], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: now.cid, choice: "RecordNoResponse", choiceArgument: {} } }]);
       now = await on();
     }
-    if (rec.origin === "Issuer" && isHash(rec.filingDoc) && now && now.ucc3Hash == null)
+    if (issuerMade && isHash(rec.filingDoc) && now && now.ucc3Hash == null)
       await act(now.template === "Assignment" ? "RecordUcc3OnAssignment" : "RecordUcc3", { filedHash: rec.filingDoc });
     if (now?.template === "Assignment" && now.locked != null && rec.status === "Accepted")
       await act("Unlock", { release: rec.unlockRef || "Unlocked by the issuer" });
@@ -166,6 +190,18 @@ export async function syncIssuerFacts(pool, records) {
       if (nb) await setRef(pool, rec.bond, "Bond", nb.contractId);
       await setRef(pool, rec.id, "Closed", "-");
       continue;
+    }
+    // Replaced by the issuer: the new record's offer takes its place on Canton, same amount, new paper.
+    if (now && rec.status === "Superseded") {
+      const nu = (await pool.query(`select data from assignments where data->>'parent' = $1 and data->>'origin' = 'Replacement'`, [rec.id])).rows[0]?.data;
+      if (nu && isHash(nu.docHash)) {
+        const tx = await act(now.template === "Assignment" ? "SupersedeAssignment" : "SupersedeOffer", {
+          newRecordId: nu.id, newHash: nu.docHash, newAssigneeName: nu.party || "",
+          reasonHash: isHash(rec.supersededDoc) ? rec.supersededDoc : fp("reason", [rec.id, "replaced"]) });
+        await setRef(pool, nu.id, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
+        await setRef(pool, rec.id, "Closed", "-");
+        continue;
+      }
     }
     if (now?.template === "AssignmentOffer" && rec.status === "Cancelled" && rec.cancelledBy === "issuer" && rec.origin === "AssignOut") {
       const tx = await act("IssuerCancel", { reason: rec.cancelReason || "Cancelled by the issuer" });
@@ -180,6 +216,46 @@ export async function syncIssuerFacts(pool, records) {
 export async function recordNoResponse(pool, recordId) {
   const rec = (await pool.query("select data from assignments where id = $1", [recordId])).rows[0]?.data;
   if (rec) await syncIssuerFacts(pool, [rec]);
+}
+
+/** A safety net, run with the 30-day job: offers whose no-response note hasn't reached Canton yet. */
+export async function catchUpNoResponse(pool) {
+  const recs = (await pool.query(`select a.data from assignments a join canton_refs r on r.ref = a.id
+    where a.data->>'status' = 'Issued' and a.data->>'noResponseAsOf' is not null and r.template = 'AssignmentOffer' limit 50`)).rows.map((x) => x.data);
+  if (recs.length) await syncIssuerFacts(pool, recs);
+}
+
+// ------------------------------------------------------------------ prior instruments
+
+const fp = (kind, values) => "0x" + crypto.createHash("sha256").update(JSON.stringify(["BondInterestRegistry/" + kind + "/v2", ...values.map(String)])).digest("hex");
+// A prior instrument's identifier as a fingerprint; who holds it stays in the register.
+const priorFp = (bondId, ref) => fp("prior", [bondId, String(ref).trim().toUpperCase()]);
+
+/**
+ * A bond's prior instruments, after the issuer saves it: each one the register has goes on Canton
+ * (its amount off what's left to assign), and each one reversed in the register is reversed there,
+ * with its reason's fingerprint. Compared with what Canton holds, so each happens once.
+ */
+export const syncBond = (pool, bondId) => onBond(bondId, () => syncBondNow(pool, bondId));
+async function syncBondNow(pool, bondId) {
+  let bond = await refOf(pool, bondId);
+  if (bond?.template !== "Bond") return;
+  const data = (await pool.query("select data from bonds where id = $1", [bondId])).rows[0]?.data;
+  if (!data) return;
+  const issuer = await issuerPartyOf(pool, bondId);
+  const all = await activeFor(issuer);
+  const live = new Map(all.filter((e) => e.templateId.endsWith(":Registry:PriorInstrument") && e.createArgument.bondId === bondId).map((e) => [e.createArgument.entryId, e]));
+  const reversed = new Set(all.filter((e) => e.templateId.endsWith(":Registry:PriorReversed") && e.createArgument.bondId === bondId).map((e) => e.createArgument.entryId));
+  for (const p of data.prior || []) {
+    let tx = null;
+    if (!p.reversed && !live.has(p.id) && !reversed.has(p.id))
+      tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "RecordPrior",
+        choiceArgument: { entryId: p.id, identifierHash: priorFp(bondId, p.ref), units: String(p.units) } } }]);
+    else if (p.reversed && live.has(p.id))
+      tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "ReversePrior",
+        choiceArgument: { priorCid: live.get(p.id).contractId, reasonHash: fp("reason", [bondId, p.id, p.reversedReason || ""]) } } }]);
+    if (tx) { bond = { cid: createdOf(tx, "Bond").contractId }; await setRef(pool, bondId, "Bond", bond.cid); }
+  }
 }
 
 // ------------------------------------------------------------------ the assignee's keys

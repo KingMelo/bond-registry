@@ -20,7 +20,7 @@ from Docker Hub: `docker create digitalasset/daml-sdk:3.4.0-rc2`, then copy `/ho
 cd canton
 daml build
 daml test                                                   # the template tests
-daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.4.0.dar &
+daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.5.0.dar &
 node pilot/passkey-signing.mjs                              # signing pilot (key in Node)
 BROWSER=1 node pilot/passkey-signing.mjs                    # the same, key made in Chromium's WebCrypto
 (cd pilot && npm install && node backup-key.mjs)            # backup key; uses the node's admin API (port 6866)
@@ -29,7 +29,7 @@ cd .. && node e2e/canton-e2e.mjs                            # the register and C
 
 ## Results (Nov 19, 2026)
 
-**Templates: all 10 test scripts pass** (7 at first, then numbering, mailing/receipt/UCC-3, and lock/cancel/redeem). No record without its paper's SHA-256; never more than is left to
+**Templates: all 11 test scripts pass** (7 at first, then numbering, mailing/receipt/UCC-3, lock/cancel/redeem, and prior instruments/replacement). No record without its paper's SHA-256; never more than is left to
 assign; only the issuer issues; nobody but the assignee acts on an assignment (the issuer can't even
 archive it); an assign-out needs its own paper and the one-dash number, and the remainder keeps the
 original paper with the new one listed; each holder controls only their portion; a rejection needs
@@ -79,7 +79,7 @@ at setup for them to print and keep offline, a second device of theirs (each dev
 ## The register and Canton together (Nov 19, 2026)
 
 `e2e/canton-e2e.mjs` runs the registry's three servers against the node, with browsers playing the
-assignees. All 57 checks pass:
+assignees. All 63 checks pass, on repeat runs:
 
 - Issuing in the register puts the bond and an offer on Canton.
 - After the passkey, the assignee makes their keys: a device key the browser stores non-extractable,
@@ -94,7 +94,16 @@ assignees. All 57 checks pass:
   (with the payment confirmation's fingerprint) and its cancelling of a disputed assign-out.
 - An assignee's lock (no assign-outs or redemption until the issuer unlocks it) and an assignor
   cancelling an unclaimed assign-out (one act: the units come straight back) are signed with their
-  own key. Who cancelled is kept by the server, never taken from a page. Each new assignee sets up their own keys
+  own key. Who cancelled is kept by the server, never taken from a page.
+- Prior instruments the issuer records come off what's left to assign on Canton, identified only by
+  a fingerprint (who holds them stays in the register); a reversal keeps the entry on record as
+  reversed, with its reason's fingerprint.
+- An assignment the issuer replaces is replaced on Canton: the new record's offer, same amount, new
+  paper, with what replaced it and the replacement memo's fingerprint kept. As in the register, the
+  issuer can replace even an accepted assignment without its holder's signature; whether that fits
+  the holder's control is a question for counsel.
+- The server's own Canton writes for a bond run one at a time, and the 30-day job re-checks any
+  no-response note that didn't reach Canton. Each new assignee sets up their own keys
   and sees only their own contracts.
 - **Before each signature the page checks the transaction itself** (`src/canton-verify.js`): it
   decodes the prepared transaction, rebuilds Canton's hash from it (hashing scheme V2), and only
@@ -105,11 +114,10 @@ assignees. All 57 checks pass:
 - "Lost a device? Replace it" with the code drops every other device key: the lost browser's key is
   refused by Canton from then on, the new one works. The register is unaffected throughout.
 
-Not mirrored yet: records issued before the mirror is switched on, prior instruments, replacement
-assignments, and passkey rotation notes. The hash check covers the value
+Not mirrored yet: records issued before the mirror is switched on, and passkey rotation notes. The hash check covers the value
 and node kinds these contracts produce (records, text, numbers, dates and times, parties,
 optionals, lists, contract IDs, creates, exercises, fetches); a transaction with anything else is
 refused rather than signed.
 
-The package is at 0.4.0: changing a template means a new version, since a shared Canton network
+The package is at 0.5.0: changing a template means a new version, since a shared Canton network
 keeps every version that was uploaded.

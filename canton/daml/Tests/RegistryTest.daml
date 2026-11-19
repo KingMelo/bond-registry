@@ -27,7 +27,7 @@ setup = do
   trustee <- allocateParty "Trustee"
   outsider <- allocateParty "Outsider"
   bond <- submitMulti [issuer, platform] [] $ createCmd Bond with
-    issuer; platform; bondId = "PENS-0001-BD"; total = 10_000_000_000; unassigned = 10_000_000_000; redeemed = 0
+    issuer; platform; bondId = "PENS-0001-BD"; total = 10_000_000_000; unassigned = 10_000_000_000; redeemed = 0; prior = 0
     instrumentHash = h "bond"; ucc1Hash = h "ucc1"; observers = [trustee]
   let cast = Cast with issuer; platform; alice; bob; trustee; outsider
   pure (cast, bond)
@@ -254,4 +254,37 @@ test_lock_cancel_redeem = script do
   submit c.issuer $ exerciseCmd rest Redeem with paymentHash = h "paid"; bondCid = bond
   [(_, b)] <- query @Bond c.issuer
   b.redeemed === 1_000_000
+  pure ()
+
+test_prior_and_replacement = script do
+  (c, bond) <- setup
+  -- A prior instrument comes off what's left to assign; only the issuer records or reverses it.
+  submitMustFail c.alice $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 5_000
+  submitMustFail c.issuer $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 10_000_000_001
+  (bond, p1) <- submit c.issuer $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 5_000
+  Some b <- queryContractId c.issuer bond
+  (b.unassigned, b.prior) === (10_000_000_000 - 5_000, 5_000)
+  length <$> query @PriorInstrument c.trustee >>= (=== 1)   -- the bond's trustee sees it
+  length <$> query @PriorInstrument c.outsider >>= (=== 0)
+  submitMustFail c.issuer $ exerciseCmd bond ReversePrior with priorCid = p1; reasonHash = "no"
+  bond <- submit c.issuer $ exerciseCmd bond ReversePrior with priorCid = p1; reasonHash = h "error"
+  Some b <- queryContractId c.issuer bond
+  (b.unassigned, b.prior) === (10_000_000_000, 0)
+  length <$> query @PriorReversed c.issuer >>= (=== 1)
+  -- An offer replaced by the issuer: a new offer, same amount, new paper; the old one's replacement kept.
+  (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
+    recordId = "PENS-0001-BD-A00001"; units = 1_000; docHash = h "a1"; ucc3Hash = None; assigneeName = "Company A"; assignee = Some c.alice
+  submitMustFail c.alice $ exerciseCmd offer SupersedeOffer with newRecordId = "PENS-0001-BD-A00002"; newHash = h "a2"; newAssigneeName = "Company A Holdings"; reasonHash = h "why"
+  o2 <- submit c.issuer $ exerciseCmd offer SupersedeOffer with newRecordId = "PENS-0001-BD-A00002"; newHash = h "a2"; newAssigneeName = "Company A Holdings"; reasonHash = h "why"
+  Some v <- queryContractId c.issuer o2
+  (v.recordId, v.units, v.instrumentHash, v.parentId) === ("PENS-0001-BD-A00002", 1_000, h "a2", Some "PENS-0001-BD-A00001")
+  -- An accepted assignment replaced by the issuer, as the register allows; not while locked.
+  o2 <- submit c.platform $ exerciseCmd o2 Bind with party = c.bob
+  a2 <- submit c.bob $ exerciseCmd o2 Accept
+  a2 <- submit c.bob $ exerciseCmd a2 Lock with kind = "pledge"; reason = "x"
+  submitMustFail c.issuer $ exerciseCmd a2 SupersedeAssignment with newRecordId = "PENS-0001-BD-A00003"; newHash = h "a3"; newAssigneeName = "D"; reasonHash = h "w"
+  a2 <- submit c.issuer $ exerciseCmd a2 Unlock with release = "release"
+  o3 <- submit c.issuer $ exerciseCmd a2 SupersedeAssignment with newRecordId = "PENS-0001-BD-A00003"; newHash = h "a3"; newAssigneeName = "D"; reasonHash = h "w"
+  length <$> query @Superseded c.issuer >>= (=== 2)
+  length <$> query @Assignment c.bob >>= (=== 0)
   pure ()

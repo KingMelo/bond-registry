@@ -1272,6 +1272,9 @@ if (APP === "issuer") {
     const savedRecords = canton.enabled ? (await pool.query("select data from assignments where id = any($1)", [reg.map((a) => a.id)])).rows.map((r) => r.data) : [];
     if (savedRecords.length)
       await canton.syncIssuerFacts(pool, savedRecords).catch((e) => console.error("Canton: issuer acts", "-", e.message));
+    // And a bond's prior instruments, when it's on Canton.
+    if (canton.enabled) for (const b of bonds)
+      await canton.syncBond(pool, b.id).catch((e) => console.error("Canton: prior instruments on", b.id, "-", e.message));
     res.json(nv);
   }));
 
@@ -1529,7 +1532,9 @@ migrate()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => console.log(`${APP} listening on ${PORT}`));
     if (APP === "issuer") {
-      const run = () => recordNoResponseWhenDue().catch((e) => console.error("Recording no response:", e.message));
+      const run = () => recordNoResponseWhenDue()
+        .then(() => (canton.enabled ? canton.catchUpNoResponse(pool) : null))
+        .catch((e) => console.error("Recording no response:", e.message));
       setTimeout(run, 5000);
       setInterval(run, Number(process.env.RESPONSE_CHECK_MS || 10 * 60_000));
     }

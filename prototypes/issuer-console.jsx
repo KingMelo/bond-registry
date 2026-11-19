@@ -464,7 +464,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     };
     let passkey;
     try { passkey = await newPasskey(rec.id); } catch (e) { return flash(e.message); }
-    setReg((r) => [rec, ...r.map((x) => (x.id === a.id ? { ...x, status: "Superseded" } : x))]);
+    setReg((r) => [rec, ...r.map((x) => (x.id === a.id ? { ...x, status: "Superseded", supersededDoc: rpDoc.hash } : x))]);
     emit(a.bond, a.id, "AssignmentReplaced", "ISSUER", rpDoc.hash);
     emit(a.bond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
     done(a.id + " replaced by " + rec.id + ". Mail the new instrument and passkey, then file the UCC-3.");

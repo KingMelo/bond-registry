@@ -8,7 +8,7 @@
 //      then replace the first browser as lost: its key stops working on Canton; the new one works.
 //
 // Needs Postgres on 127.0.0.1:54329, the apps built, and a Canton sandbox with the registry's DAR:
-//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.4.0.dar)
+//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.5.0.dar)
 // Run from the repo root: node e2e/canton-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -68,6 +68,21 @@ const iss = await call(I, "POST", "/api/issuers", { legalName: "Penson Trust", i
 const issuerId = iss.issuer?.id || (await call(I, "GET", "/api/auth/me")).issuers[0].id;
 const st = () => call(I, "GET", "/api/state?issuer=" + issuerId);
 const icommit = async (body) => call(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], reg: [], events: [], ...body });
+// As the issuer console does when someone else changed a record first: reload, redo, save again.
+const icommitFresh = async (build) => {
+  for (let i = 0; ; i++) {
+    try { return await icommit(await build()); }
+    catch (e) {
+      if (!/ 409 /.test(e.message)) throw e;
+      if (i >= 4) {
+        const evs = (await st()).events.filter((x) => x.id === A1).slice(0, 6).map((x) => x.ev + "/" + x.actor + "@" + x.t);
+        console.log("DIAG 409:", e.message, "| latest events on A1:", evs.join(", "));
+        throw e;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+};
 const TOTAL = 10_000_000_000, A1 = "PENS-0001-BD-A00001", CODE = "7KQM-R4XW-9TPH-C2NV";
 await icommit({ bonds: [{ id: "PENS-0001-BD", title: "Series A", face: TOTAL, total: TOTAL, unassigned: TOTAL, redeemed: 0, prior: [],
   registered: "Nov 8, 2026", instrumentHash: H32(), ucc1: { number: "DE-1", office: "Delaware", date: "Nov 7, 2026", hash: H32(), file: "u.pdf" } }] });
@@ -417,10 +432,10 @@ await shot(page2, "c5-replaced");
   await answerCanton(page2, /Assign \$3\.00 of PENS-0001-BD-A00001 to Company G, LLC, as PENS-0001-BD-A00001-3\./, "third assign-out");
   await until(async () => await onCanton("AssignmentOffer", A1 + "-3"));
   {
-    const regNow = (await st()).reg;
-    const kid = regNow.find((a) => a.id === A1 + "-3"), par = regNow.find((a) => a.id === A1);
-    await icommit({ reg: [{ ...kid, status: "Cancelled", cancelReason: "Disputed by the assignor's lender" }, { ...par, units: par.units + kid.units }],
-      events: [{ eid: "c" + Date.now(), bond: kid.bond, id: kid.id, t: "now", ev: "AssignOutCancelled", actor: "ISSUER", ref: "—" }] });
+    await icommitFresh(async () => { const regNow = (await st()).reg;
+      const kid = regNow.find((a) => a.id === A1 + "-3"), par = regNow.find((a) => a.id === A1);
+      return { reg: [{ ...kid, status: "Cancelled", cancelReason: "Disputed by the assignor's lender" }, { ...par, units: par.units + kid.units }],
+        events: [{ eid: "c" + Date.now(), bond: kid.bond, id: kid.id, t: "now", ev: "AssignOutCancelled", actor: "ISSUER", ref: "—" }] }; });
   }
   const back = await until(async () => await onCanton("UnitsReturned", A1 + "-3"));
   ok(!!back && back.createArgument.why === "Disputed by the assignor's lender" && !(await onCanton("AssignmentOffer", A1 + "-3")),
@@ -437,9 +452,9 @@ await shot(page2, "c5-replaced");
   const locked = await until(async () => { const a = await onCanton("Assignment", A1); return a?.createArgument.locked ? a : null; });
   ok(!!locked, "Company A's lock is on Canton, signed with its key (" + locked?.createArgument.locked + ")");
   {
-    const r = (await st()).reg.find((a) => a.id === A1);
-    await icommit({ reg: [{ ...r, status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, unlockRef: "First Bank release, signed Nov 19" }],
-      events: [{ eid: "u" + Date.now(), bond: r.bond, id: r.id, t: "now", ev: "Unlocked", actor: "ISSUER", ref: "First Bank release, signed Nov 19" }] });
+    await icommitFresh(async () => { const r = (await st()).reg.find((a) => a.id === A1);
+      return { reg: [{ ...r, status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, unlockRef: "First Bank release, signed Nov 19" }],
+        events: [{ eid: "u" + Date.now(), bond: r.bond, id: r.id, t: "now", ev: "Unlocked", actor: "ISSUER", ref: "First Bank release, signed Nov 19" }] }; });
   }
   const unlocked = await until(async () => { const a = await onCanton("Assignment", A1); return a && a.createArgument.locked == null ? a : null; });
   ok(!!unlocked, "the issuer's unlock is on Canton as its own act");
@@ -447,13 +462,59 @@ await shot(page2, "c5-replaced");
   // Redeemed by the issuer, with the payment confirmation's fingerprint.
   {
     const bondBefore = Number((await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:Bond")).createArgument.redeemed);
-    const s0 = await st(), r = s0.reg.find((a) => a.id === A1), b0 = s0.bonds[0], paid = H32();
-    await icommit({ bonds: [{ ...b0, redeemed: b0.redeemed + r.units }], reg: [{ ...r, status: "Redeemed", redeemedOn: "now", redemptionDoc: "wire.pdf", redemptionHash: paid }],
-      events: [{ eid: "r" + Date.now(), bond: r.bond, id: r.id, t: "now", ev: "Redeemed", actor: "ISSUER", ref: paid }] });
+    const paid = H32();
+    await icommitFresh(async () => { const s0 = await st(), r = s0.reg.find((a) => a.id === A1), b0 = s0.bonds[0];
+      return { bonds: [{ ...b0, redeemed: b0.redeemed + r.units }], reg: [{ ...r, status: "Redeemed", redeemedOn: "now", redemptionDoc: "wire.pdf", redemptionHash: paid }],
+        events: [{ eid: "r" + Date.now(), bond: r.bond, id: r.id, t: "now", ev: "Redeemed", actor: "ISSUER", ref: paid }] }; });
     const gone = await until(async () => !(await onCanton("Assignment", A1)), 30000);
     const bondAfter = Number((await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:Bond")).createArgument.redeemed);
     ok(gone && bondAfter === bondBefore + before, "the issuer's redemption is on Canton: A00001 is retired and the bond's redeemed total rises by its amount");
   }
+}
+
+// ---- prior instruments, and an assignment replaced by the issuer
+{
+  const bondOn = async () => (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:Bond"));
+  const ofKind = async (tpl, entry) => (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:" + tpl) && e.createArgument.entryId === entry);
+  // Recorded: its amount comes off what's left to assign; its identifier goes as a fingerprint, its holder not at all.
+  const b0 = (await st()).bonds[0], c0 = (await bondOn()).createArgument;
+  await icommit({ bonds: [{ ...b0, unassigned: b0.unassigned - 7000,
+    prior: [...(b0.prior || []), { id: "P001", ref: "PN-2024-007", holder: "Old Note Holder LLC", mail: "9407 7777", units: 7000, recordedOn: "Nov 19, 2026", reversed: false }] }] });
+  const p1 = await until(async () => await ofKind("PriorInstrument", "P001"));
+  const c1 = (await bondOn()).createArgument;
+  ok(p1?.createArgument.units === "7000" && Number(c1.prior) === Number(c0.prior) + 7000 && Number(c1.unassigned) === Number(c0.unassigned) - 7000,
+    "a prior instrument the issuer records is on Canton: $70.00 off what's left to assign, held as prior");
+  ok(/^0x[0-9a-f]{64}$/.test(p1.createArgument.identifierHash) && !JSON.stringify(await acsFor(issuerParty)).includes("Old Note Holder") && !JSON.stringify(p1).includes("PN-2024-007"),
+    "its identifier is a fingerprint there, and its holder and mail number stay in the register");
+  // Reversed: the entry stays on record as reversed, and the amount goes back.
+  const b1 = (await st()).bonds[0];
+  await icommit({ bonds: [{ ...b1, unassigned: b1.unassigned + 7000,
+    prior: b1.prior.map((p) => (p.id === "P001" ? { ...p, reversed: true, reversedReason: "Recorded against the wrong bond" } : p)) }] });
+  const r1 = await until(async () => await ofKind("PriorReversed", "P001"));
+  const c2 = (await bondOn()).createArgument;
+  ok(!!r1 && !(await ofKind("PriorInstrument", "P001")) && Number(c2.prior) === Number(c0.prior) && Number(c2.unassigned) === Number(c0.unassigned),
+    "its reversal is on Canton too: kept on record as reversed, with its reason's fingerprint, and the $70.00 back");
+
+  // An offer replaced: the new record's offer takes its place, same amount, new paper.
+  const A3 = "PENS-0001-BD-A00003", A4 = "PENS-0001-BD-A00004";
+  await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A3, passkey: "JJJJ-KKKK-LLLL-MMMM" });
+  const b2 = (await st()).bonds[0];
+  await icommit({ bonds: [{ ...b2, unassigned: b2.unassigned - 4200 }], reg: [{ origin: "Issuer", parent: null, assignor: "Penson Trust", party: "Company H",
+    contact: "H", position: "", address: "addr", status: "Issued", created: "Nov 19, 2026", accepted: null, filingRef: null, deliveryRef: null,
+    instrumentMail: null, passkeyMail: null, id: A3, bond: "PENS-0001-BD", units: 4200, issuedUnits: 4200, docHash: H32() }] });
+  await until(async () => await onCanton("AssignmentOffer", A3));
+  const newHash = H32(), memo = H32();
+  await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A4, passkey: "NNNN-PPPP-QQQQ-RRRR" });
+  const old = (await st()).reg.find((a) => a.id === A3);
+  await icommit({ reg: [{ ...old, status: "Superseded", supersededDoc: memo }, { origin: "Replacement", parent: A3, assignor: "Penson Trust (replacement)", party: "Company H Holdings",
+    contact: "H", position: "", address: "addr", status: "Issued", created: "Nov 19, 2026", accepted: null, filingRef: null, deliveryRef: null,
+    instrumentMail: null, passkeyMail: null, id: A4, bond: "PENS-0001-BD", units: 4200, issuedUnits: 4200, docHash: newHash }],
+    events: [{ eid: "rp" + Date.now(), bond: "PENS-0001-BD", id: A3, t: "now", ev: "AssignmentReplaced", actor: "ISSUER", ref: memo }] });
+  const nu = await until(async () => await onCanton("AssignmentOffer", A4));
+  const sup = (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:Superseded") && e.createArgument.recordId === A3);
+  ok(!!nu && nu.createArgument.units === "4200" && nu.createArgument.instrumentHash === newHash && nu.createArgument.parentId === A3 && !(await onCanton("AssignmentOffer", A3)),
+    "an offer the issuer replaces is replaced on Canton: " + A4 + " for the same $42.00, with its own new paper");
+  ok(sup?.createArgument.replacedBy === A4 && sup.createArgument.reasonHash === memo, "and Canton keeps what replaced it and the replacement memo's fingerprint");
 }
 
 await browser.close();

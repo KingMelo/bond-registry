@@ -100,7 +100,7 @@ const submit = async (actAs, commands) => must("POST", "/v2/commands/submit-and-
   commands: { commands, commandId: crypto.randomUUID(), userId: USER, actAs, synchronizerId: sync } });
 const created = (tx, tpl) => tx.transaction.events.map((e) => e.CreatedEvent).filter(Boolean).find((e) => e.templateId.endsWith(":" + tpl));
 let tx = await submit([issuer, platform], [{ CreateCommand: { templateId: PKG + ":Registry:Bond", createArguments: {
-  issuer, platform, bondId: "PENS-0001-BD", total: "10000000000", unassigned: "10000000000", redeemed: "0",
+  issuer, platform, bondId: "PENS-0001-BD", total: "10000000000", unassigned: "10000000000", redeemed: "0", prior: "0",
   instrumentHash: hash("bond"), ucc1Hash: hash("ucc1"), observers: [] } } }]);
 const bond = created(tx, "Bond").contractId;
 const issue = async (n) => {
