@@ -129,6 +129,16 @@ ok(stored.length === 1 && stored[0] === false, "this browser's device key is sto
 const skip = page.getByRole("button", { name: "Skip, I've done this before" });
 if (await skip.count()) await skip.click();
 await page.getByRole("button", { name: /^Accept: confirm with your passkey/ }).click();
+// Before the key signs, the page checks the transaction against its hash and says what it does.
+async function answerCanton(pg, expect, name) {
+  const dlg = pg.getByTestId("canton-ask");
+  await dlg.waitFor({ timeout: 40000 }).catch(() => {});
+  const said = (await dlg.innerText().catch(() => "")).replace(/\s+/g, " ");
+  ok(expect.test(said) && (await pg.getByText(/Checked in this browser/).count()) > 0, name + ": the page checks it and shows what it does (" + said.slice(0, 150) + ")");
+  if (SHOTS) await pg.screenshot({ path: SHOTS + "/ask-" + name.replace(/\W+/g, "-").slice(0, 30) + ".png" });
+  await pg.getByRole("button", { name: "Sign with this browser's key" }).click();
+}
+await answerCanton(page, /Accept assignment PENS-0001-BD-A00001 of \$10,000\.00 in bond PENS-0001-BD, from issuer PENS\./, "accepting");
 await page.getByText(/On Canton: in effect, signed with your own key/).waitFor({ timeout: 40000 }).catch(() => {});
 ok(await page.getByText(/On Canton: in effect, signed with your own key/).count() > 0, "accepting in the register is then signed on Canton with the device key");
 await shot(page, "c3-in-effect");
@@ -147,6 +157,88 @@ const acsFor = async (party) => {
   ok(mine[0].createArgument.units === "1000000", "and the same amount as the register ($10,000.00)");
 }
 
+// ---- an assign-out, rejected by its new assignee, and the units taken back, all signed on Canton
+const issuerParty = (await q("select party from canton_parties where name like 'issuer-PENS%'"))[0].party;
+const onCanton = async (template, recordId) => (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:" + template) && e.createArgument.recordId === recordId);
+const CHILD = A1 + "-1";
+await page.getByRole("button", { name: "Assign out" }).click();
+await page.getByLabel("Amount to assign").fill("10.40");
+await page.getByLabel("Legal name").fill("Company D, LLC");
+await page.getByLabel("Attention of").fill("M. Doe");
+await page.getByLabel("Mailing address").fill("Company D, LLC\n1 Main St\nDover, DE 19901");
+await page.locator('input[type="file"]').first().setInputFiles({ name: "assignment-to-company-d.pdf", mimeType: "application/pdf", buffer: Buffer.from("signed assignment to D") });
+await page.getByRole("button", { name: "Create the assignment" }).click();
+await answerCanton(page, /Assign \$10\.40 of PENS-0001-BD-A00001 to Company D, LLC, as PENS-0001-BD-A00001-1\. New signed paper: 0x.*You keep \$9,989\.60/, "assigning out");
+const childDoc = "0x" + crypto.createHash("sha256").update("signed assignment to D").digest("hex");
+for (let i = 0; i < 30 && !(await onCanton("AssignmentOffer", CHILD)); i++) await new Promise((r) => setTimeout(r, 1000));
+{
+  const rest = await onCanton("Assignment", A1), offer = await onCanton("AssignmentOffer", CHILD);
+  ok(rest?.createArgument.units === "998960" && rest.createArgument.carveOuts.includes(childDoc) && rest.createArgument.instrumentHash === docHash,
+    "on Canton, A00001 now holds $9,989.60, keeps its own paper and lists the new one as a carve-out");
+  ok(offer?.createArgument.units === "1040" && offer.createArgument.instrumentHash === childDoc && offer.signatories.includes(holder.party),
+    "and " + CHILD + " is an offer of $10.40 with its own paper, signed by Company A's own party");
+}
+const codeBox = page.getByText(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+await codeBox.first().waitFor({ timeout: 20000 });
+const TRANSFER = (await codeBox.first().textContent()).trim();
+await page.getByRole("button", { name: "Back to my record" }).click().catch(() => {});
+
+// Company D, on its own device: transfer code, passkey, its own Canton keys, then rejects with a reason.
+const three = await newBrowser();
+const p3 = three.page;
+await p3.goto(H + "/assignee?id=" + CHILD);
+await p3.getByLabel("Transfer code").waitFor({ timeout: 15000 });
+await p3.getByLabel("Transfer code").fill(TRANSFER);
+await p3.getByRole("button", { name: "Continue" }).click();
+await p3.getByRole("button", { name: "Set up device key" }).click();
+await p3.getByRole("button", { name: "Make my keys" }).click({ timeout: 20000 });
+await p3.getByTestId("recovery-code").waitFor({ timeout: 30000 });
+const CODE_D = (await p3.getByTestId("recovery-code").innerText()).trim().split(/\s+/);
+await p3.getByLabel(/type its last group/).fill(CODE_D[CODE_D.length - 1]);
+await p3.getByRole("button", { name: "I've kept it: continue" }).click();
+await p3.getByRole("heading", { name: "Review this assignment" }).waitFor({ timeout: 20000 });
+const skip3 = p3.getByRole("button", { name: "Skip, I've done this before" });
+if (await skip3.count()) await skip3.click();
+const holderD = (await q("select party from canton_holders where record = $1", [CHILD]))[0];
+ok(!!holderD && holderD.party !== holder.party, "Company D has its own party on Canton, with its own keys");
+{
+  const companyDSees = (await acsFor(holderD.party)).map((e) => e.createArgument.recordId);
+  ok(companyDSees.length && companyDSees.every((id) => id === CHILD), "Company D sees only its own offer on Canton, not Company A's assignment (" + companyDSees.join(", ") + ")");
+}
+await p3.getByRole("button", { name: "Reject this assignment" }).click();
+await p3.getByLabel(/Reason for rejecting/).fill("The amount on the instrument I received does not match what the register shows, and I did not agree to take this portion " +
+  "from the assignor. I have not signed anything about it and would like the issuer to review how this assignment was created. Please return it.");
+await p3.getByRole("button", { name: /^Reject: confirm with your passkey/ }).click();
+await answerCanton(p3, /Reject assignment PENS-0001-BD-A00001-1; its \$10\.40 go back to PENS-0001-BD-A00001\. Reason: .The amount on the instrument/, "rejecting");
+for (let i = 0; i < 30 && !(await onCanton("UnitsReturned", CHILD)); i++) await new Promise((r) => setTimeout(r, 1000));
+ok(!!(await onCanton("UnitsReturned", CHILD)) && !(await onCanton("AssignmentOffer", CHILD)), "on Canton the offer is gone and its $10.40 waits to be taken back");
+
+// Company A takes the units back, with its own key. First, a server that lies about the hash is caught.
+await page.reload();
+await page.getByRole("button", { name: "Sign in with your passkey" }).click({ timeout: 15000 });
+await page.getByText(/one change waiting for your key's signature/).waitFor({ timeout: 20000 }).catch(() => {});
+ok(await page.getByText(/one change waiting for your key's signature/).count() > 0, "Company A's page says a change is waiting for its key");
+// Signing in, the page offers to sign what's waiting; answering "Not now" leaves it unsigned.
+const askAppeared = page.getByTestId("canton-ask");
+await askAppeared.waitFor({ timeout: 20000 }).catch(() => {});
+ok(await askAppeared.count() > 0, "signing in, the page offers the waiting change for signature");
+await page.getByRole("button", { name: "Not now" }).click();
+await page.getByText(/Not signed on Canton yet/).waitFor({ timeout: 10000 }).catch(() => {});
+ok(!!(await onCanton("UnitsReturned", CHILD)), "\u201cNot now\u201d signs nothing: the units still wait on Canton");
+await page.route("**/api/holder/canton/act/prepare", async (route) => {
+  const res = await route.fetch(); const j = await res.json();
+  j.hash = Buffer.from(crypto.randomBytes(32)).toString("base64"); // a different transaction's hash
+  await route.fulfill({ response: res, json: j });
+});
+await page.getByRole("button", { name: "Review and sign" }).click();
+await page.getByText(/isn't this transaction's/).waitFor({ timeout: 15000 }).catch(() => {});
+ok(await page.getByText(/isn't this transaction's/).count() > 0 && !(await askAppeared.count()), "a hash that isn't the transaction's is caught in the page: nothing is shown or signed");
+await page.unroute("**/api/holder/canton/act/prepare");
+await page.getByRole("button", { name: "Review and sign" }).click();
+await answerCanton(page, /Take back the units of a rejected assign-out into PENS-0001-BD-A00001, which then holds \$10,000\.00/, "taking back");
+for (let i = 0; i < 30 && (await onCanton("Assignment", A1))?.createArgument.units !== "1000000"; i++) await new Promise((r) => setTimeout(r, 1000));
+ok((await onCanton("Assignment", A1))?.createArgument.units === "1000000" && !(await onCanton("UnitsReturned", CHILD)),
+  "on Canton, A00001 holds $10,000.00 again, as in the register");
 // An AssignOut on Canton, signed by whichever key we're testing: the way to see who can still act.
 const sync = (await canton("GET", "/v2/state/connected-synchronizers")).body.connectedSynchronizers[0].synchronizerId;
 async function tryActWith(pageWithKey, n) {
@@ -196,9 +288,9 @@ await page2.getByText(/This browser can now act on/).waitFor({ timeout: 40000 })
 let keys = (await q("select keys from canton_holders where record = $1", [A1]))[0].keys;
 ok(keys.filter((k) => k.role === "device").length === 2, "with the recovery code, the second browser adds its own key; the first keeps its own (" + keys.length + " keys)");
 await shot(page2, "c4-added");
-let r = await tryActWith(page, 1);
+let r = await tryActWith(page, 5);
 ok(r.ok, "the first browser's key still acts on Canton (" + r.status + ")");
-r = await tryActWith(page2, 2);
+r = await tryActWith(page2, 6);
 ok(r.ok, "and so does the second's (" + r.status + ")");
 
 // The first browser is lost: from the second, replace it.
@@ -208,9 +300,9 @@ await page2.getByRole("button", { name: "Replace my lost device" }).click();
 await page2.getByText(/lost device's key no longer works/).waitFor({ timeout: 40000 }).catch(() => {});
 keys = (await q("select keys from canton_holders where record = $1", [A1]))[0].keys;
 ok(keys.length === 2 && keys.filter((k) => k.role === "device").length === 1, "replacing the lost device leaves the recovery key and one new device key");
-r = await tryActWith(page, 3);
+r = await tryActWith(page, 7);
 ok(!r.ok, "the lost browser's key no longer works on Canton, whoever has it now (" + r.status + ")");
-r = await tryActWith(page2, 4);
+r = await tryActWith(page2, 8);
 ok(r.ok, "the second browser's new key does (" + r.status + ")");
 await shot(page2, "c5-replaced");
 

@@ -5,11 +5,12 @@
 //   - when the assignee sets up, their browser makes a device key (non-extractable) and a recovery
 //     key (shown once as a code, then forgotten). The assignee's Canton party is rooted in the
 //     recovery key; the device key may sign and manage the party's keys. The node holds neither.
-//   - the assignee's acceptance in the register is then signed on Canton by their device key;
+//   - the assignee's acts in the register (accepting, rejecting, assigning out, taking back units
+//     from a rejected assign-out) are then signed on Canton with their device key;
 //   - with the recovery code, a new device can be added, or a lost one replaced.
 //
 // Every topology change and transaction is built by the node and signed in the browser; this
-// module only carries hashes and signatures. Settings:
+// module only carries them. The page checks each transaction against its hash before signing. Settings:
 //   CANTON_JSON_URL   the node's JSON Ledger API, e.g. http://localhost:7575
 //   CANTON_ADMIN      its admin API (gRPC), e.g. localhost:6866
 //   CANTON_PROTOS     a folder with the admin API's .proto files (from the Daml SDK's canton.jar)
@@ -169,13 +170,37 @@ const stepOf = (id, kind) => {
 
 export const holderOf = async (pool, recordId) => (await pool.query("select party, keys from canton_holders where record = $1", [recordId])).rows[0] || null;
 
-/** What the assignee's page shows: whether this record is on Canton, its party and keys, and anything to sign. */
+/**
+ * What the assignee's page shows: whether this record is on Canton, its party and keys, and what's
+ * waiting for their key: acts already made in the register that Canton doesn't have yet.
+ */
 export async function status(pool, rec) {
   const ref = await refOf(pool, rec.id), holder = await holderOf(pool, rec.id);
   return { enabled: true, onCanton: !!ref, contract: ref?.template || null, party: holder?.party || null,
     keys: (holder?.keys || []).map(({ fp, role, label, added }) => ({ fp, role, label, added })),
-    toSign: ref?.template === "AssignmentOffer" && holder && rec.status === "Accepted" ? ["accept"] : [] };
+    toSign: holder ? await waiting(pool, rec, ref) : [] };
 }
+
+// The register's acts on this record (and the assign-outs it made) not yet on Canton, in order.
+async function waiting(pool, rec, ref) {
+  const out = [];
+  if (ref?.template === "AssignmentOffer" && rec.status === "Accepted") out.push({ kind: "accept" });
+  if (ref?.template === "AssignmentOffer" && rec.status === "Rejected") out.push({ kind: "reject" });
+  if (ref?.template === "Assignment") {
+    const kids = (await pool.query(`select data from assignments where data->>'parent' = $1 and data->>'origin' = 'AssignOut' order by created_at`, [rec.id])).rows.map((r) => r.data);
+    for (const c of kids) {
+      const cref = await refOf(pool, c.id);
+      if (!cref) out.push({ kind: "assignOut", child: c.id });
+      else if (cref.template === "UnitsReturned") out.push({ kind: "reclaim", child: c.id });
+    }
+  }
+  return out;
+}
+const child = async (pool, rec, id) => {
+  const c = (await pool.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+  if (!c || c.parent !== rec.id || c.origin !== "AssignOut") throw new CantonError("That isn't one of your assign-outs.", 403);
+  return c;
+};
 
 // 1. The browser sends the public halves of its new recovery and device keys.
 export async function onboardStart(pool, rec, { recoverySpki, deviceSpki, deviceLabel }) {
@@ -219,34 +244,79 @@ export async function onboardFinish(pool, rec, { signatures }) {
 
 // ------------------------------------------------------------------ the assignee's acts
 
-/** The node prepares the assignee's acceptance; their device key signs its hash. */
-export async function prepareAccept(pool, rec) {
-  const ref = await refOf(pool, rec.id), holder = await holderOf(pool, rec.id);
-  if (ref?.template !== "AssignmentOffer" || !holder) throw new CantonError("There's nothing to sign on Canton for this assignment.", 409);
-  if (rec.status !== "Accepted") throw new CantonError("Accept it in the register first.", 409);
-  const p = await json("POST", "/v2/interactive-submission/prepare", { userId: USER, commandId: crypto.randomUUID(), actAs: [holder.party], readAs: [],
-    synchronizerId: await sync(), verboseHashing: false, packageIdSelectionPreference: [],
-    commands: [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "Accept", choiceArgument: {} } }] });
-  step(rec.id + ":accept", { kind: "accept", p, party: holder.party });
-  return { hash: p.preparedTransactionHash };
+// The issuer's party sees every contract on its bonds: the place to look for what an act created.
+async function issuerPartyOf(pool, bondId) {
+  const code = (await pool.query("select i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [bondId])).rows[0]?.code;
+  return localParty(pool, "issuer-" + code);
+}
+async function findContract(party, template, recordId) {
+  const end = (await json("GET", "/v2/state/ledger-end")).offset;
+  const acs = await json("POST", "/v2/state/active-contracts", { activeAtOffset: end, eventFormat: { verbose: false,
+    filtersByParty: { [party]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } } });
+  return (Array.isArray(acs) ? acs : []).map((x) => x.contractEntry?.JsActiveContract?.createdEvent)
+    .find((e) => e?.templateId.endsWith(":Registry:" + template) && e.createArgument?.recordId === recordId) || null;
 }
 
-export async function executeAccept(pool, rec, { signature, signedBy }) {
-  const s = stepOf(rec.id + ":accept", "accept");
+/**
+ * The node prepares one of the assignee's acts, each matching what the register already holds:
+ *   accept / reject   their offer (an assignment they were given)
+ *   assignOut         a portion of their assignment, to the assign-out saved in the register
+ *   reclaim           units back from an assign-out of theirs that was rejected
+ * The page gets the transaction itself as well as its hash, so it can check one against the other.
+ */
+export async function prepareAct(pool, rec, { kind, child: childId }) {
+  const ref = await refOf(pool, rec.id), holder = await holderOf(pool, rec.id);
+  if (!holder) throw new CantonError("This assignment has no keys on Canton yet.", 409);
+  const due = await waiting(pool, rec, ref);
+  if (!due.some((d) => d.kind === kind && (d.child || null) === (childId || null))) throw new CantonError("There's nothing like that to sign on Canton for this assignment.", 409);
+  let command;
+  if (kind === "accept") command = { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "Accept", choiceArgument: {} };
+  if (kind === "reject") command = { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "Reject", choiceArgument: { reason: rec.rejectionReason || "" } };
+  if (kind === "assignOut") {
+    const c = await child(pool, rec, childId);
+    command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "AssignOut", choiceArgument: {
+      childId: c.id, childUnits: String(c.issuedUnits ?? c.units), childHash: c.docHash, childName: c.party || "", childParty: null } };
+  }
+  if (kind === "reclaim") {
+    await child(pool, rec, childId);
+    command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "ReclaimToAssignment", choiceArgument: { returnedCid: (await refOf(pool, childId)).cid } };
+  }
+  const p = await json("POST", "/v2/interactive-submission/prepare", { userId: USER, commandId: crypto.randomUUID(), actAs: [holder.party], readAs: [],
+    synchronizerId: await sync(), verboseHashing: false, packageIdSelectionPreference: [], commands: [{ ExerciseCommand: command }] });
+  step(rec.id + ":act", { kind: "act", act: kind, child: childId || null, p, party: holder.party });
+  return { kind, child: childId || null, hash: p.preparedTransactionHash, prepared: p.preparedTransaction };
+}
+
+export async function executeAct(pool, rec, { signature, signedBy }) {
+  const s = stepOf(rec.id + ":act", "act");
   const holder = await holderOf(pool, rec.id);
   if (!holder.keys.some((k) => k.fp === signedBy)) throw new CantonError("That key isn't one of this assignment's keys.", 403);
   await json("POST", "/v2/interactive-submission/executeAndWait", { preparedTransaction: s.p.preparedTransaction, hashingSchemeVersion: s.p.hashingSchemeVersion,
     userId: USER, submissionId: crypto.randomUUID(), deduplicationPeriod: { Empty: {} },
     partySignatures: { signatures: [{ party: s.party, signatures: [{ format: "SIGNATURE_FORMAT_DER", signature, signedBy, signingAlgorithmSpec: ALGO }] }] } });
-  steps.delete(rec.id + ":accept");
-  // The new Assignment's contract, as the assignee's party sees it.
-  const end = (await json("GET", "/v2/state/ledger-end")).offset;
-  const acs = await json("POST", "/v2/state/active-contracts", { activeAtOffset: end, eventFormat: { verbose: false,
-    filtersByParty: { [s.party]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } } });
-  const mine = (Array.isArray(acs) ? acs : []).map((x) => x.contractEntry?.JsActiveContract?.createdEvent)
-    .find((e) => e?.templateId.endsWith(":Registry:Assignment") && e.createArgument?.recordId === rec.id);
-  if (mine) await setRef(pool, rec.id, "Assignment", mine.contractId);
-  return { contract: mine ? "Assignment" : null };
+  steps.delete(rec.id + ":act");
+  // What the act created, as the issuer's party sees it, so the register knows where each record now is.
+  const issuer = await issuerPartyOf(pool, rec.bond);
+  if (s.act === "accept" || s.act === "assignOut" || s.act === "reclaim") {
+    const mine = await findContract(issuer, "Assignment", rec.id);
+    if (mine) await setRef(pool, rec.id, "Assignment", mine.contractId);
+  }
+  if (s.act === "assignOut") {
+    const offer = await findContract(issuer, "AssignmentOffer", s.child);
+    if (offer) await setRef(pool, s.child, "AssignmentOffer", offer.contractId);
+  }
+  if (s.act === "reclaim") await setRef(pool, s.child, "Closed", "-");
+  if (s.act === "reject") {
+    const back = await findContract(issuer, "UnitsReturned", rec.id);
+    if (back && back.createArgument.parentId == null) {
+      // An issuer-made assignment: its units go straight back to the bond (the issuer's own act).
+      const bond = await refOf(pool, rec.bond);
+      const tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "ReclaimToBond", choiceArgument: { returnedCid: back.contractId } } }]);
+      await setRef(pool, rec.bond, "Bond", createdOf(tx, "Bond").contractId);
+      await setRef(pool, rec.id, "Closed", "-");
+    } else if (back) await setRef(pool, rec.id, "UnitsReturned", back.contractId); // its assignor reclaims them
+  }
+  return { done: s.act };
 }
 
 // ------------------------------------------------------------------ recovery and a second device

@@ -910,8 +910,8 @@ if (APP === "holder") {
     { recoverySpki: b64(b.recoverySpki), deviceSpki: b64(b.deviceSpki), deviceLabel: String(b.deviceLabel || "").slice(0, 60) })));
   app.post("/api/holder/canton/onboard/allocate", cantonCall((rec, b) => canton.onboardAllocate(pool, rec, { recoverySignature: b64(b.recoverySignature) })));
   app.post("/api/holder/canton/onboard/finish", cantonCall((rec, b) => canton.onboardFinish(pool, rec, { signatures: b.signatures || [] })));
-  app.post("/api/holder/canton/accept/prepare", cantonCall((rec) => canton.prepareAccept(pool, rec)));
-  app.post("/api/holder/canton/accept/execute", cantonCall((rec, b) => canton.executeAccept(pool, rec, { signature: b64(b.signature), signedBy: String(b.signedBy || "") })));
+  app.post("/api/holder/canton/act/prepare", cantonCall((rec, b) => canton.prepareAct(pool, rec, { kind: String(b.kind || ""), child: b.child ? String(b.child) : null })));
+  app.post("/api/holder/canton/act/execute", cantonCall((rec, b) => canton.executeAct(pool, rec, { signature: b64(b.signature), signedBy: String(b.signedBy || "") })));
   app.post("/api/holder/canton/keys/start", cantonCall((rec, b) => canton.keysStart(pool, rec,
     { mode: b.mode, newSpki: b64(b.newSpki), label: String(b.label || "").slice(0, 60) })));
   app.post("/api/holder/canton/keys/finish", cantonCall((rec, b) => canton.keysFinish(pool, rec, { signatures: b.signatures || [] })));

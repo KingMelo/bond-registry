@@ -12,22 +12,85 @@ const deviceLabel = () => {
 };
 const shortFp = (fp) => (fp ? fp.slice(4, 10) + "…" + fp.slice(-4) : "");
 
-/** Signs the assignee's acceptance on Canton with this browser's key, once the register has it. */
-export async function signAcceptOnCanton(recordId, token) {
-  for (let i = 0; i < 20; i++) {
-    const st = await api.canton("status", { token });
-    if (!st.enabled || !st.party) return { skipped: true };
-    if (st.contract === "Assignment") return { done: true };
-    if (st.toSign.includes("accept")) {
-      const key = await deviceKey(recordId);
-      if (!key?.fp) return { noKey: true };
-      const { hash } = await api.canton("accept/prepare", { token });
-      await api.canton("accept/execute", { token, signature: await signWithDeviceKey(recordId, hash), signedBy: key.fp });
-      return { done: true };
-    }
-    await new Promise((r) => setTimeout(r, 1000)); // the register's save is still on its way
+const dollars = (cents) => "$" + (Number(cents || 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const short = (h) => (h && h.length > 20 ? h.slice(0, 10) + "…" + h.slice(-6) : h);
+
+/** The checked transaction in plain words: one line per thing it does. */
+export function sayActs(summary) {
+  const lines = [];
+  const made = (tpl) => summary.acts.filter((a) => a.kind === "create" && a.template === tpl);
+  for (const a of summary.acts) {
+    if (a.kind !== "exercise") continue;
+    if (a.template === "AssignmentOffer" && a.choice === "Accept") {
+      const asg = made("Assignment")[0]?.args || {};
+      lines.push("Accept assignment " + asg.recordId + " of " + dollars(asg.units) + " in bond " + asg.bondId + ", from " + asg.assignor + ".");
+      lines.push("Signed paper on record: " + short(asg.instrumentHash) + ".");
+    } else if (a.template === "AssignmentOffer" && a.choice === "Reject") {
+      const back = made("UnitsReturned")[0]?.args || {};
+      lines.push("Reject assignment " + back.recordId + "; its " + dollars(back.units) + " go back to " + (back.parentId !== "none" ? back.parentId : "the bond") + ".");
+      lines.push("Reason: \u201c" + String(a.args.reason || "").slice(0, 120) + (String(a.args.reason || "").length > 120 ? "…" : "") + "\u201d");
+    } else if (a.template === "Assignment" && a.choice === "AssignOut") {
+      const rest = made("Assignment")[0]?.args || {};
+      lines.push("Assign " + dollars(a.args.childUnits) + " of " + rest.recordId + " to " + a.args.childName + ", as " + a.args.childId + ".");
+      lines.push("New signed paper: " + short(a.args.childHash) + ". You keep " + dollars(rest.units) + ".");
+    } else if (a.template === "Assignment" && a.choice === "ReclaimToAssignment") {
+      const rest = made("Assignment")[0]?.args || {};
+      lines.push("Take back the units of a rejected assign-out into " + rest.recordId + ", which then holds " + dollars(rest.units) + ".");
+    } else if (a.choice !== "Archive") lines.push(a.choice + " on " + a.template + ".");
   }
-  return { pending: true };
+  return lines;
+}
+const SAY_KIND = { accept: "your acceptance", reject: "your rejection", assignOut: "your assign-out", reclaim: "taking back the units" };
+
+/**
+ * Signs, one by one, the acts the register has and Canton doesn't. Each transaction is checked
+ * against its hash in this page first, then shown to the assignee (ask), and only signed if they agree.
+ * `wait`: poll a little while for an act the register is still saving.
+ */
+export async function signWaiting(recordId, token, ask, { wait = false } = {}) {
+  let signed = 0;
+  for (let i = 0; i < (wait ? 15 : 1) + 20; i++) {
+    const st = await api.canton("status", { token });
+    if (!st.enabled || !st.party) return { signed, skipped: true };
+    const next = st.toSign?.[0];
+    if (!next) {
+      if (wait && !signed && i < 15) { await new Promise((r) => setTimeout(r, 1000)); continue; }
+      return { signed };
+    }
+    const key = await deviceKey(recordId);
+    if (!key?.fp || !(st.keys || []).some((k) => k.fp === key.fp)) return { signed, noKey: true };
+    const p = await api.canton("act/prepare", { token, kind: next.kind, child: next.child });
+    const { check } = await import("../src/canton-verify.js"); // loaded only when there's something to sign
+    const checked = check(p.prepared, p.hash);
+    if (!checked.ok) throw new Error(checked.reason);
+    if (!(await ask({ kind: next.kind, title: "Sign " + SAY_KIND[next.kind] + " on Canton", lines: sayActs(checked), by: checked.actAs }))) return { signed, declined: true };
+    await api.canton("act/execute", { token, signature: await signWithDeviceKey(recordId, p.hash), signedBy: key.fp });
+    signed++;
+  }
+  return { signed };
+}
+
+/** The question before each signature: what it does, checked here, and Sign / Not now. */
+export function CantonAsk({ question, onAnswer, ui }) {
+  const { T, serif, Button } = ui;
+  return (
+    <div role="dialog" aria-label={question.title} style={{ position: "fixed", inset: 0, zIndex: 1100, background: "rgba(20,24,30,0.45)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div style={{ background: T.paper, width: "100%", maxWidth: 520, padding: "20px 18px 22px", borderRadius: "4px 4px 0 0" }}>
+        <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, marginBottom: 8 }}>{question.title}</div>
+        <div data-testid="canton-ask" style={{ border: "1px solid " + T.rule, borderRadius: 2, background: T.white, padding: "10px 12px", fontSize: 14, color: T.ink, lineHeight: 1.6 }}>
+          {question.lines.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+        <div style={{ fontSize: 12, color: T.inkSoft, margin: "8px 0 14px", lineHeight: 1.5 }}>
+          Checked in this browser: this is exactly the transaction your key would sign, acting as {question.by.map((b) => (/-A\d{5}/.test(b) ? "the holder of " + b : b)).join(", ")}.
+        </div>
+        <div className="space-y-2">
+          <Button onClick={() => onAnswer(true)}>Sign with this browser's key</Button>
+          <Button variant="quiet" onClick={() => onAnswer(false)}>Not now</Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // The three steps of a first setup, all signed here: the recovery key makes the party, then the

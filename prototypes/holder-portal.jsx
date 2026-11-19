@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
 import { nextChildId } from "../src/registry.jsx";
-import { CantonSetup, CantonKeys, signAcceptOnCanton } from "./canton-keys-ui.jsx";
+import { CantonSetup, CantonKeys, CantonAsk, signWaiting } from "./canton-keys-ui.jsx";
 import { printPacket } from "../src/print-packet.js";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, shortHash, effectiveDate } from "../src/registry.jsx";
 
@@ -519,6 +519,7 @@ function VerifyRegister({ reg, bonds = [], events = [], issuerOf }) {
 
 // What the Canton screens borrow from this page's look.
 const cantonUi = { T, serif, sans, Button, Field, Rows, Note };
+const cantonLink = { color: T.ink, textDecoration: "underline", textUnderlineOffset: 2, background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 13 };
 
 export default function HolderPortal() {
   // The signed-in record's session and device key. Every save is signed on the device first: the
@@ -539,11 +540,21 @@ export default function HolderPortal() {
     const st = await loadCanton();
     if (st?.enabled && st.onCanton && !st.party) return setView("cantonSetup");
     setView(rec.status === "Issued" ? "claim" : "position");
-    if (st?.enabled && st.party && rec.status === "Accepted") signAcceptOnCanton(rec.id, session.current.token).then(cantonOutcome).catch((e) => flash(e.message));
+    if (st?.enabled && st.party && st.toSign?.length) runCanton();
   };
-  const cantonOutcome = (r) => {
-    if (r?.done) loadCanton();
-    if (r?.noKey) flash("Signed in the register. To sign it on Canton too, add this browser with your recovery code.");
+  // Acts the register has and Canton doesn't, signed one by one with this browser's key: each is
+  // checked against its hash here and shown to the assignee first (cantonAsk), never signed blind.
+  const [cantonAsk, setCantonAsk] = useState(null); // { question, resolve }
+  const ask = (question) => new Promise((resolve) => setCantonAsk({ question, resolve }));
+  const runCanton = (opts) => {
+    const s = session.current;
+    if (!s) return;
+    signWaiting(s.id, s.token, ask, opts).then((r) => {
+      loadCanton();
+      if (r.noKey) flash("Saved in the register. To sign it on Canton too, add this browser with your recovery code.");
+      else if (r.declined) flash("Not signed on Canton yet. You can sign it from your assignment whenever you're ready.");
+      else if (r.signed) flash(r.signed === 1 ? "Signed on Canton with your key." : "Signed " + r.signed + " changes on Canton with your key.");
+    }).catch((e) => { loadCanton(); flash("Canton: " + e.message); });
   };
   const [myMail, setMyMail] = useState(null); // the signed-in record's certified mail number(s)
   // The readable numbers behind the register's hashes: the UCC-3 filing number is public; the
@@ -804,7 +815,7 @@ export default function HolderPortal() {
     emit(open.bond, open.id, "Acknowledged", "RELAYER");
     setView("position");
     flash("Confirmed. The assignment is in effect.");
-    if (canton?.enabled && canton.party) signAcceptOnCanton(open.id, session.current.token).then(cantonOutcome).catch((e) => flash("Canton: " + e.message));
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   // The only way to refuse an assignment: explicitly, with a reason. The amount goes back to
@@ -822,6 +833,7 @@ export default function HolderPortal() {
     setRjReason("");
     setView(null); setOpenId(null);
     flash("Rejected. " + usd(open.units) + (open.origin === "AssignOut" ? " goes back to the assignor's record." : " goes back to the bond."));
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   function assignOut() {
@@ -868,6 +880,7 @@ export default function HolderPortal() {
     setChildIssued(child); setChildCode(null);
     setAUnits(""); setAParty(""); setAContact(""); setAPosition(""); setAAddress(""); setADoc(null);
     setView("childIssued");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
   // The holder records a UCC-3: on their own record, or on an assign-out they made. Saved like any
@@ -1169,10 +1182,12 @@ export default function HolderPortal() {
             {canton?.enabled && canton.party && session.current && (
               <>
                 <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }} data-testid="canton-standing">
-                  On Canton: {canton.contract === "Assignment" ? "in effect, signed with your own key" : canton.toSign?.length ? "waiting for your key's signature" : "offered to you"}
+                  On Canton: {canton.toSign?.length ? (canton.toSign.length === 1 ? "one change" : canton.toSign.length + " changes") + " waiting for your key's signature"
+                    : canton.contract === "Assignment" ? "in effect, signed with your own key" : "offered to you"}
+                  {canton.toSign?.length ? <> · <button onClick={() => runCanton()} style={{ ...cantonLink }}>Review and sign</button></> : null}
                 </div>
                 <CantonKeys recordId={open.id} token={session.current.token} status={canton} ui={cantonUi}
-                  onChanged={async (m) => { flash(m); const st = await loadCanton(); if (st?.toSign?.includes("accept")) signAcceptOnCanton(open.id, session.current.token).then(cantonOutcome); }} />
+                  onChanged={async (m) => { flash(m); const st = await loadCanton(); if (st?.toSign?.length) runCanton(); }} />
               </>
             )}
 
@@ -1508,6 +1523,10 @@ export default function HolderPortal() {
             Confirm on your device to sign this change. It isn't saved until you do.
           </div>
         </div>
+      )}
+      {cantonAsk && (
+        <CantonAsk question={cantonAsk.question} ui={cantonUi}
+          onAnswer={(yes) => { const r = cantonAsk.resolve; setCantonAsk(null); r(yes); }} />
       )}
       {toast && (
         <div className="fixed left-0 right-0 flex justify-center px-4" style={{ bottom: 18, zIndex: 60 }}>

@@ -78,19 +78,27 @@ at setup for them to print and keep offline, a second device of theirs (each dev
 
 ## The register and Canton together (Nov 19, 2026)
 
-`e2e/canton-e2e.mjs` runs the registry's three servers against the node, with a browser playing the
-assignee. All 21 checks pass:
+`e2e/canton-e2e.mjs` runs the registry's three servers against the node, with browsers playing the
+assignees. All 34 checks pass:
 
 - Issuing in the register puts the bond and an offer on Canton.
 - After the passkey, the assignee makes their keys: a device key the browser stores non-extractable,
   and a recovery code shown once (14 groups of four, with a check so typos are caught), which they
   must confirm by typing its last group. The server keeps only public halves; the code never reaches it.
-- Accepting in the register is then signed on Canton with the device key; Canton holds the
-  Assignment with the same amount and the signed paper's fingerprint.
+- Every act made in the register is then signed on Canton with the device key: accepting,
+  assigning out (the remainder keeps its paper and lists the new one), a new assignee rejecting
+  with a reason, and the assignor taking the units back. Each new assignee sets up their own keys
+  and sees only their own contracts.
+- **Before each signature the page checks the transaction itself** (`src/canton-verify.js`): it
+  decodes the prepared transaction, rebuilds Canton's hash from it (hashing scheme V2), and only
+  then shows in plain words what it does ("Assign $10.40 of … to Company D, LLC, as …-1. New signed
+  paper: 0x93d2…. You keep $9,989.60."). The key signs only after the assignee chooses Sign. A
+  server that sends the hash of a different transaction is caught; "Not now" signs nothing.
 - On a second browser (passkey synced to it), the recovery code adds that browser's own key; both work.
 - "Lost a device? Replace it" with the code drops every other device key: the lost browser's key is
   refused by Canton from then on, the new one works. The register is unaffected throughout.
 
-Not mirrored yet: assign-outs, rejections, mailings, receipts, UCC-3s after issuance, and records
-issued before the mirror is switched on. Before production, the page should also show the assignee
-what each Canton hash they sign stands for, rather than trusting the server's word for it.
+Not mirrored yet: mailings, delivery receipts and UCC-3s after issuance, locks, redemption, deemed
+acceptance, and records issued before the mirror is switched on. The hash check covers the value and
+node kinds these contracts produce (records, text, numbers, parties, optionals, lists, contract IDs,
+creates, exercises, fetches); a transaction with anything else is refused rather than signed.
