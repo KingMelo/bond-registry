@@ -1,0 +1,180 @@
+-- The design's rules, checked on Canton's own engine: paper, units, control and privacy.
+module Tests.RegistryTest where
+
+import Daml.Script
+import DA.Assert
+import DA.Time (days)
+import qualified DA.Text as T
+import Registry
+
+h : Text -> Text   -- a stand-in SHA-256 for a named document
+h name = "0x" <> T.implode (replicate (64 - T.length tag) "0") <> tag
+  where tag = T.implode (take 8 (filter (`elem` T.explode "0123456789abcdef") (T.explode (T.asciiToLower name)))) <> "a1"
+
+longReason : Text
+longReason = "The amount on the instrument I received does not match what the register shows, and I did not agree to take this " <>
+  "portion from the assignor. I have not signed anything about it and would like the issuer to review how this assignment was created. Please return it."
+
+data Cast = Cast with issuer, platform, alice, bob, trustee, outsider : Party
+
+setup : Script (Cast, ContractId Bond)
+setup = do
+  issuer <- allocateParty "Penson Trust"
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Company A"
+  bob <- allocateParty "Company D"
+  trustee <- allocateParty "Trustee"
+  outsider <- allocateParty "Outsider"
+  bond <- submitMulti [issuer, platform] [] $ createCmd Bond with
+    issuer; platform; bondId = "PENS-0001-BD"; total = 10_000_000_000; unassigned = 10_000_000_000; redeemed = 0
+    instrumentHash = h "bond"; ucc1Hash = h "ucc1"; nextAssignment = 1; observers = [trustee]
+  let cast = Cast with issuer; platform; alice; bob; trustee; outsider
+  pure (cast, bond)
+
+-- Issue A00001 to someone not on Canton yet, mail it, then they claim it, record nothing else, and accept.
+issueAndAccept : Cast -> ContractId Bond -> Script (ContractId Bond, ContractId Assignment)
+issueAndAccept c bond = do
+  (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
+    units = 1_000_000; docHash = h "a00001"; ucc3Hash = Some (h "ucc3a"); assigneeName = "Company A"; assignee = None
+  now <- getTime
+  offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now
+  -- After the transfer code and their key, the platform names their party on the offer.
+  offer <- submit c.platform $ exerciseCmd offer Bind with party = c.alice
+  a1 <- submit c.alice $ exerciseCmd offer Accept
+  pure (bond, a1)
+
+test_paper_and_units = script do
+  (c, bond) <- setup
+  -- No paper, no record.
+  submitMustFail c.issuer $ exerciseCmd bond Issue with
+    units = 1; docHash = "not a hash"; ucc3Hash = None; assigneeName = "X"; assignee = None
+  -- Never more than is left to assign.
+  submitMustFail c.issuer $ exerciseCmd bond Issue with
+    units = 10_000_000_001; docHash = h "big"; ucc3Hash = None; assigneeName = "X"; assignee = None
+  -- Only the issuer issues.
+  submitMustFail c.platform $ exerciseCmd bond Issue with
+    units = 1; docHash = h "x"; ucc3Hash = None; assigneeName = "X"; assignee = None
+  (bond, a1) <- issueAndAccept c bond
+  Some b <- queryContractId c.issuer bond
+  b.unassigned === 10_000_000_000 - 1_000_000
+  Some a <- queryContractId c.alice a1
+  a.recordId === "PENS-0001-BD-A00001"
+  a.instrumentHash === h "a00001"
+  pure ()
+
+test_control = script do
+  (c, bond) <- setup
+  (bond, a1) <- issueAndAccept c bond
+  -- Nobody else acts on Company A's assignment: not the issuer, not the platform.
+  submitMustFail c.issuer $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1; childHash = h "x"; childName = "X"; childParty = None
+  submitMustFail c.platform $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1; childHash = h "x"; childName = "X"; childParty = None
+  -- The issuer can't archive it either: archiving needs every signatory, Company A included.
+  submitMustFail c.issuer $ archiveCmd a1
+  pure ()
+
+test_partial_assignment = script do
+  (c, bond) <- setup
+  (bond, a1) <- issueAndAccept c bond
+  -- An assign-out needs its own signed paper, and the one-dash number.
+  submitMustFail c.alice $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1040; childHash = "none"; childName = "Company D"; childParty = None
+  submitMustFail c.alice $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1-1"; childUnits = 1040; childHash = h "d1"; childName = "Company D"; childParty = None
+  submitMustFail c.alice $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1_000_001; childHash = h "d1"; childName = "Company D"; childParty = None
+  (rest, offer) <- submit c.alice $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1040; childHash = h "d1"; childName = "Company D"; childParty = None
+  -- The remainder keeps its original paper and lists the carve-out: original minus carve-outs = held.
+  Some r <- queryContractId c.alice rest
+  r.units === 1_000_000 - 1040
+  r.instrumentHash === h "a00001"
+  r.carveOuts === [h "d1"]
+  Some o <- queryContractId c.alice offer
+  o.instrumentHash === h "d1"
+  o.parentId === Some "PENS-0001-BD-A00001"
+  -- The assignor records the assign-out's UCC-3 and mailing; then Company D claims it and accepts.
+  offer <- submit c.alice $ exerciseCmd offer RecordUcc3 with filedHash = h "ucc3d"
+  offer <- submit c.platform $ exerciseCmd offer Bind with party = c.bob
+  d1 <- submit c.bob $ exerciseCmd offer Accept
+  -- Each holder controls only their own portion.
+  submitMustFail c.alice $ exerciseCmd d1 AssignOut with
+    childId = "PENS-0001-BD-A00001-2"; childUnits = 1; childHash = h "x"; childName = "X"; childParty = None
+  submitMustFail c.bob $ exerciseCmd rest AssignOut with
+    childId = "PENS-0001-BD-A00001-2"; childUnits = 1; childHash = h "x"; childName = "X"; childParty = None
+  -- It repeats under the same root, one dash: A00001-2 from Company D's portion.
+  (_, o2) <- submit c.bob $ exerciseCmd d1 AssignOut with
+    childId = "PENS-0001-BD-A00001-2"; childUnits = 40; childHash = h "d2"; childName = "Company E"; childParty = None
+  Some o2v <- queryContractId c.bob o2
+  o2v.parentId === Some "PENS-0001-BD-A00001-1"
+  pure ()
+
+test_reject_returns_units = script do
+  (c, bond) <- setup
+  (bond, a1) <- issueAndAccept c bond
+  (rest, offer) <- submit c.alice $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1040; childHash = h "d1"; childName = "Company D"; childParty = Some c.bob
+  submitMustFail c.bob $ exerciseCmd offer Reject with reason = "Not the amount we agreed."
+  submitMustFail c.alice $ exerciseCmd offer Reject with reason = longReason   -- only the assignee rejects
+  back <- submit c.bob $ exerciseCmd offer Reject with reason = longReason
+  -- Company D never saw Company A's assignment; Company A reclaims the units from the returned record.
+  rest <- submit c.alice $ exerciseCmd rest ReclaimToAssignment with returnedCid = back
+  Some r <- queryContractId c.alice rest
+  r.units === 1_000_000
+  -- An issuer-made offer that's rejected goes back to the bond.
+  (bond, o) <- submit c.issuer $ exerciseCmd bond Issue with
+    units = 500; docHash = h "a2"; ucc3Hash = None; assigneeName = "Company D"; assignee = Some c.bob
+  back <- submit c.bob $ exerciseCmd o Reject with reason = longReason
+  bond <- submit c.issuer $ exerciseCmd bond ReclaimToBond with returnedCid = back
+  Some b <- queryContractId c.issuer bond
+  b.unassigned === 10_000_000_000 - 1_000_000
+  pure ()
+
+test_privacy = script do
+  (c, bond) <- setup
+  (bond, a1) <- issueAndAccept c bond
+  (rest, offer) <- submit c.alice $ exerciseCmd a1 AssignOut with
+    childId = "PENS-0001-BD-A00001-1"; childUnits = 1040; childHash = h "d1"; childName = "Company D"; childParty = Some c.bob
+  d1 <- submit c.bob $ exerciseCmd offer Accept
+  -- Company D sees its own assignment, not Company A's remainder.
+  mineD <- query @Assignment c.bob
+  map (\(_, a) -> a.recordId) mineD === ["PENS-0001-BD-A00001-1"]
+  -- Company A sees its remainder and, as assignor, the portion it assigned.
+  mineA <- query @Assignment c.alice
+  length mineA === 2
+  -- The issuer sees both; the trustee named on the bond sees both, read-only.
+  length <$> query @Assignment c.issuer >>= (=== 2)
+  length <$> query @Assignment c.trustee >>= (=== 2)
+  submitMustFail c.trustee $ exerciseCmd d1 AssignOut with
+    childId = "PENS-0001-BD-A00001-2"; childUnits = 1; childHash = h "x"; childName = "X"; childParty = None
+  -- Anyone else sees nothing at all.
+  length <$> query @Assignment c.outsider >>= (=== 0)
+  length <$> query @Bond c.outsider >>= (=== 0)
+  pure ()
+
+test_deemed_acceptance = script do
+  (c, bond) <- setup
+  (bond, offer) <- submit c.issuer $ exerciseCmd bond Issue with
+    units = 700; docHash = h "a3"; ucc3Hash = None; assigneeName = "Company D"; assignee = None
+  submitMustFail c.platform $ exerciseCmd offer DeemAccepted   -- not mailed yet
+  now <- getTime
+  offer <- submit c.issuer $ exerciseCmd offer RecordMailing with sentOn = now
+  passTime (days 29)
+  submitMustFail c.platform $ exerciseCmd offer DeemAccepted   -- not a day sooner
+  passTime (days 2)
+  offer <- submit c.platform $ exerciseCmd offer DeemAccepted
+  offer <- submit c.platform $ exerciseCmd offer Bind with party = c.bob
+  submitMustFail c.bob $ exerciseCmd offer Reject with reason = longReason   -- in effect: no rejecting now
+  _ <- submit c.bob $ exerciseCmd offer Accept
+  pure ()
+
+test_redemption = script do
+  (c, bond) <- setup
+  (bond, a1) <- issueAndAccept c bond
+  submitMustFail c.issuer $ exerciseCmd a1 Redeem with paymentHash = "none"; bondCid = bond
+  submit c.issuer $ exerciseCmd a1 Redeem with paymentHash = h "paid"; bondCid = bond
+  [(_, b)] <- query @Bond c.issuer
+  b.redeemed === 1_000_000
+  length <$> query @Assignment c.alice >>= (=== 0)
+  pure ()

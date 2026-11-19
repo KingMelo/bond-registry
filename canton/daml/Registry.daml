@@ -1,0 +1,257 @@
+-- The Bond Interest Registry on Canton: one contract per assignment, one signed paper each.
+--
+-- A template is the code, uploaded once for every bond. Each bond, offer and assignment is its own
+-- contract made from it, seen only by the parties it names. A contract is never edited: a choice
+-- archives it and creates its successor.
+--
+-- The paper rules. Every assignment carries the SHA-256 of its signed instrument; an assign-out
+-- can't happen without the new instrument's, and the remainder keeps the original paper and lists
+-- each carve-out, so original minus carve-outs equals what is held (chain of title).
+--
+-- Amounts are whole cents.
+module Registry where
+
+import qualified DA.Text as T
+import DA.Time (days, addRelTime)
+import DA.Optional (fromSomeNote)
+
+-- A document fingerprint: "0x" + 64 hex digits (the SHA-256 of the file, taken in the browser).
+isHash : Text -> Bool
+isHash h = T.length h == 66 && T.isPrefixOf "0x" h && all (`elem` T.explode "0123456789abcdefABCDEF") (T.explode (T.drop 2 h))
+
+-- How long an assignee has to accept or reject after the mailing.
+responseDays : Int
+responseDays = 30
+
+-- An assign-out from anywhere under A00001 is numbered A00001-<n>: one dash, one count.
+rootOf : Text -> Text
+rootOf recordId = case T.splitOn "-" recordId of
+  parts | length parts >= 5 -> T.intercalate "-" (take 4 parts)   -- KJPII-0001-BD-A00001-3 → KJPII-0001-BD-A00001
+  _ -> recordId
+
+------------------------------------------------------------------ bond
+
+template Bond
+  with
+    issuer : Party
+    platform : Party
+    bondId : Text           -- KJPII-0001-BD
+    total : Int             -- cents
+    unassigned : Int
+    redeemed : Int
+    instrumentHash : Text   -- the bond instrument
+    ucc1Hash : Text         -- the filed UCC-1
+    nextAssignment : Int    -- the next A0000n
+    observers : [Party]     -- e.g. a trustee or auditor
+  where
+    signatory issuer, platform
+    observer observers
+    ensure total > 0 && unassigned >= 0 && redeemed >= 0 && unassigned + redeemed <= total
+      && isHash instrumentHash && isHash ucc1Hash
+
+    -- The issuer issues an assignment: an offer to a party who may not be on Canton yet.
+    choice Issue : (ContractId Bond, ContractId AssignmentOffer)
+      with
+        units : Int
+        docHash : Text              -- the signed assignment instrument
+        ucc3Hash : Optional Text    -- the issuer's UCC-3, if filed already
+        assigneeName : Text
+        assignee : Optional Party   -- Some party when they're already on Canton
+      controller issuer
+      do
+        assertMsg "Attach the signed assignment instrument (its SHA-256)." (isHash docHash)
+        assertMsg "The amount must be above zero." (units > 0)
+        assertMsg "Not enough left to assign on this bond." (units <= unassigned)
+        let recordId = bondId <> "-A" <> T.replace " " "0" (padLeft 5 (show nextAssignment))
+        offer <- create AssignmentOffer with
+          issuer; platform; assignor = issuer; bondId; recordId; parentId = None
+          units; instrumentHash = docHash; ucc3Hash; assigneeName; assignee
+          mailedOn = None; deemed = False; observers
+        bond <- create this with unassigned = unassigned - units; nextAssignment = nextAssignment + 1
+        pure (bond, offer)
+
+    -- Units back from an issuer-made offer that was rejected or cancelled.
+    choice ReclaimToBond : ContractId Bond
+      with returnedCid : ContractId UnitsReturned
+      controller issuer
+      do
+        r <- fetch returnedCid
+        assertMsg "Those units belong to another record." (r.bondId == bondId && r.parentId == None)
+        archive returnedCid
+        create this with unassigned = unassigned + r.units
+
+    choice Retire : ContractId Bond
+      with units : Int
+      controller issuer
+      do create this with redeemed = redeemed + units
+
+padLeft : Int -> Text -> Text
+padLeft n t = T.implode (replicate (n - T.length t) " ") <> t
+
+------------------------------------------------------------------ offer
+
+template AssignmentOffer
+  with
+    issuer : Party
+    platform : Party
+    assignor : Party            -- the issuer for its own assignments; the holder for an assign-out
+    bondId : Text
+    recordId : Text             -- A00001, or A00001-<n> for an assign-out
+    parentId : Optional Text
+    units : Int
+    instrumentHash : Text
+    ucc3Hash : Optional Text
+    assigneeName : Text
+    assignee : Optional Party   -- None until the assignee has a party (after the transfer code)
+    mailedOn : Optional Time    -- the date sent; starts the response period
+    deemed : Bool               -- in effect by default after the response period
+    observers : [Party]
+  where
+    signatory issuer, assignor
+    observer platform, observers, optional [] (\p -> [p]) assignee
+    ensure units > 0 && isHash instrumentHash && optional True isHash ucc3Hash
+
+    -- The platform names the assignee's new party once they've set up their key.
+    choice Bind : ContractId AssignmentOffer
+      with party : Party
+      controller platform
+      do
+        assertMsg "This offer already names its assignee." (assignee == None)
+        create this with assignee = Some party
+
+    -- The sender records the certified mailing: its date starts the 30 days.
+    choice RecordMailing : ContractId AssignmentOffer
+      with sentOn : Time
+      controller assignor
+      do
+        assertMsg "The mailing is already recorded." (mailedOn == None)
+        now <- getTime
+        assertMsg "The date sent can't be in the future." (sentOn <= now)
+        create this with mailedOn = Some sentOn
+
+    -- The UCC-3: the issuer for its own assignments, the assignor for an assign-out.
+    choice RecordUcc3 : ContractId AssignmentOffer
+      with filedHash : Text
+      controller assignor
+      do
+        assertMsg "A UCC-3 is already recorded." (ucc3Hash == None)
+        assertMsg "Attach the filed UCC-3 (its SHA-256)." (isHash filedHash)
+        create this with ucc3Hash = Some filedHash
+
+    -- The assignee accepts: the assignment is theirs, and only they can act on it from here.
+    choice Accept : ContractId Assignment
+      controller fromSomeNote "No assignee yet." assignee
+      do create Assignment with
+           issuer; platform; assignee = fromSomeNote "" assignee; assignor; assigneeName; bondId; recordId; parentId
+           units; instrumentHash; carveOuts = []; ucc3Hash; observers
+
+    -- The assignee rejects, with a reason of 255+ characters. The units go back where they came
+    -- from: a UnitsReturned record the assignor (or the issuer) reclaims. The assignee never sees
+    -- the assignor's own assignment.
+    choice Reject : ContractId UnitsReturned
+      with reason : Text
+      controller fromSomeNote "No assignee yet." assignee
+      do
+        assertMsg "It's in effect already; it can't be rejected." (not deemed)
+        assertMsg "Give a reason of at least 255 characters." (T.length reason >= 255)
+        create UnitsReturned with issuer; assignor; bondId; recordId; parentId; units; why = reason
+
+    -- The sender takes it back while nobody has claimed it.
+    choice Cancel : ContractId UnitsReturned
+      controller assignor
+      do
+        assertMsg (assigneeName <> " has already claimed it.") (assignee == None)
+        create UnitsReturned with issuer; assignor; bondId; recordId; parentId; units; why = "Cancelled by the sender"
+
+    -- No answer within the response period: in effect by default. Canton can't sign for the
+    -- assignee, so the offer stays an offer, marked in effect; it can no longer be rejected and
+    -- becomes an Assignment the first time the assignee acts.
+    choice DeemAccepted : ContractId AssignmentOffer
+      controller platform
+      do
+        now <- getTime
+        let sent = fromSomeNote "No mailing is recorded." mailedOn
+        assertMsg "The response period hasn't passed." (now >= addRelTime sent (days responseDays))
+        assertMsg "Already in effect." (not deemed)
+        create this with deemed = True
+
+-- Units on their way back from a rejected or cancelled offer, signed by the issuer and the sender.
+template UnitsReturned
+  with
+    issuer : Party
+    assignor : Party
+    bondId : Text
+    recordId : Text
+    parentId : Optional Text
+    units : Int
+    why : Text
+  where
+    signatory issuer, assignor
+
+------------------------------------------------------------------ assignment
+
+template Assignment
+  with
+    issuer : Party
+    platform : Party
+    assignee : Party
+    assignor : Party
+    assigneeName : Text
+    bondId : Text
+    recordId : Text
+    parentId : Optional Text
+    units : Int
+    instrumentHash : Text     -- this assignment's own signed paper
+    carveOuts : [Text]        -- the paper of every assign-out made from it
+    ucc3Hash : Optional Text
+    observers : [Party]
+  where
+    signatory issuer, assignee
+    observer assignor, platform, observers
+    ensure units >= 0 && isHash instrumentHash
+
+    -- Assign part (or all) of it onward. The new paper is required; the remainder keeps the
+    -- original paper and lists the new one as a carve-out.
+    choice AssignOut : (ContractId Assignment, ContractId AssignmentOffer)
+      with
+        childId : Text            -- <root>-<n>, the next count under the issuer-made root
+        childUnits : Int
+        childHash : Text          -- the new signed instrument
+        childName : Text
+        childParty : Optional Party
+      controller assignee
+      do
+        assertMsg "Attach the new signed instrument (its SHA-256)." (isHash childHash)
+        assertMsg "The amount must be above zero." (childUnits > 0)
+        assertMsg "You can't assign more than you hold." (childUnits <= units)
+        assertMsg ("An assign-out from " <> recordId <> " is numbered " <> rootOf recordId <> "-<n>.")
+          (T.isPrefixOf (rootOf recordId <> "-") childId && T.length childId > T.length (rootOf recordId) + 1
+           && T.isDigit (T.drop (T.length (rootOf recordId) + 1) childId))
+        rest <- create this with units = units - childUnits; carveOuts = carveOuts ++ [childHash]
+        offer <- create AssignmentOffer with
+          issuer; platform; assignor = assignee; bondId; recordId = childId; parentId = Some recordId
+          units = childUnits; instrumentHash = childHash; ucc3Hash = None; assigneeName = childName
+          assignee = childParty; mailedOn = None; deemed = False; observers
+        pure (rest, offer)
+
+    -- Units back from an assign-out that was rejected or cancelled (its paper stays listed:
+    -- the carve-out instrument exists, it just never took effect).
+    choice ReclaimToAssignment : ContractId Assignment
+      with returnedCid : ContractId UnitsReturned
+      controller assignee
+      do
+        r <- fetch returnedCid
+        assertMsg "Those units came from another record." (r.parentId == Some recordId && r.assignor == assignee)
+        archive returnedCid
+        create this with units = units + r.units
+
+    -- The issuer pays under the paperwork and records it, with the payment confirmation's hash.
+    choice Redeem : ()
+      with
+        paymentHash : Text
+        bondCid : ContractId Bond
+      controller issuer
+      do
+        assertMsg "Attach the payment confirmation (its SHA-256)." (isHash paymentHash)
+        _ <- exercise bondCid Retire with units
+        pure ()
