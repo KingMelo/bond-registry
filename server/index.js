@@ -270,7 +270,7 @@ const FILING_FIELDS = ["filingNumber", "filedBy", "filedOn", "filingDoc", "filin
 const MAILING_FIELDS = ["instrumentMail", "mailedOn", "mailingDoc", "mailingFile", "deliveryRef"];
 const RECEIPT_FIELDS = ["receiptMail", "receivedOn", "receiptDoc", "receiptFile", "receiptRef", "receiptMatches"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
-  "lockKind", "lockReason", "lockedOn", "rotationRequested", "unlockRequested", ...RECEIPT_FIELDS];
+  "lockKind", "lockReason", "lockedOn", "unlockRequested", ...RECEIPT_FIELDS];
 const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "noResponseAsOf", "cancelledBy", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -1531,6 +1531,10 @@ app.use((err, req, res, next) => {
 migrate()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => console.log(`${APP} listening on ${PORT}`));
+    if (APP === "issuer" && canton.enabled)
+      // Bonds with assignments from before the Canton mirror was switched on: brought across once.
+      canton.backfillAll(pool).then((r) => r.length && console.log("Canton: brought across", JSON.stringify(r)))
+        .catch((e) => console.error("Canton: bringing existing assignments across -", e.message));
     if (APP === "issuer") {
       const run = () => recordNoResponseWhenDue()
         .then(() => (canton.enabled ? canton.catchUpNoResponse(pool) : null))

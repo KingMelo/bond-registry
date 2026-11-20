@@ -25,6 +25,7 @@ node pilot/passkey-signing.mjs                              # signing pilot (key
 BROWSER=1 node pilot/passkey-signing.mjs                    # the same, key made in Chromium's WebCrypto
 (cd pilot && npm install && node backup-key.mjs)            # backup key; uses the node's admin API (port 6866)
 cd .. && node e2e/canton-e2e.mjs                            # the register and Canton together, in a browser
+node e2e/canton-backfill-e2e.mjs                            # records from before Canton was switched on
 ```
 
 ## Results (Nov 19, 2026)
@@ -114,7 +115,21 @@ assignees. All 63 checks pass, on repeat runs:
 - "Lost a device? Replace it" with the code drops every other device key: the lost browser's key is
   refused by Canton from then on, the new one works. The register is unaffected throughout.
 
-Not mirrored yet: records issued before the mirror is switched on, and passkey rotation notes. The hash check covers the value
+**Records from before Canton was switched on** (`e2e/canton-backfill-e2e.mjs`, 20 checks): when the
+issuer service starts with Canton on, each approved bond not yet on Canton is brought across once:
+the bond, its prior instruments, an offer for each live record the issuer made, and the issuer's own
+facts on them (mailings, UCC-3s). An offer holds what its record held before any assign-outs, so the
+assignee then signs, with their own new keys, what they did before: accepting, then each assign-out,
+shown and checked like any other act. Nothing is carried across in their name. A record whose
+signed paper's fingerprint isn't on the register is left off and reported in the log, not guessed
+at. Starting again brings nothing across twice.
+
+**Passkey rotation was removed.** The register had a way to ask the issuer for a new access code
+when a passkey was lost; it contradicted the rule that nobody can reset or replace an assignee's
+passkey, and Canton keys have their own recovery (above). Past rotation events still show in the
+platform's history.
+
+The hash check covers the value
 and node kinds these contracts produce (records, text, numbers, dates and times, parties,
 optionals, lists, contract IDs, creates, exercises, fetches); a transaction with anything else is
 refused rather than signed.

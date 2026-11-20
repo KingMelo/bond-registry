@@ -642,7 +642,6 @@ export default function HolderPortal() {
 
   // lock
   const [lockKind, setLockKind] = useState("pledge");
-  const [lockRotate, setLockRotate] = useState(false);
   const [rjReason, setRjReason] = useState(""); // why the holder rejects an assignment
   const [rjErr, setRjErr] = useState("");
 
@@ -870,7 +869,6 @@ export default function HolderPortal() {
       lockReason: null,
       lockedOn: null,
       unlockRequested: false,
-      rotationRequested: false,
     };
     // The parent keeps its status, even at zero units, until every child settles.
     setReg((r) => [
@@ -927,15 +925,12 @@ export default function HolderPortal() {
   function lock() {
     const label = LOCK_KINDS.find(([k]) => k === lockKind)[1];
     setReg((r) => r.map((a) => (a.id === open.id
-      ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: today(),
-          rotationRequested: lockRotate, unlockRequested: false }
+      ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: today(), unlockRequested: false }
       : a)));
     emit(open.bond, open.id, "Locked", "RELAYER", "—");
-    setLockKind("pledge"); setLockRotate(false);
+    setLockKind("pledge");
     setView("position");
-    flash(lockRotate
-      ? "Locked, and a new access code requested. Only the issuer can unlock it."
-      : "Locked. Only the issuer can unlock it.");
+    flash("Locked. Only the issuer can unlock it.");
     if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
@@ -947,10 +942,6 @@ export default function HolderPortal() {
       : "Unlock requested. The issuer will verify your identity first.");
   }
 
-  function requestRotation() {
-    setReg((r) => r.map((a) => (a.id === open.id ? { ...a, rotationRequested: true } : a)));
-    flash("New access code requested. The issuer will verify your identity and mail it.");
-  }
 
 
 
@@ -1076,7 +1067,13 @@ export default function HolderPortal() {
         {/* ============ Canton keys (pilot) ============ */}
         {inHolder && view === "cantonSetup" && open && session.current && (
           <CantonSetup recordId={open.id} token={session.current.token} ui={cantonUi}
-            onDone={async () => { await loadCanton(); flash("Your keys are set up. Keep the recovery code offline."); setView(open.status === "Issued" ? "claim" : "position"); if (open.status === "Issued") setTour("offer"); }} />
+            onDone={async () => {
+              const st = await loadCanton();
+              flash("Your keys are set up. Keep the recovery code offline.");
+              setView(open.status === "Issued" ? "claim" : "position");
+              if (open.status === "Issued") setTour("offer");
+              else if (st?.toSign?.length) runCanton(); // acts made before Canton was switched on, signed now
+            }} />
         )}
 
         {/* ============ claim ============ */}
@@ -1209,9 +1206,6 @@ export default function HolderPortal() {
                 <div className="mt-3 space-y-3">
                   <Button variant="quiet" disabled={open.unlockRequested} onClick={requestUnlock}>
                     {open.unlockRequested ? "Unlock requested — with the issuer" : "Request unlock"}
-                  </Button>
-                  <Button variant="quiet" disabled={open.rotationRequested} onClick={requestRotation}>
-                    {open.rotationRequested ? "New access code requested — with the issuer" : "Request a new access code"}
                   </Button>
                 </div>
               </div>
@@ -1500,10 +1494,6 @@ export default function HolderPortal() {
                 </label>
               ))}
             </div>
-            <label className="flex items-center gap-3 mb-4" style={{ fontSize: 14, color: T.ink, cursor: "pointer" }}>
-              <input type="checkbox" checked={lockRotate} onChange={(e) => setLockRotate(e.target.checked)} />
-              Also request a new access code
-            </label>
 
             <Note kind="caution">
               Only the issuer can unlock it.{" "}

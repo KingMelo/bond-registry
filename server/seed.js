@@ -17,7 +17,7 @@ export const BONDS = [
 
 const base = {
   credLocked: false, lockKind: null, lockReason: null, lockedOn: null,
-  unlockRequested: false, rotationRequested: false,
+  unlockRequested: false,
 };
 
 export const ASSIGNMENTS = [
@@ -55,7 +55,7 @@ export const ASSIGNMENTS = [
     units: 50000, issuedUnits: 50000, status: "Locked", created: "May 22, 2026", accepted: "May 26, 2026",
     docHash: "0x7f3d20…aa18", filingRef: "0x118cc4…6e37", deliveryRef: "0x44b9f0…2d81", tx: "0x2c7d18…90b5",
     instrumentMail: "9407 1000 0000 0000 0000 07", passkeyMail: "9407 1000 0000 0000 0000 11",
-    lockKind: "compromise", lockReason: "Passkey may be compromised", lockedOn: "Oct 11, 2026", rotationRequested: true },
+    lockKind: "compromise", lockReason: "Passkey may be compromised", lockedOn: "Oct 11, 2026" },
 ];
 
 // Demo passkeys. Only their hashes are stored.

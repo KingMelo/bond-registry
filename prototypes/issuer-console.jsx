@@ -294,7 +294,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (a.status === "CredentialRequested") out.push(a.filingRef
       ? ["Credential request", "Verify the requester is the named assignee, then mail the passkey."]
       : ["Credential request · UCC-3 pending", "Waiting on the assignor's UCC-3. Verify the requester meanwhile; after 30 days you may file it yourself."]);
-    if (a.status === "Locked" && a.rotationRequested) out.push(["Passkey rotation", "Assignee locked the record and asked for a new passkey."]);
     if (a.status === "Locked" && a.unlockRequested) out.push(a.lockKind === "pledge"
       ? ["Unlock request · pledge", "Needs the pledgee's signed release before you unlock."]
       : ["Unlock request", "Verify the assignee's identity before you unlock."]);
@@ -386,20 +385,11 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
   function unlock(a) {
     if (!docRef.trim()) return;
     patch(a.id, { status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, unlockRef: docRef.trim(),
-      rotationRequested: false, unlockRequested: false });
+      unlockRequested: false });
     emit(a.bond, a.id, "Unlocked", "ISSUER", docRef.trim());
     done("Unlocked. Back in effect.");
   }
 
-  async function rotate(a) {
-    if (!mail.trim() || !docRef.trim()) return;
-    let passkey;
-    try { passkey = await newPasskey(a.id); } catch (e) { return flash(e.message); }
-    patch(a.id, { passkeyMail: mail.trim(), rotationRequested: false });
-    emit(a.bond, a.id, "PasskeyRotated", "ISSUER", docRef.trim());
-    done("New passkey issued. The old one no longer works. The record stays locked until you unlock it.");
-    showPasskey(a.id, passkey, "Replacement passkey for " + a.party + ".");
-  }
 
   // Clearing a lockout touches the credential store only.
   // An assignee's passkey can't be reset by anyone: control of the record is theirs alone.
@@ -1326,7 +1316,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                   ["Reason given", a.lockReason || "—"],
                   ["Locked on", a.lockedOn || "—"],
                   ["Unlock requested", a.unlockRequested ? "Yes" : "No"],
-                  ["New passkey requested", a.rotationRequested ? "Yes" : "No"],
                 ]} />
                 <div className="mt-4">
                   <Field
@@ -1334,18 +1323,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     value={docRef} onChange={setDocRef} placeholder="0x…" mono
                     hint={a.lockKind === "pledge"
                       ? "Pledged record. Do not unlock without the lender's signed release."
-                      : "Recorded with the Unlocked or PasskeyRotated event."} />
+                      : "Recorded with the Unlocked event."} />
                 </div>
-                {a.rotationRequested && (
-                  <div className="mt-2">
-                    <Field label="Certified mail number for the new passkey" value={mail} onChange={setMail}
-                      placeholder="9407 1000 0000 0000 0000 00" mono
-                      hint="The old hash is discarded. The record stays locked until you unlock it." />
-                    <Button disabled={!mail.trim() || !docRef.trim()} onClick={() => rotate(a)}>
-                      Rotate passkey
-                    </Button>
-                  </div>
-                )}
                 <div className="mt-3">
                   <Button variant="quiet" disabled={!docRef.trim()} onClick={() => unlock(a)}>
                     Unlock

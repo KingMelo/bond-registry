@@ -118,31 +118,78 @@ export async function mirrorIssued(pool, records) {
   for (const bondId of [...new Set(records.map((r) => r.bond))])
     await onBond(bondId, () => mirrorIssuedOn(pool, records.filter((r) => r.bond === bondId), records));
 }
-async function mirrorIssuedOn(pool, mine, records) {
+async function mirrorIssuedOn(pool, mine) {
+  // A bond's first assignment on Canton brings the bond, and every live assignment already on it.
+  if (!(await refOf(pool, mine[0].bond))) return backfillNow(pool, mine[0].bond);
   for (const rec of mine) {
     if (await refOf(pool, rec.id)) continue;
-    const b = (await pool.query("select b.data, i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [rec.bond])).rows[0];
-    if (!b) continue;
-    const issuer = await localParty(pool, "issuer-" + b.code), platform = await localParty(pool, "platform");
-    let bond = await refOf(pool, rec.bond);
-    if (!bond) {
-      // What's left to assign on Canton starts as the register's plus what this save issues and what
-      // prior instruments hold; those are then recorded on Canton one by one (syncBond).
-      const pending = records.filter((r) => r.bond === rec.bond).reduce((t, r) => t + Number(r.units), 0);
-      const priorHeld = (b.data.prior || []).filter((p) => !p.reversed).reduce((t, p) => t + Number(p.units), 0);
-      const tx = await submit([issuer, platform], [{ CreateCommand: { templateId: tpl("Bond"), createArguments: {
-        issuer, platform, bondId: rec.bond, total: String(b.data.total), unassigned: String(Number(b.data.unassigned) + pending + priorHeld),
-        redeemed: String(b.data.redeemed || 0), prior: "0", instrumentHash: b.data.instrumentHash, ucc1Hash: b.data.ucc1?.hash, observers: [] } } }]);
-      bond = { cid: createdOf(tx, "Bond").contractId };
-      await setRef(pool, rec.bond, "Bond", bond.cid);
-      await syncBondNow(pool, rec.bond);
-    }
-    const tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "Issue", choiceArgument: {
-      recordId: rec.id, units: String(rec.units), docHash: rec.docHash, ucc3Hash: isHash(rec.filingDoc) ? rec.filingDoc : null,
-      assigneeName: rec.party || "", assignee: null } } }]);
-    await setRef(pool, rec.bond, "Bond", createdOf(tx, "Bond").contractId);
-    await setRef(pool, rec.id, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
+    await issueOne(pool, rec, Number(rec.units));
   }
+}
+
+async function issueOne(pool, rec, units) {
+  const issuer = await issuerPartyOf(pool, rec.bond), bond = await refOf(pool, rec.bond);
+  const tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "Issue", choiceArgument: {
+    recordId: rec.id, units: String(units), docHash: rec.docHash, ucc3Hash: isHash(rec.filingDoc) ? rec.filingDoc : null,
+    assigneeName: rec.party || "", assignee: null } } }]);
+  await setRef(pool, rec.bond, "Bond", createdOf(tx, "Bond").contractId);
+  await setRef(pool, rec.id, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
+}
+
+// ------------------------------------------------------------------ records from before the mirror
+
+const LIVE = ["Issued", "Accepted", "Locked"];
+// What a record is replayed on Canton with: what it holds now, plus what each of its live assign-outs
+// holds (each is then assigned out from it again, with its holder's key).
+async function replayedUnits(pool, rec) {
+  const kids = (await pool.query(`select data from assignments where data->>'parent' = $1 and data->>'origin' = 'AssignOut'`, [rec.id])).rows.map((r) => r.data);
+  let n = Number(rec.units);
+  for (const c of kids) if (LIVE.includes(c.status)) n += await replayedUnits(pool, c);
+  return n;
+}
+
+/**
+ * A bond that isn't on Canton yet, with whatever the register already holds for it: the bond, its
+ * prior instruments, an offer for each live assignment the issuer made (holding what it and its
+ * live assign-outs hold), and the issuer's own facts on them. What needs an assignee's own key
+ * (accepting, assigning out, locking) waits for them, as any act does. Records whose signed paper
+ * isn't on the register in full are left off and reported, rather than guessed at.
+ */
+export const backfill = (pool, bondId) => onBond(bondId, () => backfillNow(pool, bondId));
+async function backfillNow(pool, bondId) {
+  if (await refOf(pool, bondId)) return { bondId, already: true };
+  const b = (await pool.query("select b.data, b.review, i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [bondId])).rows[0];
+  if (!b || b.review !== "approved" || !isHash(b.data.instrumentHash) || !isHash(b.data.ucc1?.hash)) return { bondId, skipped: "the bond isn't approved with its papers' fingerprints" };
+  const roots = (await pool.query(`select data from assignments where bond = $1 and data->>'origin' in ('Issuer', 'Replacement')
+    and data->>'status' = any($2) order by id`, [bondId, LIVE])).rows.map((r) => r.data);
+  const recordIdOk = (id) => new RegExp("^" + bondId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-A\\d{5}$").test(id);
+  const ok = [], left = [];
+  for (const r of roots) (isHash(r.docHash) && recordIdOk(r.id) ? ok : left).push(r);
+  const units = new Map();
+  for (const r of ok) units.set(r.id, await replayedUnits(pool, r));
+  const priorHeld = (b.data.prior || []).filter((p) => !p.reversed).reduce((t, p) => t + Number(p.units), 0);
+  const issuing = [...units.values()].reduce((t, n) => t + n, 0);
+  const issuer = await localParty(pool, "issuer-" + b.code), platform = await localParty(pool, "platform");
+  const tx = await submit([issuer, platform], [{ CreateCommand: { templateId: tpl("Bond"), createArguments: {
+    issuer, platform, bondId, total: String(b.data.total), unassigned: String(Number(b.data.unassigned) + issuing + priorHeld),
+    redeemed: String(b.data.redeemed || 0), prior: "0", instrumentHash: b.data.instrumentHash, ucc1Hash: b.data.ucc1.hash, observers: [] } } }]);
+  await setRef(pool, bondId, "Bond", createdOf(tx, "Bond").contractId);
+  await syncBondNow(pool, bondId);
+  for (const r of ok) await issueOne(pool, r, units.get(r.id));
+  await syncIssuerFactsOn(pool, ok.map((r) => r));
+  const out = { bondId, issued: ok.map((r) => r.id), left: left.map((r) => r.id) };
+  if (left.length) console.log("Canton: left off " + bondId + " (no full signed-paper fingerprint): " + out.left.join(", "));
+  return out;
+}
+
+/** Every approved bond with live assignments that isn't on Canton yet: run when the issuer service starts. */
+export async function backfillAll(pool) {
+  const ids = (await pool.query(`select b.id from bonds b where b.review = 'approved'
+    and exists (select 1 from assignments a where a.bond = b.id and a.data->>'status' = any($1))
+    and not exists (select 1 from canton_refs r where r.ref = b.id)`, [LIVE])).rows.map((r) => r.id);
+  const done = [];
+  for (const id of ids) done.push(await backfill(pool, id).catch((e) => ({ bondId: id, error: e.message })));
+  return done;
 }
 
 /**
@@ -320,14 +367,13 @@ async function waiting(pool, rec, ref) {
   const mine = held.get(rec.id);
   const live = ref?.template === "AssignmentOffer" || ref?.template === "Assignment";
   if (live && rec.receiptRef && mine && mine.receiptRef == null && rec.status !== "Rejected") out.push({ kind: "receipt" });
-  if (ref?.template === "Assignment" && rec.status === "Locked" && mine && mine.locked == null) out.push({ kind: "lock" });
-  if (ref?.template === "AssignmentOffer" && rec.status === "Accepted") out.push({ kind: "accept" });
+  if (ref?.template === "AssignmentOffer" && (rec.status === "Accepted" || rec.status === "Locked")) out.push({ kind: "accept" });
   if (ref?.template === "AssignmentOffer" && rec.status === "Rejected") out.push({ kind: "reject" });
   if (ref?.template === "Assignment") {
     const kids = (await pool.query(`select data from assignments where data->>'parent' = $1 and data->>'origin' = 'AssignOut' order by created_at`, [rec.id])).rows.map((r) => r.data);
     for (const c of kids) {
       const cref = await refOf(pool, c.id), on = held.get(c.id);
-      if (!cref) { out.push({ kind: "assignOut", child: c.id }); continue; }
+      if (!cref) { if (LIVE.includes(c.status)) out.push({ kind: "assignOut", child: c.id }); continue; }
       if (cref.template === "UnitsReturned") { out.push({ kind: "reclaim", child: c.id }); continue; }
       if (cref.template === "AssignmentOffer" && c.status === "Cancelled" && c.cancelledBy === "assignor") { out.push({ kind: "cancelOut", child: c.id }); continue; }
       if (cref.template === "AssignmentOffer" && c.deliveryRef && on && on.deliveryRef == null) out.push({ kind: "mailing", child: c.id });
@@ -335,6 +381,8 @@ async function waiting(pool, rec, ref) {
         out.push({ kind: "ucc3", child: c.id });
     }
   }
+  // The assignee's own lock comes last: assign-outs made before it are replayed first.
+  if (ref?.template === "Assignment" && rec.status === "Locked" && mine && mine.locked == null) out.push({ kind: "lock" });
   return out;
 }
 // Each record's live offer or assignment on Canton, as the bond's issuer sees it: recordId → arguments.
@@ -443,7 +491,7 @@ export async function prepareAct(pool, rec, { kind, child: childId }) {
   if (kind === "assignOut") {
     const c = await child(pool, rec, childId);
     command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "AssignOut", choiceArgument: {
-      childId: c.id, childUnits: String(c.issuedUnits ?? c.units), childHash: c.docHash, childName: c.party || "", childParty: null } };
+      childId: c.id, childUnits: String(await replayedUnits(pool, c)), childHash: c.docHash, childName: c.party || "", childParty: null } };
   }
   if (kind === "receipt") {
     const onAsg = ref.template === "Assignment";
