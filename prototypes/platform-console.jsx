@@ -230,7 +230,9 @@ const FN_LABEL = {
   accept: "Accepted by assignee", rejectAssignment: "Rejected by assignee", registerHolderKey: "Assignee device key", pause: "Freeze contract", importIssuer: "Copy issuer", importBond: "Copy bond",
   importPrior: "Copy prior instrument", importRecord: "Copy record", finishImport: "Finish the copy", rotateHolderKey: "Assignee device key changed", clearHolderKey: "Assignee device key reset", requestCredential: "Request credential", rejectCredentialRequest: "Reject credential request",
   issueCredential: "Issue credential", cancelAssignOut: "Cancel assign-out", issuerCancelAssignOut: "Cancel assign-out (issuer)",
-  lock: "Lock", unlock: "Unlock", recordRotation: "Record passkey rotation", redeem: "Redeemed",
+  lock: "Lock", unlock: "Unlock (assignee)", releasePledge: "Pledge released by lender", claimPledge: "Pledge claimed by lender",
+  consentReplacement: "Replacement agreed by assignee", declineReplacement: "Replacement declined by assignee",
+  recordRotation: "Record passkey rotation", redeem: "Redeemed",
   suspendIssuer: "Suspend issuer",
   reinstateIssuer: "Reinstate issuer", unsupported: "No matching contract call",
 };

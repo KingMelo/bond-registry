@@ -193,6 +193,27 @@ await page.getByText(/On Canton: in effect, signed with your own key/).waitFor({
 ok((await page.getByText(/On Canton: in effect, signed with your own key/).count()) > 0 && !(await page.getByText(/waiting for your key's signature/).count()),
   "Company A's page shows it in effect on Canton, with nothing left waiting for its key");
 
+// ---- 4. The issuer proposes replacing A00001; Company A consents with its own key, and Canton follows.
+{
+  const rp = { newId: BOND + "-A00004", party: "Company A Holdings", contact: "Treasurer", address: "1 Main St", docHash: H32(), reasonDoc: H32(), proposedOn: "Nov 21, 2026", assignor: "Penson Trust (replacement)" };
+  await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: rp.newId, passkey: "WWWW-XXXX-YYYY-ZZZZ" });
+  await icommit({ reg: [{ ...(await st()).reg.find((a) => a.id === A1), replacement: rp }] });
+  const prop = await until(async () => (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:ReplacementProposal") && e.createArgument.recordId === A1));
+  ok(!!prop, "the issuer's proposal to replace A00001 is on Canton");
+  await page.reload();
+  await page.getByRole("button", { name: "Sign in with your passkey" }).click({ timeout: 15000 });
+  await page.getByTestId("replacement").waitFor({ timeout: 20000 });
+  await page.getByRole("button", { name: "Agree to the replacement: confirm with your passkey" }).click();
+  await answer(/Agree to the issuer replacing PENS-0001-BD-A00001: it ends, and PENS-0001-BD-A00004 is offered to Company A Holdings for the same \$9,989\.60\./, "consenting to the replacement");
+  const nu = await until(async () => await on("AssignmentOffer", "recordId", rp.newId));
+  const regNow = (await st()).reg;
+  ok(nu?.createArgument.units === "998960" && nu.createArgument.instrumentHash === rp.docHash && !(await on("Assignment", "recordId", A1)),
+    "consented with Company A's key: A00001 is gone from Canton and " + rp.newId + " is offered for the same $9,989.60, with the proposed paper");
+  ok(regNow.find((a) => a.id === A1).status === "Superseded" && regNow.find((a) => a.id === rp.newId)?.status === "Issued", "as in the register");
+  ok(!!(await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:Superseded") && e.createArgument.recordId === A1 && e.createArgument.reasonHash === rp.reasonDoc),
+    "and Canton keeps what replaced it, with the memo's fingerprint");
+}
+
 await browser.close();
 console.log(fails ? fails + " FAILED" : "ALL PASS");
 process.exit(fails ? 1 : 0);

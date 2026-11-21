@@ -216,10 +216,61 @@ ok(e?.status === 404, "once used, the transfer code is gone for the issuer too (
   ok(!(await sigs("assignment", a1.id)).some((r) => r.fn === "recordFiling"), "as the issuer's act: no assignee signature was asked for it");
 }
 
-// 6. Lock, issuer unlocks. Holders don't request redemption through the registry: refused.
+// 6. Locks are the assignee's: they lift their own, and the issuer can't lift or make one. A pledge
+// names its lender; once the lender claims it with the code the assignee gives them, only they release it.
+const unlocked = (r) => ({ ...r, status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, pledgeTo: null, pledgeContact: null });
 a1 = await hrec(a1.id);
-await hsave(s1.token, phone, { reg: [{ ...a1, status: "Locked", lockKind: "pledge", lockReason: "Pledged", lockedOn: "now" }], events: [ev(a1.bond, a1.id, "Locked")] });
-await icommit({ reg: [{ ...(await rec(a1.id)), status: "Accepted", lockKind: null }], events: [ev(a1.bond, a1.id, "Unlocked", "release")] });
+e = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [],
+  reg: [{ ...(await rec(a1.id)), status: "Locked", lockKind: "sale", lockReason: "x" }] });
+ok(e?.status === 403, "the issuer can't lock an assignee's record (" + e?.status + ")");
+await hsave(s1.token, phone, { reg: [{ ...a1, status: "Locked", lockKind: "sale", lockReason: "Pending sale", lockedOn: "now" }], events: [ev(a1.bond, a1.id, "Locked")] });
+e = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [], reg: [unlocked(await rec(a1.id))] });
+ok(e?.status === 403, "the issuer can't unlock it (" + e?.status + ")");
+await hsave(s1.token, phone, { reg: [unlocked(await hrec(a1.id))], events: [ev(a1.bond, a1.id, "Unlocked")] });
+ok((await hrec(a1.id)).status === "Accepted", "the assignee unlocks it with their own passkey");
+a1 = await hrec(a1.id);
+e = await hsave(s1.token, phone, { reg: [{ ...a1, status: "Locked", lockKind: "pledge", lockReason: "Pledged", lockedOn: "now" }] }).then(() => null, (x) => x);
+ok(e?.status === 400, "a pledge has to name its lender (" + e?.status + ")");
+await hsave(s1.token, phone, { reg: [{ ...a1, status: "Locked", lockKind: "pledge", lockReason: "Pledged", lockedOn: "now", pledgeTo: "First Bank, N.A." }],
+  events: [ev(a1.bond, a1.id, "Locked", "Pledged to First Bank, N.A.")] });
+const LID = a1.id + "~P";
+e = await tryCall(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: LID, passkey: "AAAA-BBBB-CCCC-DDDD" });
+ok(e?.status === 403, "the issuer can't set the lender's code (" + e?.status + ")");
+e = await tryCall(I, "POST", "/api/issuer/access-code/reveal", { issuer: issuerId, id: LID });
+ok(e?.status === 403, "or see it (" + e?.status + ")");
+e = await tryCall(H, "POST", "/api/holder/assignee-code", { token: s2.token, id: LID });
+ok(!!e, "nor can another assignee (" + e?.status + ")");
+const lenderCode = (await call(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: LID })).code;
+ok(/^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(lenderCode), "the assignee gets their lender's one-time code to give them (" + lenderCode.slice(0, 4) + "…)");
+// Before the lender claims it, the assignee can withdraw the pledge; the lender's code then stops working.
+await hsave(s1.token, phone, { reg: [unlocked(await hrec(a1.id))] });
+e = await tryCall(H, "POST", "/api/holder/signin", { id: LID, passkey: lenderCode }).then((r) => r);
+ok(!e?.ok, "withdrawn before it was claimed: the lender's code no longer opens anything (" + (e?.code || e?.status) + ")");
+await hsave(s1.token, phone, { reg: [{ ...(await hrec(a1.id)), status: "Locked", lockKind: "pledge", lockReason: "Pledged", lockedOn: "now", pledgeTo: "First Bank, N.A." }] });
+const bankCode = (await call(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: LID })).code;
+ok(bankCode !== lenderCode, "a new pledge gets a new code");
+const bank = newDevice();
+const sb = await signIn(LID, bankCode, bank);
+ok(sb.ok && !!sb.since, "the lender claims the pledge with it and sets up their own passkey");
+ok((await hrec(a1.id)).pledgeClaimed === true, "the register shows the pledge as claimed");
+e = await tryCall(H, "POST", "/api/holder/assignee-code", { token: s1.token, id: LID });
+ok(e?.status === 409, "and the code is gone (" + e?.status + ")");
+e = await hsave(s1.token, phone, { reg: [unlocked(await hrec(a1.id))] }).then(() => null, (x) => x);
+ok(e?.status === 403, "now the assignee can't unlock it (" + e?.status + ")");
+e = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [], reg: [unlocked(await rec(a1.id))] });
+ok(e?.status === 403, "nor can the issuer (" + e?.status + ")");
+e = await hsave(sb.token, bank, { reg: [{ ...(await hrec(a1.id)), status: "Superseded" }] }).then(() => null, (x) => x);
+ok(e?.status === 403, "the lender can do nothing but release it (" + e?.status + ")");
+await hsave(sb.token, bank, { reg: [unlocked(await hrec(a1.id))], events: [ev(a1.bond, a1.id, "PledgeReleased")] });
+ok((await hrec(a1.id)).status === "Accepted" && !(await hrec(a1.id)).pledgeClaimed, "the lender releases it with their own passkey: back in effect");
+ok((await call(H, "POST", "/api/holder/start", { id: LID })).mode === "none", "and the lender's sign-in is done");
+{
+  const db = new pg.Client({ connectionString: DB }); await db.connect();
+  const rows = (await db.query("select s.*, a.data->'lender' as key from holder_signatures s join assignments a on a.id = s.assignment where s.signer = $1 order by s.seq", [LID])).rows; await db.end();
+  const good = rows.filter((r) => { try { holderKeys.checkAssertion({ assertion: r.assertion, challenge: r.challenge, x: r.key.x, y: r.key.y, rpId: RP_ID, origins: ["https://holder.test"] }); return true; } catch { return false; } });
+  ok(rows.map((r) => r.fn).join(",") === "claimPledge,releasePledge" && good.length === rows.length,
+    "the lender's passkey signed the claim and the release, and both verify (" + rows.map((r) => r.fn).join(", ") + ")");
+}
 a1 = await hrec(a1.id);
 e = await hsave(s1.token, phone, { reg: [{ ...a1, status: "PendingRedemption" }], events: [ev(a1.bond, a1.id, "RedemptionRequested")] }).then(() => null, (x) => x);
 ok(e?.status === 403, "a holder can't request redemption through the registry (" + e?.status + ")");
@@ -229,6 +280,36 @@ ok(e?.status === 403, "a holder can't request redemption through the registry ("
   await icommit({ bonds: [{ ...b0, redeemed: b0.redeemed + r1.units }], reg: [{ ...r1, status: "Redeemed", redeemedOn: "now" }],
     events: [ev(a1.bond, a1.id, "Redeemed", H32())] });
     ok((await rec(a1.id)).status === "Redeemed", "the issuer's redemption is recorded, with no holder request");
+}
+
+// 6b. Replacing an assignment in effect: the issuer proposes; nothing changes unless its assignee consents.
+{
+  const A2 = "PENS-0001-BD-A00008", A3 = "PENS-0001-BD-A00009", CODE2 = "MNPQ-RSTV-WXYZ-2345";
+  await issue(A2, 5_000, CODE2);
+  const dev2 = newDevice(), s4 = await signIn(A2, CODE2, dev2);
+  await hsave(s4.token, dev2, { reg: [{ ...(await hrec(A2)), status: "Accepted", accepted: "now" }] });
+  e = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [], reg: [{ ...(await rec(A2)), status: "Superseded" }] });
+  ok(e?.status === 403, "the issuer can't replace an assignment in effect on its own (" + e?.status + ")");
+  const proposal = { newId: A3, party: "Estate of Company A", contact: "Executor", address: "1 Probate Way", docHash: H32(), reasonDoc: H32(), proposedOn: "Nov 21, 2026", assignor: "Penson Trust (replacement)" };
+  await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A3, passkey: "HJKL-MNPQ-RSTV-WXYZ" });
+  await icommit({ reg: [{ ...(await rec(A2)), replacement: proposal }], events: [ev("PENS-0001-BD", A2, "ReplacementProposed", A3)] });
+  const seen = (await hrec(A2)).replacement;
+  ok(seen?.newId === A3 && !("address" in seen) && !("contact" in seen), "the assignee sees the proposal; the new assignee's contact details stay with the issuer");
+  e = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [], reg: [{ ...(await rec(A2)), replacement: { ...proposal, party: "Someone else" } }] });
+  ok(e?.status === 409, "a pending proposal can't be changed, only withdrawn (" + e?.status + ")");
+  e = await tryCall(I, "POST", "/api/commit", { issuer: issuerId, base: (await st()).version, bonds: [], events: [], reg: [{ ...(await rec(A2)), replacementAnswer: "consented", status: "Superseded" }] });
+  ok(e?.status === 403, "and the issuer can't answer it for the assignee (" + e?.status + ")");
+  await hsave(s4.token, dev2, { reg: [{ ...(await hrec(A2)), replacementAnswer: "declined" }] });
+  ok((await rec(A2)).status === "Accepted" && (await rec(A2)).replacementAnswer === "declined" && !(await rec(A3)), "the assignee declines: nothing changes");
+  await icommit({ reg: [{ ...(await rec(A2)), replacement: { ...proposal, proposedOn: "Nov 22, 2026" } }] });
+  const b0 = await bondNow();
+  await hsave(s4.token, dev2, { reg: [{ ...(await hrec(A2)), replacementAnswer: "consented", status: "Superseded" }] });
+  const old = await rec(A2), nu = await rec(A3), b1 = await bondNow();
+  ok(old.status === "Superseded" && nu?.status === "Issued" && nu.units === 5_000 && nu.parent === A2 && nu.origin === "Replacement" && nu.docHash === proposal.docHash,
+    "proposed again, the assignee consents: " + A2 + " is replaced by " + A3 + " for the same $50.00, with the proposed paper");
+  ok(b1.unassigned === b0.unassigned, "and the bond still adds up");
+  const fns = (await sigs("signer", A2)).map((r) => r.fn);
+  ok(fns.includes("declineReplacement") && fns.includes("consentReplacement"), "both answers were signed with the assignee's passkey (" + fns.join(", ") + ")");
 }
 
 // 7. A passkey can't be reset: the issuer has no way to clear it, so control stays with the assignee.
@@ -359,9 +440,9 @@ ok((await st()).events.filter((e) => e.id === "PENS-0001-BD-A00004" && e.ev === 
   }
   ok(rows.length > 0 && good === rows.length, "all " + rows.length + " kept signatures verify again, each over exactly what it records (" + good + ")");
   const mine = rows.filter((r) => r.signer === "PENS-0001-BD-A00001").map((r) => r.fn);
-  ok(mine.join(",") === "registerHolderKey,accept,assignOut,lock", "A00001's passkey signed 4 times: register key, accept, assign out, lock (" + mine.join(", ") + ")");
+  ok(mine.join(",") === "registerHolderKey,accept,assignOut,lock,unlock,lock,unlock,lock", "A00001's passkey signed each of its acts: register key, accept, assign out, and each lock and unlock (" + mine.join(", ") + ")");
   const nonces = rows.filter((r) => r.signer === "PENS-0001-BD-A00001").map((r) => r.nonce);
-  ok(nonces.join(",") === "0,1,2,3", "each at the next count, so none can be replayed (" + nonces.join(",") + ")");
+  ok(nonces.join(",") === "0,1,2,3,4,5,6,7", "each at the next count, so none can be replayed (" + nonces.join(",") + ")");
 }
 
 console.log(fails ? `${fails} FAILED` : "ALL PASSED");

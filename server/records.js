@@ -53,11 +53,16 @@ export const SCHEMA = `
   create index if not exists holder_signatures_assignment on holder_signatures (assignment, seq);
 `;
 
+// A pledge's lender signs in as the record's ID with this suffix (A00001~P): a separate passkey,
+// for the one act that's theirs, releasing the pledge.
+export const LENDER = "~P";
+
 // Status moves an assignee makes, and what each is called when signed.
 const SIGNED_MOVES = {
   "Issued>Accepted": "accept",
   "Issued>Rejected": "rejectAssignment",
   "Accepted>Locked": "lock",
+  "Locked>Accepted": "unlock",
   "Issued>Cancelled": "cancelAssignOut", // an assignor taking back an assign-out nobody has claimed
 };
 
@@ -79,10 +84,18 @@ export function signedActions({ before, after }) {
     if (a.receiptRef && a.receiptRef !== o?.receiptRef)
       acts.push({ ref: a.id, fn: "recordReceipt", signer: a.id, args: [a.bond, a.id, a.receiptRef, a.receivedOn || ""] });
     if (o && o.status !== a.status) {
-      const fn = SIGNED_MOVES[o.status + ">" + a.status];
-      if (fn) acts.push({ ref: a.id, fn, signer: fn === "cancelAssignOut" ? a.parent : a.id,
-        args: [a.bond, a.id, fn === "rejectAssignment" ? String(a.rejectionReason || "") : ""] });
+      let fn = SIGNED_MOVES[o.status + ">" + a.status];
+      // Lifting a lock: the assignee's own act, unless its lender has claimed the pledge, which only they release.
+      if (fn === "unlock" && o.lender && !o.lender.releasedOn) fn = "releasePledge";
+      // An accepted assignment ends as replaced only with its assignee's consent (a parent emptied by its assign-outs isn't signed).
+      if (o.status + ">" + a.status === "Accepted>Superseded" && a.replacementAnswer === "consented") fn = "consentReplacement";
+      if (fn) acts.push({ ref: a.id, fn, signer: fn === "cancelAssignOut" ? a.parent : fn === "releasePledge" ? a.id + LENDER : a.id,
+        args: [a.bond, a.id, fn === "rejectAssignment" ? String(a.rejectionReason || "")
+          : fn === "lock" ? [a.lockKind || "", a.pledgeTo || ""].join("|")
+          : fn === "consentReplacement" ? String(o.replacement?.newId || "") : ""] });
     }
+    if (o && o.status === a.status && a.replacementAnswer === "declined" && o.replacementAnswer !== "declined")
+      acts.push({ ref: a.id, fn: "declineReplacement", signer: a.id, args: [a.bond, a.id, String(o.replacement?.newId || "")] });
   }
   return acts;
 }

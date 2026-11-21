@@ -50,7 +50,23 @@ export function sayActs(summary) {
     } else if (a.template === "Assignment" && a.choice === "Lock") {
       const on = made("Assignment")[0]?.args || {};
       lines.push("Lock " + on.recordId + " (" + a.args.kind + ": " + a.args.reason + ").");
-      lines.push("While it's locked nothing can be assigned out or redeemed; only the issuer can unlock it.");
+      if (a.args.kind === "pledge" && a.args.lender && a.args.lender !== "none")
+        lines.push("Pledged to " + a.args.lender + (/\.$/.test(a.args.lender) ? "" : ".") + " While it's locked nothing can be assigned out, redeemed or replaced. Once " + a.args.lender + " claims the pledge, only they can release it.");
+      else lines.push("While it's locked nothing can be assigned out, redeemed or replaced; you can unlock it yourself.");
+    } else if (a.template === "Assignment" && a.choice === "Unlock") {
+      const on = made("Assignment")[0]?.args || {};
+      lines.push("Unlock " + on.recordId + ": it's back in effect, and you can assign out from it again.");
+    } else if (a.template === "Assignment" && a.choice === "ReleasePledge") {
+      const on = made("Assignment")[0]?.args || {};
+      lines.push("Release your pledge on " + on.recordId + " (" + dollars(on.units) + ", held by " + on.assigneeName + "). It's unlocked, and you no longer hold it as security.");
+    } else if (a.template === "ReplacementProposal" && a.choice === "Consent") {
+      const offer = made("AssignmentOffer")[0]?.args || {};
+      lines.push("Agree to the issuer replacing " + offer.parentId + ": it ends, and " + offer.recordId + " is offered to " + offer.assigneeName + " for the same " + dollars(offer.units) + ".");
+      lines.push("New signed paper: " + short(offer.instrumentHash) + ". You no longer hold " + offer.parentId + ".");
+    } else if (a.template === "ReplacementProposal" && a.choice === "Decline") {
+      lines.push("Decline the issuer's proposal to replace your assignment. Nothing about it changes.");
+    } else if (a.choice === "ReplaceByConsent" || a.choice === "Withdraw") {
+      // part of consenting to a replacement, said above
     } else if (a.template === "Assignment" && a.choice === "CancelAssignOut") {
       const rest = made("Assignment")[0]?.args || {};
       lines.push("Cancel your unclaimed assign-out; its units come back to " + rest.recordId + ", which then holds " + dollars(rest.units) + ".");
@@ -61,7 +77,8 @@ export function sayActs(summary) {
   return lines;
 }
 const SAY_KIND = { accept: "your acceptance", reject: "your rejection", assignOut: "your assign-out", reclaim: "taking back the units",
-  mailing: "the mailing", ucc3: "the UCC-3", receipt: "your delivery receipt", lock: "your lock", cancelOut: "cancelling your assign-out" };
+  mailing: "the mailing", ucc3: "the UCC-3", receipt: "your delivery receipt", lock: "your lock", cancelOut: "cancelling your assign-out",
+  unlock: "your unlock", release: "releasing the pledge", consentReplacement: "agreeing to the replacement", declineReplacement: "declining the replacement" };
 
 /**
  * Signs, one by one, the acts the register has and Canton doesn't. Each transaction is checked

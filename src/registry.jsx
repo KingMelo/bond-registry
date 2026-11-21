@@ -259,7 +259,8 @@ export const rootId = (id) => String(id).replace(/(-A\d+)-\d+$/, "$1");
 
 /** The next issuer-made ID on a bond: one past the highest A-number in use (assign-outs don't count). */
 export function nextIssuedId(reg, bondId) {
-  const n = reg.filter((a) => a.bond === bondId).map((a) => /-A(\d+)$/.exec(a.id)?.[1]).filter(Boolean)
+  // Numbers held by replacement proposals count too, so a consent never finds its number taken.
+  const n = reg.filter((a) => a.bond === bondId).flatMap((a) => [a.id, a.replacement?.newId]).map((id) => /-A(\d+)$/.exec(id || "")?.[1]).filter(Boolean)
     .reduce((m, x) => Math.max(m, Number(x)), 0);
   return bondId + "-A" + String(n + 1).padStart(5, "0");
 }

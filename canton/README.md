@@ -20,7 +20,7 @@ from Docker Hub: `docker create digitalasset/daml-sdk:3.4.0-rc2`, then copy `/ho
 cd canton
 daml build
 daml test                                                   # the template tests
-daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.5.0.dar &
+daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.6.0.dar &
 node pilot/passkey-signing.mjs                              # signing pilot (key in Node)
 BROWSER=1 node pilot/passkey-signing.mjs                    # the same, key made in Chromium's WebCrypto
 (cd pilot && npm install && node backup-key.mjs)            # backup key; uses the node's admin API (port 6866)
@@ -30,7 +30,7 @@ node e2e/canton-backfill-e2e.mjs                            # records from befor
 
 ## Results (Nov 19, 2026)
 
-**Templates: all 11 test scripts pass** (7 at first, then numbering, mailing/receipt/UCC-3, lock/cancel/redeem, and prior instruments/replacement). No record without its paper's SHA-256; never more than is left to
+**Templates: all 11 test scripts pass** (7 at first, then numbering, mailing/receipt/UCC-3, lock/cancel/redeem, and prior instruments/replacement; locks, pledges and consented replacement since 0.6.0). No record without its paper's SHA-256; never more than is left to
 assign; only the issuer issues; nobody but the assignee acts on an assignment (the issuer can't even
 archive it); an assign-out needs its own paper and the one-dash number, and the remainder keeps the
 original paper with the new one listed; each holder controls only their portion; a rejection needs
@@ -69,18 +69,27 @@ at setup for them to print and keep offline, a second device of theirs (each dev
 **Model findings.**
 - *No authenticated response.* Past the 30 days, the register and Canton record only that the
   assignment was offered and not answered (`RecordNoResponse`). Neither says it was accepted or took
-  effect; that's for counsel. It stays an offer, and the assignee can still accept or reject.
+  effect; that's left open on purpose. It stays an offer, and the assignee can still accept or reject.
 - *One-dash numbering.* One count across a whole tree under A00001 would have to be visible to every
   holder in it. The platform supplies the next number; the template checks its form, the register its uniqueness.
 - *Returning units privately.* A rejected assign-out leaves a `UnitsReturned` record that the assignor
   reclaims, so the new assignee never sees the assignor's own contract.
-- *Redemption* is the issuer's choice under the template's terms, as it is today; whether the
-  assignee's consent should also be required is for counsel.
+- *Redemption* is the issuer's act under the bond's terms, with the payment confirmation's
+  fingerprint: paying out shouldn't wait on the assignee, and it can't happen while they've locked it.
+- *Control (0.6.0).* The issuer can no longer lift a lock or replace an assignment in effect on its
+  own. A lock is the assignee's: they lift it themselves. A pledge names its lender; the assignee
+  gives the lender a one-time code, the lender claims the pledge with it on their own device (own
+  passkey, own Canton party, named on the assignment), and from then on only the lender releases it,
+  not the assignee or the issuer. Until it's claimed, the assignee can withdraw it. Replacing an
+  assignment in effect is a `ReplacementProposal` from the issuer; nothing changes unless the
+  assignee consents with their own key, and they can decline. An offer nobody has accepted, the
+  issuer can still replace on its own.
 
 ## The register and Canton together (Nov 19, 2026)
 
 `e2e/canton-e2e.mjs` runs the registry's three servers against the node, with browsers playing the
-assignees. All 63 checks pass, on repeat runs:
+assignees. All 74 checks pass (three runs in a row; an earlier two of seven runs lost the rejection's
+Canton prompt, cause not yet found; the test now logs any refused request on that page):
 
 - Issuing in the register puts the bond and an offer on Canton.
 - After the passkey, the assignee makes their keys: a device key the browser stores non-extractable,
@@ -91,18 +100,23 @@ assignees. All 63 checks pass, on repeat runs:
   the assignor's mailing and UCC-3 for that assign-out, a new assignee's receipt and rejection with
   its reason, and the assignor taking the units back.
 - The issuer's own mailing and UCC-3 for an assignment it made go on Canton as the issuer's party
-  right after it saves them, so nobody else is asked to sign; so do its unlocks, its redemptions
-  (with the payment confirmation's fingerprint) and its cancelling of a disputed assign-out.
-- An assignee's lock (no assign-outs or redemption until the issuer unlocks it) and an assignor
-  cancelling an unclaimed assign-out (one act: the units come straight back) are signed with their
-  own key. Who cancelled is kept by the server, never taken from a page.
+  right after it saves them, so nobody else is asked to sign; so do its redemptions (with the
+  payment confirmation's fingerprint), its replacement proposals and its cancelling of a disputed
+  assign-out.
+- An assignee's lock and unlock, and an assignor cancelling an unclaimed assign-out (one act: the
+  units come straight back), are signed with their own key. Who cancelled is kept by the server,
+  never taken from a page.
+- A pledge: the lender claims it on their own device with the assignee's code, makes their own
+  Canton keys, is named on the assignment, sees only that assignment, and releases it with their own
+  key. Once it's claimed the assignee's page has no unlock, and the issuer can't lift it either.
+- A replacement proposed for an assignment in effect: the assignee declines it with their key and
+  nothing changes (here), or consents and the new record's offer takes its place, same amount, with
+  the proposed paper and the memo's fingerprint kept (`e2e/canton-backfill-e2e.mjs`).
 - Prior instruments the issuer records come off what's left to assign on Canton, identified only by
   a fingerprint (who holds them stays in the register); a reversal keeps the entry on record as
   reversed, with its reason's fingerprint.
-- An assignment the issuer replaces is replaced on Canton: the new record's offer, same amount, new
-  paper, with what replaced it and the replacement memo's fingerprint kept. As in the register, the
-  issuer can replace even an accepted assignment without its holder's signature; whether that fits
-  the holder's control is a question for counsel.
+- An offer the issuer replaces is replaced on Canton: the new record's offer, same amount, new
+  paper, with what replaced it and the replacement memo's fingerprint kept.
 - The server's own Canton writes for a bond run one at a time, and the 30-day job re-checks any
   no-response note that didn't reach Canton. Each new assignee sets up their own keys
   and sees only their own contracts.
@@ -115,7 +129,7 @@ assignees. All 63 checks pass, on repeat runs:
 - "Lost a device? Replace it" with the code drops every other device key: the lost browser's key is
   refused by Canton from then on, the new one works. The register is unaffected throughout.
 
-**Records from before Canton was switched on** (`e2e/canton-backfill-e2e.mjs`, 20 checks): when the
+**Records from before Canton was switched on** (`e2e/canton-backfill-e2e.mjs`, 24 checks with the consented replacement): when the
 issuer service starts with Canton on, each approved bond not yet on Canton is brought across once:
 the bond, its prior instruments, an offer for each live record the issuer made, and the issuer's own
 facts on them (mailings, UCC-3s). An offer holds what its record held before any assign-outs, so the
@@ -134,5 +148,5 @@ and node kinds these contracts produce (records, text, numbers, dates and times,
 optionals, lists, contract IDs, creates, exercises, fetches); a transaction with anything else is
 refused rather than signed.
 
-The package is at 0.5.0: changing a template means a new version, since a shared Canton network
+The package is at 0.6.0: changing a template means a new version, since a shared Canton network
 keeps every version that was uploaded.

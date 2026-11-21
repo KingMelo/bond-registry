@@ -7,7 +7,9 @@ import crypto from "node:crypto";
 
 // The acts a holder signs. Anything else isn't theirs to sign.
 export const SIGNED = new Set(["accept", "rejectAssignment", "lock", "cancelAssignOut", "assignOut",
-  "registerHolderKey", "recordFiling", "recordMailing", "recordReceipt"]);
+  "registerHolderKey", "recordFiling", "recordMailing", "recordReceipt",
+  // Lifting their own lock; answering a proposed replacement; a pledge's lender claiming and releasing it.
+  "unlock", "consentReplacement", "declineReplacement", "claimPledge", "releasePledge"]);
 
 /** The challenge the record `signerId` (a display ID) signs for `fn` with these details, at this count. */
 export function challengeFor({ signerId, nonce, fn, args }) {

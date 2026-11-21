@@ -168,6 +168,41 @@ replacementOffer issuer platform bondId oldId units newRecordId newHash observer
   units; instrumentHash = newHash; ucc3Hash = None; assigneeName = ""; assignee = None
   mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None; noResponseAsOf = None; observers
 
+------------------------------------------------------------------ replacing an accepted assignment
+
+-- The issuer proposes to replace an accepted assignment; nothing changes unless its assignee consents.
+template ReplacementProposal
+  with
+    issuer : Party
+    platform : Party
+    assignee : Party
+    bondId : Text
+    recordId : Text
+    newRecordId : Text
+    newHash : Text
+    newAssigneeName : Text
+    reasonHash : Text
+  where
+    signatory issuer
+    observer assignee, platform
+    ensure isHash newHash && isHash reasonHash
+
+    choice Consent : ContractId AssignmentOffer
+      with assignmentCid : ContractId Assignment
+      controller assignee
+      do
+        a <- fetch assignmentCid
+        assertMsg "That's another assignment." (a.recordId == recordId && a.bondId == bondId && a.assignee == assignee)
+        exercise assignmentCid ReplaceByConsent with newRecordId; newHash; newAssigneeName; reasonHash
+
+    choice Decline : ()
+      controller assignee
+      do pure ()
+
+    choice Withdraw : ()
+      controller issuer
+      do pure ()
+
 ------------------------------------------------------------------ offer
 
 template AssignmentOffer
@@ -243,7 +278,7 @@ template AssignmentOffer
       controller fromSomeNote "No assignee yet." assignee
       do create Assignment with
            issuer; platform; assignee = fromSomeNote "" assignee; assignor; assigneeName; bondId; recordId; parentId
-           units; instrumentHash; carveOuts = []; ucc3Hash; mailedOn; deliveryRef; receivedOn; receiptRef; locked = None; observers
+           units; instrumentHash; carveOuts = []; ucc3Hash; mailedOn; deliveryRef; receivedOn; receiptRef; locked = None; pledgeTo = None; pledgee = None; observers
 
     -- The assignee rejects, with a reason of 255+ characters. The units go back where they came
     -- from: a UnitsReturned record the assignor (or the issuer) reclaims. The assignee never sees
@@ -331,11 +366,13 @@ template Assignment
     deliveryRef : Optional Text
     receivedOn : Optional Date
     receiptRef : Optional Text
-    locked : Optional Text    -- the assignee's lock and why (a pledge, a pending sale…); only the issuer unlocks
+    locked : Optional Text    -- the assignee's lock and why (a pledge, a pending sale…)
+    pledgeTo : Optional Text  -- a pledge's lender, by name, as the assignee named them
+    pledgee : Optional Party  -- that lender's party, once they've claimed the pledge: only they release it
     observers : [Party]
   where
     signatory issuer, assignee
-    observer assignor, platform, observers
+    observer assignor, platform, observers, optional [] (\p -> [p]) pledgee
     ensure units >= 0 && isHash instrumentHash
 
     -- Assign part (or all) of it onward. The new paper is required; the remainder keeps the
@@ -376,25 +413,45 @@ template Assignment
         archive back
         create this with units = units + r.units
 
-    -- The assignee locks it (a pledge, a pending sale, a suspected compromise): no assign-outs and
-    -- no redemption until the issuer unlocks it.
+    -- The assignee locks it (a pledge, a pending sale, a suspected compromise): no assign-outs, no
+    -- redemption and no replacement while it's locked. A pledge names its lender.
     choice Lock : ContractId Assignment
       with
         kind : Text
         reason : Text
+        lender : Optional Text
       controller assignee
       do
         assertMsg "It's already locked." (locked == None)
-        create this with locked = Some (kind <> ": " <> reason)
+        let pledge = kind == "pledge"
+        assertMsg "A pledge names its lender." (not pledge || optional False (\n -> T.length n > 0) lender)
+        create this with locked = Some (kind <> ": " <> reason); pledgeTo = if pledge then lender else None
 
-    -- The issuer unlocks it, on the paperwork (a lender's release, an identity check).
+    -- The assignee lifts their own lock: any lock but a pledge its lender has claimed.
     choice Unlock : ContractId Assignment
-      with release : Text
-      controller issuer
+      controller assignee
       do
         assertMsg "It isn't locked." (locked /= None)
-        assertMsg "Record what the unlock rests on." (T.length release > 0)
-        create this with locked = None
+        assertMsg "Its lender has claimed the pledge; only they can release it." (pledgee == None)
+        create this with locked = None; pledgeTo = None
+
+    -- The lender has claimed the pledge on the register (with the code the assignee gave them):
+    -- the platform names their party here, and from then on only they release it.
+    choice BindPledgee : ContractId Assignment
+      with party : Party
+      controller platform
+      do
+        assertMsg "It isn't pledged." (pledgeTo /= None)
+        assertMsg "Its lender is already named." (pledgee == None)
+        create this with pledgee = Some party
+
+    -- The lender releases the pledge, with their own key.
+    choice ReleasePledge : ContractId Assignment
+      with lender : Party
+      controller lender
+      do
+        assertMsg "Only its lender can release it." (pledgee == Some lender)
+        create this with locked = None; pledgeTo = None; pledgee = None
 
     -- Units back from an assign-out that was rejected or cancelled (its paper stays listed:
     -- the carve-out instrument exists, it just never took effect).
@@ -430,16 +487,15 @@ template Assignment
         assertMsg "The date received can't be in the future." (received <= today)
         create this with receivedOn = Some received; receiptRef = Some ref
 
-    -- The issuer replaces this assignment with a new offer (new paper, perhaps a new assignee), same
-    -- amount, as the register allows. The holder's signature isn't asked for: whether that fits
-    -- their control of it is a question for counsel.
-    choice SupersedeAssignment : ContractId AssignmentOffer
+    -- Replaced with a new offer (new paper, perhaps a new assignee), same amount: only with both the
+    -- issuer and the assignee, which is to say through a ReplacementProposal the assignee consents to.
+    choice ReplaceByConsent : ContractId AssignmentOffer
       with
         newRecordId : Text
         newHash : Text
         newAssigneeName : Text
         reasonHash : Text
-      controller issuer
+      controller issuer, assignee
       do
         assertMsg "It's locked; unlock it before replacing it." (locked == None)
         assertMsg "The replacement needs its new signed instrument." (isHash newHash)

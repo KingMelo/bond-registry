@@ -8,7 +8,7 @@
 //      then replace the first browser as lost: its key stops working on Canton; the new one works.
 //
 // Needs Postgres on 127.0.0.1:54329, the apps built, and a Canton sandbox with the registry's DAR:
-//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.5.0.dar)
+//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.6.0.dar)
 // Run from the repo root: node e2e/canton-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -251,6 +251,8 @@ await page.getByRole("button", { name: "Back to my record" }).click().catch(() =
 // Company D, on its own device: transfer code, passkey, its own Canton keys, then rejects with a reason.
 const three = await newBrowser();
 const p3 = three.page;
+// A refused save or Canton call on Company D's page, logged: a step that silently didn't happen shows its cause.
+p3.on("response", async (r) => { if (r.status() >= 400 && /\/api\//.test(r.url())) console.log("[p3]", r.status(), r.url().replace(/^.*\/api/, ""), (await r.text().catch(() => "")).slice(0, 200)); });
 await p3.goto(H + "/assignee?id=" + CHILD);
 await p3.getByLabel("Transfer code").waitFor({ timeout: 15000 });
 await p3.getByLabel("Transfer code").fill(TRANSFER);
@@ -445,19 +447,70 @@ await shot(page2, "c5-replaced");
   await until(async () => !(await onCanton("UnitsReturned", A1 + "-3")), 30000);
   ok((await held()) === before, "and Company A takes the $3.00 back with its own key");
 
-  // Locked by Company A; unlocked by the issuer on the paperwork.
+  // Locked by Company A for a pending sale, and unlocked by Company A: both signed with its own key.
   await page2.getByRole("button", { name: "Lock this record" }).click();
+  await page2.getByLabel("Pending sale").check();
   await page2.getByRole("button", { name: "Lock it" }).click();
-  await answerCanton(page2, /Lock PENS-0001-BD-A00001 \(pledge: .*\)\. While it's locked nothing can be assigned out or redeemed; only the issuer can unlock it\./, "locking");
+  await answerCanton(page2, /Lock PENS-0001-BD-A00001 \(sale: Pending sale\)\. While it's locked nothing can be assigned out, redeemed or replaced; you can unlock it yourself\./, "locking");
   const locked = await until(async () => { const a = await onCanton("Assignment", A1); return a?.createArgument.locked ? a : null; });
   ok(!!locked, "Company A's lock is on Canton, signed with its key (" + locked?.createArgument.locked + ")");
-  {
-    await icommitFresh(async () => { const r = (await st()).reg.find((a) => a.id === A1);
-      return { reg: [{ ...r, status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, unlockRef: "First Bank release, signed Nov 19" }],
-        events: [{ eid: "u" + Date.now(), bond: r.bond, id: r.id, t: "now", ev: "Unlocked", actor: "ISSUER", ref: "First Bank release, signed Nov 19" }] }; });
-  }
+  await page2.getByRole("button", { name: "Unlock: confirm with your passkey" }).click();
+  await answerCanton(page2, /Unlock PENS-0001-BD-A00001: it's back in effect/, "unlocking");
   const unlocked = await until(async () => { const a = await onCanton("Assignment", A1); return a && a.createArgument.locked == null ? a : null; });
-  ok(!!unlocked, "the issuer's unlock is on Canton as its own act");
+  ok(!!unlocked && (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1).status === "Accepted", "and its unlock, signed with its own key: no issuer involved");
+
+  // Pledged to a lender, who claims it on their own device with the code Company A gives them,
+  // makes their own Canton keys, and is the only one who can release it.
+  await page2.getByRole("button", { name: "Lock this record" }).click();
+  await page2.getByLabel("Lender's legal name").fill("First Bank, N.A.");
+  await page2.getByRole("button", { name: "Lock it" }).click();
+  await answerCanton(page2, /Lock PENS-0001-BD-A00001 \(pledge: Pledged to a lender\)\. Pledged to First Bank, N\.A\. While it's locked.*only they can release it/, "pledging");
+  const pledged = await until(async () => { const a = await onCanton("Assignment", A1); return a?.createArgument.pledgeTo === "First Bank, N.A." ? a : null; });
+  ok(!!pledged && pledged.createArgument.pledgee == null, "the pledge is on Canton, naming First Bank, N.A.; no lender party yet");
+  await page2.getByTestId("lender-code").waitFor({ timeout: 20000 });
+  const LCODE = (await page2.getByTestId("lender-code").innerText()).trim();
+  const bank = await newBrowser();
+  const pb = bank.page;
+  await pb.goto(H + "/assignee?id=" + A1 + "~P");
+  await pb.getByLabel("Transfer code").fill(LCODE, { timeout: 15000 });
+  await pb.getByRole("button", { name: "Continue" }).click();
+  await pb.getByRole("button", { name: "Set up device key" }).click();
+  await pb.getByRole("button", { name: "Make my keys" }).click({ timeout: 20000 });
+  await pb.getByTestId("recovery-code").waitFor({ timeout: 30000 });
+  const BCODE = (await pb.getByTestId("recovery-code").innerText()).trim().split(/\s+/);
+  await pb.getByLabel(/type its last group/).fill(BCODE[BCODE.length - 1]);
+  await pb.getByRole("button", { name: "I've kept it: continue" }).click();
+  await pb.getByRole("heading", { name: "Pledge of " + A1 }).waitFor({ timeout: 20000 });
+  const bankParty = (await q("select party from canton_holders where record = $1", [A1 + "~P"]))[0]?.party;
+  const named = await until(async () => { const a = await onCanton("Assignment", A1); return a?.createArgument.pledgee === bankParty ? a : null; });
+  ok(!!bankParty && !!named && bankParty !== holder.party, "the lender claims it and has its own party on Canton, named on the pledged assignment");
+  {
+    const bankSees = (await acsFor(bankParty)).map((e) => e.createArgument.recordId);
+    ok(bankSees.length === 1 && bankSees[0] === A1, "the lender sees only the assignment pledged to it (" + bankSees.join(", ") + ")");
+  }
+  await signIn2();
+  ok(!(await page2.getByRole("button", { name: /Unlock|Withdraw the pledge/ }).count()), "once it's claimed, Company A has no way to unlock it");
+  await pb.getByRole("button", { name: "Release the pledge: confirm with your passkey" }).click();
+  await answerCanton(pb, /Release your pledge on PENS-0001-BD-A00001 \(\$[\d,.]+, held by Company A\)/, "releasing");
+  const released = await until(async () => { const a = await onCanton("Assignment", A1); return a && a.createArgument.locked == null && a.createArgument.pledgee == null ? a : null; });
+  ok(!!released && (await call(H, "GET", "/api/state")).reg.find((a) => a.id === A1).status === "Accepted", "the lender's release is on Canton, signed with its own key: unlocked, back in effect");
+  await bank.ctx.close();
+
+  // A replacement the issuer proposes: Company A declines it with its own key, and nothing changes.
+  {
+    const rp = { newId: "PENS-0001-BD-A00009", party: "Company A Holdings", contact: "Treasurer", address: "1 Main St", docHash: H32(), reasonDoc: H32(), proposedOn: "Nov 21, 2026", assignor: "Penson Trust (replacement)" };
+    await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: rp.newId, passkey: "WWWW-XXXX-YYYY-ZZZZ" });
+    await icommitFresh(async () => ({ reg: [{ ...(await st()).reg.find((a) => a.id === A1), replacement: rp }] }));
+    const prop = await until(async () => (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:ReplacementProposal") && e.createArgument.recordId === A1));
+    ok(prop?.createArgument.newRecordId === rp.newId && prop.createArgument.assignee === holder.party, "the issuer's proposal is on Canton, addressed to Company A's party");
+    await signIn2();
+    await page2.getByTestId("replacement").waitFor({ timeout: 20000 });
+    await page2.getByRole("button", { name: "Decline: confirm with your passkey" }).click();
+    await answerCanton(page2, /Decline the issuer's proposal to replace your assignment\. Nothing about it changes\./, "declining the replacement");
+    await until(async () => !(await acsFor(issuerParty)).some((e) => e.templateId.endsWith(":Registry:ReplacementProposal")), 30000);
+    ok(!(await acsFor(issuerParty)).some((e) => e.templateId.endsWith(":Registry:ReplacementProposal")) && !!(await onCanton("Assignment", A1)),
+      "declined with its own key: the proposal is gone and A00001 stands");
+  }
 
   // Redeemed by the issuer, with the payment confirmation's fingerprint.
   {

@@ -48,7 +48,9 @@ const RESPONSE_DAYS = Number(process.env.RESPONSE_DAYS || 30);
 // Never stored in the record itself: credential state lives in its own table.
 const SECRET_KEYS = ["passkey", "credLocked", "hasPasskey", "attempts", "chain", "deviceKey", "accessCode",
   // Kept by the server only: the holder's device key and when the mailing went out.
-  "holder", "deliveredAt"];
+  "holder", "deliveredAt",
+  // A pledge's lender's passkey, and whether they've claimed it (shown, never taken from a page).
+  "lender", "pledgeClaimed"];
 // Contact details and mail numbers stay out of the public holder portal.
 const HOLDER_HIDDEN = ["address", "instrumentMail", "passkeyMail", "receiptMail", "requestedContact"];
 // Issuer codes that would be confusing or are kept for the platform.
@@ -256,8 +258,10 @@ const RELAYER_MOVES = {
   Issued: ["Accepted", "Rejected", "Cancelled"],
   // Redemption isn't requested through the registry: the fiduciary paperwork tells holders where
   // to get paid, and the issuer records the outcome.
+  // Superseded: emptied by assign-outs, or replaced with the assignee's consent.
   Accepted: ["Locked", "Superseded"],
-  Locked: ["Superseded"],
+  // Unlocked by the assignee, or a claimed pledge released by its lender.
+  Locked: ["Accepted"],
 };
 
 // A rejection explains itself: the issuer and the assignor read it.
@@ -270,7 +274,10 @@ const FILING_FIELDS = ["filingNumber", "filedBy", "filedOn", "filingDoc", "filin
 const MAILING_FIELDS = ["instrumentMail", "mailedOn", "mailingDoc", "mailingFile", "deliveryRef"];
 const RECEIPT_FIELDS = ["receiptMail", "receivedOn", "receiptDoc", "receiptFile", "receiptRef", "receiptMatches"];
 const HOLDER_FIELDS = ["status", "units", "accepted", "effective", "effectiveOn", "rejectionReason", "rejectedOn",
-  "lockKind", "lockReason", "lockedOn", "unlockRequested", ...RECEIPT_FIELDS];
+  "lockKind", "lockReason", "lockedOn", "pledgeTo", "pledgeContact", "replacementAnswer", ...RECEIPT_FIELDS];
+// What a pledge's lender may change: releasing it, which clears the lock.
+const LENDER_FIELDS = ["status", "lockKind", "lockReason", "lockedOn", "pledgeTo", "pledgeContact"];
+const LOCK_FIELDS = ["lockKind", "lockReason", "lockedOn", "pledgeTo", "pledgeContact"];
 const IGNORED = ["rev", "chain", "deviceKey", "hasPasskey", "credLocked", "holder", "deliveredAt", "noResponseAsOf", "cancelledBy", "address", "instrumentMail", "passkeyMail", "requestedContact"];
 function changedFields(before, after) {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
@@ -334,6 +341,27 @@ function activeKey(data) {
   const k = data?.holder;
   return k && k.x ? k : null;
 }
+/* A pledge's lender signs in as "<record>~P", with their own passkey, kept on the record as `lender`. */
+const LENDER = records.LENDER;
+const isLender = (id) => String(id || "").endsWith(LENDER);
+const baseOf = (id) => (isLender(id) ? String(id).slice(0, -LENDER.length) : String(id || ""));
+// Who a sign-in or signature stands for: a record's assignee (the record itself), or its pledge's
+// lender, as a record of its own whose key is the lender's. None for a lender once there's no pledge.
+// `signing`: checking a signature made in this very save, after which the pledge may already be released.
+async function subjectOf(q, id, { forUpdate = false, signing = false } = {}) {
+  const d = (await q.query("select data from assignments where id = $1" + (forUpdate ? " for update" : ""), [baseOf(id)])).rows[0]?.data;
+  if (!d || !isLender(id)) return d;
+  // Signing: also once released, for the release's own signature (in the register, then on Canton).
+  if (!(signing && d.lender) && (d.status !== "Locked" || d.lockKind !== "pledge" || !d.pledgeTo)) return null;
+  return { ...d, id, party: d.pledgeTo, holder: d.lender || null, lenderOf: d.id };
+}
+const keyPath = (id) => (isLender(id) ? "lender" : "holder");
+// A pledge its lender has claimed and not yet released: then only they can lift the lock.
+const claimed = (d) => !!(d?.lender && !d.lender.releasedOn);
+const LOCK_KINDS = ["pledge", "sale", "compromise", "other"];
+const dayLabel = () => new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+const isoDay = () => new Date().toISOString().slice(0, 10);
+
 function deviceKeyOf(data) {
   const k = activeKey(data);
   return k ? { fingerprint: holderKeys.fingerprint(k.x), since: k.since, credId: k.credId } : null;
@@ -364,6 +392,13 @@ async function readState(bondFilter, params) {
       const out = { ...data, rev: Number(rev), hasPasskey: cred.has(data.id), credLocked: cred.get(data.id)?.locked || false,
         deviceKey: deviceKeyOf(data), ...(APP === "holder" ? {} : { accessCode: sealed.get(data.id) || null }) };
       delete out.holder;
+      out.pledgeClaimed = claimed(data);
+      delete out.lender;
+      // A replacement proposal names the new assignee; their contact details stay with the issuer.
+      if (APP === "holder" && out.replacement) {
+        const { newId, party, proposedOn, docHash, reasonDoc, withdrawnOn } = out.replacement;
+        out.replacement = { newId, party, proposedOn, docHash, reasonDoc, withdrawnOn: withdrawnOn || null };
+      }
       delete out.chain;
       delete out.tx;
       if (APP === "holder") for (const k of HOLDER_HIDDEN) delete out[k];
@@ -512,6 +547,29 @@ function checkPrior(b, before) {
 
 const stripBond = (b) => { const { issuerId, review, reviewNote, rev, chain: _c, ...rest } = b; return rest; };
 
+/* A replacement of an assignment in effect, proposed by the issuer: the new record's details and
+   paper, and the memo saying why. A pending proposal can only be withdrawn; a new one replaces one
+   that was answered or withdrawn. It takes effect only when the assignee consents. */
+function checkReplacement(a, b4) {
+  const was = b4.replacement || null, now = a.replacement || null;
+  if (JSON.stringify(was) === JSON.stringify(now)) return;
+  const pending = was && !was.withdrawnOn && !b4.replacementAnswer;
+  if (pending) {
+    const same = now && Object.keys({ ...was, ...now }).every((k) => k === "withdrawnOn" || JSON.stringify(was[k] ?? null) === JSON.stringify(now[k] ?? null));
+    if (!same || !now.withdrawnOn)
+      throw new Reject(409, "A replacement is waiting for " + a.id + "'s assignee; it can only be withdrawn.");
+    return;
+  }
+  if (!now) throw new Reject(409, "A replacement on record stays on record.");
+  if (b4.status !== "Accepted") throw new Reject(409, "Only an assignment in effect takes a replacement proposal; " + a.id + " is " + b4.status + ".");
+  if (!new RegExp("^" + a.bond.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-A\\d{5}$").test(String(now.newId || ""))) throw new Reject(400, "The replacement needs its new record number.");
+  if (!records.isHash(now.docHash)) throw new Reject(400, "Attach the replacement's signed instrument. Only its SHA-256 is kept.");
+  if (!records.isHash(now.reasonDoc)) throw new Reject(400, "Attach the replacement memo. Only its SHA-256 is kept.");
+  if (!String(now.party || "").trim() || !String(now.address || "").trim()) throw new Reject(400, "Enter who the replacement is to, and where to mail it.");
+  if (now.withdrawnOn) throw new Reject(400, "A new proposal can't start withdrawn.");
+  a.replacementAnswer = null; a.replacementAnsweredOn = null;
+}
+
 // A new record needs the SHA-256 of its signed instrument: no paper, no record.
 function needsDocument(before, a) {
   if (!before && !records.isHash(a.docHash))
@@ -585,7 +643,7 @@ if (APP === "holder") {
     const { bonds = [], reg = [], events = [] } = body || {};
     if (bonds.length) throw new Reject(403, "The assignee portal cannot change bonds.");
     const session = readToken(body?.token);
-    const clean = [], units = [];
+    const clean = [], units = [], consented = [], released = [], withdrawn = [];
     for (const raw of reg) {
       const a = cleanRecord(raw);
       for (const k of HOLDER_HIDDEN) if (!(k in raw) || raw[k] === undefined) delete a[k];
@@ -619,15 +677,19 @@ if (APP === "holder") {
       // The record of no authenticated response, and of who cancelled, are the server's alone.
       if (before?.noResponseAsOf) a.noResponseAsOf = before.noResponseAsOf; else delete a.noResponseAsOf;
       if (before?.cancelledBy) a.cancelledBy = before.cancelledBy; else delete a.cancelledBy;
+      // A replacement proposal is the issuer's; the assignee only answers it.
+      if (before?.replacement) a.replacement = before.replacement; else delete a.replacement;
+      for (const k of ["replacementAnsweredOn", "unlockedOn", "unlockedBy", "releasedOn"]) if (before?.[k] !== undefined) a[k] = before[k]; else delete a[k];
       const changed = before ? changedFields(before, a) : [];
       {
         if (!session) throw new Reject(401, "Sign in with your assignment ID and access code first.");
         const me = (await c.query("select data->>'parent' as parent, data->>'origin' as origin from assignments where id = $1", [session.id])).rows[0];
-        const role = a.id === session.id ? "holder"
+        const role = isLender(session.id) ? (before && a.id === baseOf(session.id) ? "lender" : null)
+          : a.id === session.id ? "holder"
           : (before?.origin || a.origin) === "AssignOut" && (before ? before.parent : a.parent) === session.id ? "assignor"
           : before && me?.origin === "AssignOut" && me.parent === a.id ? "parent" : null;
         if (!role) throw new Reject(403, "You're signed in to " + session.id + "; " + a.id + " isn't yours to change.");
-        const may = role === "holder" ? HOLDER_FIELDS : role === "assignor" ? ["status", "units", ...FILING_FIELDS, ...MAILING_FIELDS] : ["status", "units"];
+        const may = role === "lender" ? LENDER_FIELDS : role === "holder" ? HOLDER_FIELDS : role === "assignor" ? ["status", "units", ...FILING_FIELDS, ...MAILING_FIELDS] : ["status", "units"];
         // The mailing of an assign-out: by its assignor, once, before the assignee answers. Its date starts the 30 days.
         const mailing = before && (("instrumentMail" in raw && raw.instrumentMail !== before.instrumentMail) || (a.mailedOn && a.mailedOn !== before.mailedOn));
         if (mailing) {
@@ -671,6 +733,40 @@ if (APP === "holder") {
         if (role === "holder" && before?.origin === "AssignOut" && a.status === "Cancelled") throw new Reject(403, "The assignee can reject it, not cancel it.");
         if (role === "parent" && a.status !== before.status && !(a.status === "Superseded" && Number(a.units) === 0)) throw new Reject(403, "You can't change " + a.id + ".");
         if (role === "holder" && a.status === "Accepted" && before?.status === "Issued") Object.assign(a, { effective: "holder" });
+        // Locks: the assignee's. A pledge names its lender; once the lender claims it, only they release it.
+        if (before && before.status === "Accepted" && a.status === "Locked") {
+          if (role !== "holder") throw new Reject(403, "Only the assignee can lock " + a.id + ".");
+          if (!LOCK_KINDS.includes(a.lockKind)) throw new Reject(400, "Choose what the lock is for.");
+          if (a.lockKind === "pledge") {
+            a.pledgeTo = String(a.pledgeTo || "").trim();
+            if (!a.pledgeTo) throw new Reject(400, "Name the lender the record is pledged to.");
+          } else { a.pledgeTo = null; a.pledgeContact = null; }
+        }
+        if (before && before.status === "Locked" && a.status === "Accepted") {
+          if (claimed(before) && role !== "lender") throw new Reject(403, "Its lender has claimed the pledge; only they can release " + a.id + ".");
+          if (!claimed(before) && role !== "holder") throw new Reject(403, "Only the assignee can unlock " + a.id + ".");
+          for (const k of LOCK_FIELDS) a[k] = null;
+          Object.assign(a, { unlockedOn: isoDay(), unlockedBy: role === "lender" ? "lender" : "assignee" });
+          if (role === "lender") { a.releasedOn = isoDay(); released.push(a.id); } else withdrawn.push(a.id);
+        }
+        if (role === "lender" && (!before || a.status !== "Accepted" || before.status !== "Locked")) throw new Reject(403, "A lender can only release the pledge.");
+        if (before?.status === "Locked" && a.status === "Locked" && LOCK_FIELDS.some((k) => changed.includes(k)))
+          throw new Reject(409, "A lock can't be changed while it's on; lift it first.");
+        // A replacement the issuer proposed: the assignee consents (the record ends as replaced) or declines.
+        if (before && changed.includes("replacementAnswer")) {
+          const p = before.replacement;
+          if (role !== "holder" || !p || p.withdrawnOn || before.replacementAnswer) throw new Reject(409, "There's no replacement waiting for your answer on " + a.id + ".");
+          if (a.replacementAnswer === "consented") {
+            if (before.status !== "Accepted" || a.status !== "Superseded") throw new Reject(409, before.status === "Locked" ? "Unlock " + a.id + " before agreeing to replace it." : "Only an assignment in effect can be replaced.");
+            a.supersededDoc = p.reasonDoc;
+            consented.push({ before, p });
+          } else if (a.replacementAnswer === "declined") {
+            if (a.status !== before.status) throw new Reject(409, "Declining a replacement leaves the assignment as it is.");
+          } else throw new Reject(400, "Answer the replacement: consent or decline.");
+          a.replacementAnsweredOn = isoDay();
+        }
+        if (before && before.status === "Accepted" && a.status === "Superseded" && role === "holder" && a.replacementAnswer !== "consented")
+          throw new Reject(403, a.id + " can only be replaced with your consent to the issuer's proposal.");
       }
       units.push({ a, before });
       needsDocument(before, a);
@@ -707,6 +803,16 @@ if (APP === "holder") {
       delta.delete(a.id);
     }
     for (const [id, d] of delta) if (d) throw new Reject(422, "The save must include " + id + " with its amount adjusted.");
+    // A consented replacement: the issuer's new record, as proposed, takes the old one's place.
+    for (const { before, p } of consented) {
+      if ((await c.query("select 1 from assignments where id = $1", [p.newId])).rowCount) throw new Reject(409, p.newId + " is already on the register; ask the issuer to propose again.");
+      clean.push(records.normalizeRecord({ origin: "Replacement", parent: before.id, bond: before.bond, id: p.newId,
+        assignor: p.assignor || "", party: p.party, contact: p.contact || "", position: "", address: p.address || "",
+        units: Number(before.units), issuedUnits: Number(before.units), status: "Issued", created: dayLabel(), accepted: null,
+        docHash: p.docHash, docFile: p.docFile || null, filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null }));
+      events.push({ eid: crypto.randomUUID(), bond: before.bond, id: before.id, t: stampNow(), ev: "AssignmentReplaced", actor: "HOLDER", ref: p.reasonDoc },
+        { eid: crypto.randomUUID(), bond: before.bond, id: p.newId, t: stampNow(), ev: "AssignmentIssued", actor: "ISSUER", ref: p.docHash });
+    }
 
     const bondsOk = new Set(clean.map((a) => a.bond));
     for (const e of events) if (!bondsOk.has(e.bond)) throw new Reject(403, "An event must belong to a record being saved.");
@@ -717,7 +823,7 @@ if (APP === "holder") {
     const authFor = async (op) => {
       if (op.signer === "$SESSION" && session) op.signer = session.id;
       if (!session || op.signer !== session.id) throw new Reject(403, "Only the assignee of " + op.signer + " can sign this.");
-      const data = (await c.query("select data from assignments where id = $1", [op.signer])).rows[0]?.data;
+      const data = await subjectOf(c, op.signer, { signing: true });
       const key = activeKey(data);
       if (!key) throw new Reject(409, "Set up your device first: sign in again and confirm with your phone or computer.");
       const nonce = startNonce(data) + (used.get(op.signer) || 0);
@@ -739,8 +845,29 @@ if (APP === "holder") {
         await c.query("insert into sealed_codes (id, sealed) values ($1, $2) on conflict (id) do nothing", [a.id, seal(code)]);
       }
     for (const [id, n] of used)
-      await c.query("update assignments set data = jsonb_set(data, '{holder,nonce}', to_jsonb($2::int)) where id = $1",
-        [id, startNonce((await c.query("select data from assignments where id = $1", [id])).rows[0].data) + n]);
+      await c.query("update assignments set data = jsonb_set(data, $3::text[], to_jsonb($2::int)) where id = $1",
+        [baseOf(id), startNonce(await subjectOf(c, id, { signing: true })) + n, "{" + keyPath(id) + ",nonce}"]);
+    if (!mode.collect) {
+      // A new pledge: its lender's one-time code, for the assignee to give them, sealed until they ask for it.
+      for (const a of clean) {
+        const b4 = units.find((u) => u.a.id === a.id)?.before;
+        if (b4 && b4.status === "Accepted" && a.status === "Locked" && a.lockKind === "pledge") {
+          const code = genAccessCode();
+          await setPasskey(c, a.id + LENDER, code);
+          // A new pledge, a new lender: whoever held an earlier one is done here.
+          await c.query("update assignments set data = data - 'lender' where id = $1", [a.id]);
+          if (canton.enabled) await c.query("delete from canton_holders where record = $1", [a.id + LENDER]);
+          await c.query("insert into sealed_codes (id, sealed) values ($1, $2) on conflict (id) do update set sealed = excluded.sealed, revealed_at = null, revealed_by = null", [a.id + LENDER, seal(code)]);
+        }
+      }
+      // A pledge withdrawn before its lender claimed it: their code stops working. Released: their passkey is done.
+      for (const id of [...withdrawn, ...released]) {
+        await c.query("delete from credentials where id = $1", [id + LENDER]);
+        await c.query("delete from sealed_codes where id = $1", [id + LENDER]);
+      }
+      // Released: their passkey stays on record for the release's signature, marked done.
+      for (const id of released) await c.query("update assignments set data = jsonb_set(data, '{lender,releasedOn}', to_jsonb($2::text)) where id = $1", [id, isoDay()]);
+    }
     return revs;
   }
 
@@ -768,8 +895,8 @@ if (APP === "holder") {
   app.post("/api/holder/start", wrap(async (req, res) => {
     if (limited("start:" + req.ip)) return res.status(429).json({ error: "Too many attempts. Wait a minute and try again." });
     const id = String(req.body?.id || "").trim().toUpperCase();
-    const data = (await pool.query("select data from assignments where id = $1", [id])).rows[0]?.data;
-    if (!data) return res.json({ mode: "none", error: "No assignment with that ID is on the register." });
+    const data = await subjectOf(pool, id);
+    if (!data) return res.json({ mode: "none", error: isLender(id) ? "There's no pledge of " + baseOf(id) + " to claim." : "No assignment with that ID is on the register." });
     if (TERMINAL.includes(data.status)) return res.json({ mode: "closed", status: data.status });
     const key = activeKey(data);
     if (key) {
@@ -785,7 +912,7 @@ if (APP === "holder") {
   app.post("/api/holder/signin-passkey", wrap(async (req, res) => {
     const { id, challenge, exp, ticket, assertion } = req.body || {};
     if (!(Number(exp) > Date.now()) || ticketFor(id, challenge, exp) !== ticket) throw new Reject(401, "That sign-in took too long. Start again.");
-    const data = (await pool.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+    const data = await subjectOf(pool, id);
     const key = activeKey(data);
     if (!key) throw new Reject(409, "This assignment has no passkey set up.");
     holderKeys.checkAssertion({ assertion, challenge, x: key.x, y: key.y, ...site(req) });
@@ -801,7 +928,8 @@ if (APP === "holder") {
       if (cred.locked) return { ok: false, code: "locked" };
       if (sameHex(hashKey(passkey, cred.salt), cred.hash)) {
         if (cred.attempts > 0) await c.query("update credentials set attempts = 0 where id = $1", [id]);
-        const data = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
+        const data = await subjectOf(c, id);
+        if (isLender(id) && !data) return { ok: false, code: "nokey", error: "There's no pledge of " + baseOf(id) + " to claim." };
         if (["AwaitingCredential", "CredentialRequested"].includes(data?.status))
           return { ok: false, code: "inactive", error: "This assignment isn't active yet. The issuer activates it after verifying you." };
         if (activeKey(data)) return { ok: false, code: "passkey", error: "This assignment is secured with a passkey. Sign in with it." };
@@ -822,6 +950,7 @@ if (APP === "holder") {
   // The signed-in holder's own record details the public portal hides: the certified mail number.
   app.post("/api/holder/mine", wrap(async (req, res) => {
     const session = needSession(req.body?.token);
+    if (isLender(session.id)) return res.json({ id: session.id });
     const d = (await pool.query("select data from assignments where id = $1", [session.id])).rows[0]?.data;
     if (!d) throw new Reject(404, "No such record.");
     res.json({ id: d.id, instrumentMail: d.instrumentMail || null, passkeyMail: d.passkeyMail || null, receiptMail: d.receiptMail || null });
@@ -833,6 +962,14 @@ if (APP === "holder") {
     const session = needSession(req.body?.token);
     const id = String(req.body?.id || "");
     const out = await tx(async (c) => {
+      // The lender's code for the assignee's own pledge, likewise until the lender uses it.
+      if (id === session.id + LENDER && !isLender(session.id)) {
+        const d = (await c.query("select data from assignments where id = $1", [session.id])).rows[0]?.data;
+        const row = (await c.query("select * from sealed_codes where id = $1 for update", [id])).rows[0];
+        if (!row) throw new Reject(claimed(d) ? 409 : 404, claimed(d) ? "Your lender has claimed the pledge; their code no longer exists." : "Not saved yet.");
+        await c.query("update sealed_codes set revealed_at = coalesce(revealed_at, now()), revealed_by = coalesce(revealed_by, 'assignee') where id = $1", [id]);
+        return { code: unseal(row.sealed) };
+      }
       const d = (await c.query("select data from assignments where id = $1", [id])).rows[0]?.data;
       if (!d) throw new Reject(404, "Not saved yet.");
       if (d.origin !== "AssignOut" || d.parent !== session.id) throw new Reject(403, "That isn't one of your assign-outs.");
@@ -853,14 +990,13 @@ if (APP === "holder") {
     try { ({ x, y } = holderKeys.keyFromSpki(body?.spki)); } catch (e) { throw new Reject(422, e.message); }
     const credId = String(body?.credId || "");
     if (!/^[A-Za-z0-9_-]{16,}$/.test(credId)) throw new Reject(400, "The device didn't give a key ID.");
-    const row = (await c.query("select data from assignments where id = $1 for update", [session.id])).rows[0];
-    if (!row) throw new Reject(404, "No such record.");
-    const rec = row.data;
+    const rec = await subjectOf(c, session.id, { forUpdate: true });
+    if (!rec) throw new Reject(404, isLender(session.id) ? "There's no pledge to claim." : "No such record.");
     if (TERMINAL.includes(rec.status) || ["AwaitingCredential", "CredentialRequested"].includes(rec.status))
       throw new Reject(422, rec.id + " is " + rec.status + "; a device key can't be added now.");
     if (activeKey(rec)) throw new Reject(409, "This record already has a device key. Sign in with that passkey; it can't be reset or replaced.");
     const doc = deviceDoc(rec.id, credId), args = keyArgs(rec, x, y, doc), nonce = startNonce(rec);
-    return { session, rec, x, y, credId, doc, args, nonce, challenge: challengeOf(rec.id, nonce, "registerHolderKey", args) };
+    return { session, rec, x, y, credId, doc, args, nonce, challenge: challengeOf(rec.id, nonce, isLender(rec.id) ? "claimPledge" : "registerHolderKey", args) };
   }
 
   app.post("/api/holder/key/prepare", wrap(async (req, res) => {
@@ -873,19 +1009,20 @@ if (APP === "holder") {
       const p = await keyPlan(c, req.body, req);
       const auth = holderKeys.checkAssertion({ assertion: req.body?.assertion, challenge: p.challenge, x: p.x, y: p.y, ...site(req) });
       const holder = { credId: p.credId, x: p.x, y: p.y, nonce: p.nonce + 1, since: stampNow() };
-      await c.query("update assignments set data = data || jsonb_build_object('holder', $2::jsonb), rev = rev + 1 where id = $1",
-        [p.rec.id, JSON.stringify(holder)]);
-      await records.keepSignature(c, { ref: p.rec.id, signer: p.rec.id, fn: "registerHolderKey", args: p.args, nonce: p.nonce, challenge: p.challenge, assertion: auth });
+      const lender = isLender(p.rec.id), base = baseOf(p.rec.id);
+      await c.query("update assignments set data = data || jsonb_build_object($3::text, $2::jsonb), rev = rev + 1 where id = $1",
+        [base, JSON.stringify(lender ? { ...holder, claimedOn: isoDay() } : holder), keyPath(p.rec.id)]);
+      await records.keepSignature(c, { ref: base, signer: p.rec.id, fn: lender ? "claimPledge" : "registerHolderKey", args: p.args, nonce: p.nonce, challenge: p.challenge, assertion: auth });
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
-        [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "DeviceKeyRegistered", actor: "HOLDER",
-          ref: "Device key " + holderKeys.fingerprint(p.x) }]);
+        [crypto.randomUUID(), p.rec.bond, base, { bond: p.rec.bond, id: base, t: stampNow(), ev: lender ? "PledgeClaimed" : "DeviceKeyRegistered", actor: lender ? "LENDER" : "HOLDER",
+          ref: (lender ? p.rec.party + "'s device key " : "Device key ") + holderKeys.fingerprint(p.x) }]);
       // The mailed code was a one-time transfer code: whoever mailed it (the issuer, or the assignor
       // for an assign-out) knows it. With the holder's own passkey set up, it's used up: from now on
       // the passkey alone opens the record.
       await c.query("delete from credentials where id = $1", [p.rec.id]);
       await c.query("delete from sealed_codes where id = $1", [p.rec.id]);
       await c.query("insert into events (eid, bond, assignment, data) values ($1, $2, $3, $4)",
-        [crypto.randomUUID(), p.rec.bond, p.rec.id, { bond: p.rec.bond, id: p.rec.id, t: stampNow(), ev: "TransferCodeUsed", actor: "HOLDER",
+        [crypto.randomUUID(), p.rec.bond, base, { bond: p.rec.bond, id: base, t: stampNow(), ev: "TransferCodeUsed", actor: lender ? "LENDER" : "HOLDER",
           ref: "Passkey set up; the transfer code no longer works" }]);
       await bump(c);
       return { ok: true, fingerprint: holderKeys.fingerprint(p.x), credId: p.credId, since: holder.since };
@@ -898,7 +1035,8 @@ if (APP === "holder") {
   const cantonRecord = async (body) => {
     if (!canton.enabled) throw new Reject(404, "Canton isn't switched on for this registry.");
     const session = needSession(body?.token);
-    const rec = (await pool.query("select data from assignments where id = $1", [session.id])).rows[0]?.data;
+    // A lender's release is signed on Canton after the register has it: still theirs to sign then.
+    const rec = await subjectOf(pool, session.id, { signing: true });
     if (!rec) throw new Reject(404, "No such record.");
     if (!activeKey(rec)) throw new Reject(409, "Set up your passkey first.");
     return rec;
@@ -1236,6 +1374,20 @@ if (APP === "issuer") {
         const before = (await c.query("select bond, data from assignments where id = $1", [a.id])).rows[0];
         if (before && before.bond !== a.bond) throw new Reject(403, "A record can't move to another bond.");
         needsDocument(before, a);
+        const b4 = before?.data;
+        if (b4) {
+          // Locks are the assignee's; a claimed pledge, its lender's. The issuer can't lift or change either.
+          if (b4.status === "Locked" && (a.status !== "Locked" || LOCK_FIELDS.some((k) => (a[k] ?? null) !== (b4[k] ?? null))))
+            throw new Reject(403, a.id + " is locked by its assignee; " + (claimed(b4) ? "only its lender can release the pledge." : "only they can unlock it."));
+          if (b4.status !== "Locked" && a.status === "Locked") throw new Reject(403, "Only the assignee can lock " + a.id + ".");
+          // An assignment in effect is replaced only with its assignee's consent: the issuer proposes.
+          if (b4.status === "Accepted" && a.status === "Superseded")
+            throw new Reject(403, a.id + " is in effect: propose the replacement, and it takes effect when its assignee consents.");
+          // The assignee's answer is theirs.
+          for (const k of ["replacementAnswer", "replacementAnsweredOn", "unlockedOn", "unlockedBy", "releasedOn", "pledgeTo", "pledgeContact"])
+            if (b4[k] !== undefined) a[k] = b4[k]; else delete a[k];
+          checkReplacement(a, b4);
+        } else if (a.replacement) throw new Reject(400, "A new record can't carry a replacement proposal.");
         // A UCC-3 the issuer records comes with the filed copy (only its hash is kept).
         if (a.filingNumber && a.filingNumber !== before?.data?.filingNumber) {
           if (!records.isHash(a.filingDoc)) throw new Reject(400, "Attach the filed UCC-3 for " + a.id + ". Only its SHA-256 is kept.");
@@ -1283,6 +1435,8 @@ if (APP === "issuer") {
     const { issuer, id } = req.body || {};
     const m = await membership(req, issuer);
     if (m.status !== "approved") throw new Reject(403, "Credentials open once the platform approves this issuer.");
+    // A pledge's lender gets their code from the assignee, never from the issuer.
+    if (isLender(id)) throw new Reject(403, "A lender's code is the assignee's to give; the issuer can't set or see it.");
     const known = (await pool.query("select bond from assignments where id = $1", [id])).rows[0];
     // A brand-new record is saved just after its passkey, so its bond comes from its ID.
     const bondId = known?.bond || String(id || "").slice(0, String(id || "").lastIndexOf("-A"));

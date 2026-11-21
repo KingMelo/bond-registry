@@ -242,15 +242,29 @@ test_lock_cancel_redeem = script do
   submitMustFail c.alice $ exerciseCmd offer IssuerCancel with reason = "Disputed"
   back <- submit c.issuer $ exerciseCmd offer IssuerCancel with reason = "Disputed by the assignor's lender"
   rest <- submit c.alice $ exerciseCmd rest ReclaimToAssignment with returnedCid = back
-  -- Locked by the assignee: no assign-outs, no redemption; only the issuer unlocks.
-  submitMustFail c.issuer $ exerciseCmd rest Lock with kind = "pledge"; reason = "x"
-  rest <- submit c.alice $ exerciseCmd rest Lock with kind = "pledge"; reason = "Pledged to First Bank"
+  -- Locked by the assignee: no assign-outs, no redemption. Any lock but a claimed pledge, they lift themselves.
+  submitMustFail c.issuer $ exerciseCmd rest Lock with kind = "sale"; reason = "x"; lender = None
+  rest <- submit c.alice $ exerciseCmd rest Lock with kind = "sale"; reason = "Pending sale"; lender = None
   submitMustFail c.alice $ exerciseCmd rest AssignOut with
     childId = "PENS-0001-BD-A00001-3"; childUnits = 1; childHash = h "d3"; childName = "X"; childParty = None
   submitMustFail c.issuer $ exerciseCmd rest Redeem with paymentHash = h "paid"; bondCid = bond
-  submitMustFail c.alice $ exerciseCmd rest Unlock with release = "x"
-  submitMustFail c.issuer $ exerciseCmd rest Unlock with release = ""
-  rest <- submit c.issuer $ exerciseCmd rest Unlock with release = "First Bank release, signed Nov 19"
+  submitMustFail c.issuer $ exerciseCmd rest Unlock
+  rest <- submit c.alice $ exerciseCmd rest Unlock
+  -- A pledge names its lender. Before the lender claims it, the assignee can withdraw it.
+  submitMustFail c.alice $ exerciseCmd rest Lock with kind = "pledge"; reason = "Pledged"; lender = None
+  rest <- submit c.alice $ exerciseCmd rest Lock with kind = "pledge"; reason = "Pledged"; lender = Some "First Bank"
+  rest <- submit c.alice $ exerciseCmd rest Unlock
+  -- Once the lender has claimed it, only the lender releases it: not the assignee, not the issuer.
+  rest <- submit c.alice $ exerciseCmd rest Lock with kind = "pledge"; reason = "Pledged"; lender = Some "First Bank"
+  submitMustFail c.alice $ exerciseCmd rest BindPledgee with party = c.trustee
+  rest <- submit c.platform $ exerciseCmd rest BindPledgee with party = c.trustee
+  submitMustFail c.platform $ exerciseCmd rest BindPledgee with party = c.outsider
+  submitMustFail c.alice $ exerciseCmd rest Unlock
+  submitMustFail c.issuer $ exerciseCmd rest ReleasePledge with lender = c.issuer
+  submitMustFail c.outsider $ exerciseCmd rest ReleasePledge with lender = c.outsider
+  rest <- submit c.trustee $ exerciseCmd rest ReleasePledge with lender = c.trustee
+  Some r <- queryContractId c.alice rest
+  (r.locked, r.pledgeTo, r.pledgee) === (None, None, None)
   submit c.issuer $ exerciseCmd rest Redeem with paymentHash = h "paid"; bondCid = bond
   [(_, b)] <- query @Bond c.issuer
   b.redeemed === 1_000_000
@@ -278,13 +292,26 @@ test_prior_and_replacement = script do
   o2 <- submit c.issuer $ exerciseCmd offer SupersedeOffer with newRecordId = "PENS-0001-BD-A00002"; newHash = h "a2"; newAssigneeName = "Company A Holdings"; reasonHash = h "why"
   Some v <- queryContractId c.issuer o2
   (v.recordId, v.units, v.instrumentHash, v.parentId) === ("PENS-0001-BD-A00002", 1_000, h "a2", Some "PENS-0001-BD-A00001")
-  -- An accepted assignment replaced by the issuer, as the register allows; not while locked.
+  -- An accepted assignment: the issuer can only propose replacing it; its assignee consents or declines.
   o2 <- submit c.platform $ exerciseCmd o2 Bind with party = c.bob
   a2 <- submit c.bob $ exerciseCmd o2 Accept
-  a2 <- submit c.bob $ exerciseCmd a2 Lock with kind = "pledge"; reason = "x"
-  submitMustFail c.issuer $ exerciseCmd a2 SupersedeAssignment with newRecordId = "PENS-0001-BD-A00003"; newHash = h "a3"; newAssigneeName = "D"; reasonHash = h "w"
-  a2 <- submit c.issuer $ exerciseCmd a2 Unlock with release = "release"
-  o3 <- submit c.issuer $ exerciseCmd a2 SupersedeAssignment with newRecordId = "PENS-0001-BD-A00003"; newHash = h "a3"; newAssigneeName = "D"; reasonHash = h "w"
+  submitMustFail c.issuer $ exerciseCmd a2 ReplaceByConsent with newRecordId = "PENS-0001-BD-A00003"; newHash = h "a3"; newAssigneeName = "D"; reasonHash = h "w"
+  submitMustFail c.bob $ exerciseCmd a2 ReplaceByConsent with newRecordId = "PENS-0001-BD-A00003"; newHash = h "a3"; newAssigneeName = "D"; reasonHash = h "w"
+  let proposal = ReplacementProposal with
+        issuer = c.issuer; platform = c.platform; assignee = c.bob; bondId = "PENS-0001-BD"
+        recordId = "PENS-0001-BD-A00002"; newRecordId = "PENS-0001-BD-A00003"; newHash = h "a3"; newAssigneeName = "D"; reasonHash = h "w"
+  p1 <- submit c.issuer $ createCmd proposal
+  submit c.bob $ exerciseCmd p1 Decline
+  length <$> query @Assignment c.bob >>= (=== 1)              -- declined: nothing changed
+  p2 <- submit c.issuer $ createCmd proposal
+  submitMustFail c.alice $ exerciseCmd p2 Consent with assignmentCid = a2
+  -- Not while it's locked.
+  a2 <- submit c.bob $ exerciseCmd a2 Lock with kind = "sale"; reason = "x"; lender = None
+  submitMustFail c.bob $ exerciseCmd p2 Consent with assignmentCid = a2
+  a2 <- submit c.bob $ exerciseCmd a2 Unlock
+  o3 <- submit c.bob $ exerciseCmd p2 Consent with assignmentCid = a2
+  Some v <- queryContractId c.issuer o3
+  (v.recordId, v.units, v.instrumentHash) === ("PENS-0001-BD-A00003", 1_000, h "a3")
   length <$> query @Superseded c.issuer >>= (=== 2)
   length <$> query @Assignment c.bob >>= (=== 0)
   pure ()

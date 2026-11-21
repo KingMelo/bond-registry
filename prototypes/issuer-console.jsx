@@ -294,9 +294,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (a.status === "CredentialRequested") out.push(a.filingRef
       ? ["Credential request", "Verify the requester is the named assignee, then mail the passkey."]
       : ["Credential request · UCC-3 pending", "Waiting on the assignor's UCC-3. Verify the requester meanwhile; after 30 days you may file it yourself."]);
-    if (a.status === "Locked" && a.unlockRequested) out.push(a.lockKind === "pledge"
-      ? ["Unlock request · pledge", "Needs the pledgee's signed release before you unlock."]
-      : ["Unlock request", "Verify the assignee's identity before you unlock."]);
+    if (a.replacement && !a.replacement.withdrawnOn && a.replacementAnswer === "declined")
+      out.push(["Replacement declined", a.party + " declined replacing it with " + a.replacement.newId + ". Withdraw it or propose again."]);
     if (mailingMissing(a)) out.push(["Mailing not recorded", "Record the certified mailing's tracking number."]);
     return out;
   };
@@ -382,14 +381,6 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     done("Cancelled. " + usd(a.units) + " returned to " + parent.id + ".");
   }
 
-  function unlock(a) {
-    if (!docRef.trim()) return;
-    patch(a.id, { status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, unlockRef: docRef.trim(),
-      unlockRequested: false });
-    emit(a.bond, a.id, "Unlocked", "ISSUER", docRef.trim());
-    done("Unlocked. Back in effect.");
-  }
-
 
   // Clearing a lockout touches the credential store only.
   // An assignee's passkey can't be reset by anyone: control of the record is theirs alone.
@@ -444,6 +435,15 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     if (!["Accepted", "Issued"].includes(a.status) || pendingOf(a.id).length > 0) return;
     if (!rpParty.trim() || !rpContact.trim() || !rpAddress.trim() || !rpDoc || !rpInstr) return;
     const newId = nextIssuedId(reg, a.bond);
+    // In effect: the assignee controls it, so this is a proposal; it takes effect when they consent.
+    if (a.status === "Accepted") {
+      try { await newPasskey(newId); } catch (e) { return flash(e.message); }
+      patch(a.id, { replacement: { newId, party: rpParty.trim(), contact: rpContact.trim(), address: rpAddress.trim(),
+        docHash: rpInstr.hash, docFile: rpInstr.name, reasonDoc: rpDoc.hash, proposedOn: today(),
+        assignor: (bonds.find((b) => b.id === a.bond)?.assignor || issuerName) + " (replacement)" }, replacementAnswer: null });
+      emit(a.bond, a.id, "ReplacementProposed", "ISSUER", newId + " · " + rpDoc.hash);
+      return done("Proposed. " + a.id + " is replaced by " + newId + " only when " + a.party + " consents with their passkey.");
+    }
     const rec = {
       bond: a.bond, id: newId, parent: a.id, origin: "Replacement",
       assignor: (bonds.find((b) => b.id === a.bond)?.assignor || issuerName) + " (replacement)",
@@ -1315,20 +1315,12 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                 <Rows data={[
                   ["Reason given", a.lockReason || "—"],
                   ["Locked on", a.lockedOn || "—"],
-                  ["Unlock requested", a.unlockRequested ? "Yes" : "No"],
+                  ...(a.lockKind === "pledge" ? [["Pledged to", (a.pledgeTo || "—") + (a.pledgeClaimed ? " · claimed" : " · not yet claimed")]] : []),
                 ]} />
-                <div className="mt-4">
-                  <Field
-                    label={a.lockKind === "pledge" ? "Hash of the pledgee's signed release" : "Hash of the identity verification memo"}
-                    value={docRef} onChange={setDocRef} placeholder="0x…" mono
-                    hint={a.lockKind === "pledge"
-                      ? "Pledged record. Do not unlock without the lender's signed release."
-                      : "Recorded with the Unlocked event."} />
-                </div>
-                <div className="mt-3">
-                  <Button variant="quiet" disabled={!docRef.trim()} onClick={() => unlock(a)}>
-                    Unlock
-                  </Button>
+                <div className="mt-3" style={{ fontSize: 13, color: T.inkSoft, lineHeight: 1.55 }}>
+                  {a.lockKind === "pledge" && a.pledgeClaimed
+                    ? "Only " + a.pledgeTo + " can release this pledge, with their own passkey. The issuer can't unlock it."
+                    : "Only the assignee can unlock it, with their passkey. The issuer can't."}
                 </div>
               </div>
             )}
@@ -1387,12 +1379,31 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     This record has {pending.length} pending {pending.length === 1 ? "transfer" : "transfers"}.
                     Each must take effect, be rejected or be cancelled before it can be replaced.
                   </Note>
+                ) : a.replacement && !a.replacement.withdrawnOn && !a.replacementAnswer ? (
+                  <div>
+                    <Note>
+                      Proposed {a.replacement.proposedOn}: replace with {a.replacement.newId} to {a.replacement.party}.
+                      Waiting for {a.party} to consent or decline with their passkey. Nothing changes until they consent.
+                    </Note>
+                    <div className="mt-3">
+                      <Button variant="quiet" onClick={() => {
+                        patch(a.id, { replacement: { ...a.replacement, withdrawnOn: today() } });
+                        emit(a.bond, a.id, "ReplacementWithdrawn", "ISSUER", a.replacement.newId);
+                        done("Replacement proposal withdrawn.");
+                      }}>Withdraw the proposal</Button>
+                    </div>
+                  </div>
                 ) : (
                   <div>
+                    {a.replacementAnswer === "declined" && !a.replacement?.withdrawnOn && (
+                      <div className="mb-3"><Note kind="caution">{a.party} declined replacing it with {a.replacement.newId} on {a.replacementAnsweredOn}.</Note></div>
+                    )}
                     <Note kind="caution">
-                      For a court order, death, bankruptcy, lost instrument or legal successor. This
-                      record becomes Superseded and a new record is issued for the same{" "}
-                      {usd(a.units)}. The amount can't change.
+                      For a court order, death, bankruptcy, lost instrument or legal successor.{" "}
+                      {a.status === "Accepted"
+                        ? "It's in effect, so this is a proposal: " + a.party + " must consent with their passkey before it becomes Superseded and a new record is issued for the same " + usd(a.units) + "."
+                        : "This record becomes Superseded and a new record is issued for the same " + usd(a.units) + "."}{" "}
+                      The amount can't change.
                     </Note>
                     <div className="mt-4">
                       <FileHash label="Supporting document" value={rpDoc} onChange={setRpDoc}
@@ -1406,7 +1417,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                       <Button variant="quiet" danger
                         disabled={!rpDoc || !rpInstr || !rpParty.trim() || !rpContact.trim() || !rpAddress.trim()}
                         onClick={() => replaceAssignment(a)}>
-                        Replace
+                        {a.status === "Accepted" ? "Propose the replacement" : "Replace"}
                       </Button>
                     </div>
                   </div>
@@ -1416,8 +1427,8 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             {a.status === "Locked" && (
               <div className="mt-3" style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5 }}>
-                A locked record can't be replaced. Unlock it first
-                {a.lockKind === "pledge" ? ", with the pledgee's signed release" : ""}.
+                A locked record can't be replaced. {a.lockKind === "pledge" && a.pledgeClaimed
+                  ? "Its lender must release the pledge first." : "Its assignee must unlock it first."}
               </div>
             )}
 

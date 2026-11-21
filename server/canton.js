@@ -228,8 +228,14 @@ async function syncIssuerFactsOn(pool, records) {
     }
     if (issuerMade && isHash(rec.filingDoc) && now && now.ucc3Hash == null)
       await act(now.template === "Assignment" ? "RecordUcc3OnAssignment" : "RecordUcc3", { filedHash: rec.filingDoc });
-    if (now?.template === "Assignment" && now.locked != null && rec.status === "Accepted")
-      await act("Unlock", { release: rec.unlockRef || "Unlocked by the issuer" });
+    // A replacement the issuer proposed for an assignment in effect: a proposal on Canton, which its
+    // assignee consents to or declines with their own key. Withdrawn: the issuer takes it back.
+    if (now?.template === "Assignment" && rec.replacement) {
+      const prop = await proposalOf(pool, rec);
+      if (rec.replacement.withdrawnOn && prop)
+        await submit([issuer], [{ ExerciseCommand: { templateId: tpl("ReplacementProposal"), contractId: prop.contractId, choice: "Withdraw", choiceArgument: {} } }]);
+      else await ensureProposal(pool, rec, now);
+    }
     if (now?.template === "Assignment" && rec.status === "Redeemed" && isHash(rec.redemptionHash)) {
       const bond = await refOf(pool, rec.bond);
       const tx = await act("Redeem", { paymentHash: rec.redemptionHash, bondCid: bond.cid });
@@ -238,11 +244,12 @@ async function syncIssuerFactsOn(pool, records) {
       await setRef(pool, rec.id, "Closed", "-");
       continue;
     }
-    // Replaced by the issuer: the new record's offer takes its place on Canton, same amount, new paper.
-    if (now && rec.status === "Superseded") {
+    // An offer replaced by the issuer: the new record's offer takes its place on Canton, same amount,
+    // new paper. (An assignment in effect is replaced only by its assignee's consent, their own act.)
+    if (now?.template === "AssignmentOffer" && rec.status === "Superseded") {
       const nu = (await pool.query(`select data from assignments where data->>'parent' = $1 and data->>'origin' = 'Replacement'`, [rec.id])).rows[0]?.data;
       if (nu && isHash(nu.docHash)) {
-        const tx = await act(now.template === "Assignment" ? "SupersedeAssignment" : "SupersedeOffer", {
+        const tx = await act("SupersedeOffer", {
           newRecordId: nu.id, newHash: nu.docHash, newAssigneeName: nu.party || "",
           reasonHash: isHash(rec.supersededDoc) ? rec.supersededDoc : fp("reason", [rec.id, "replaced"]) });
         await setRef(pool, nu.id, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
@@ -353,6 +360,7 @@ export const holderOf = async (pool, recordId) => (await pool.query("select part
  * waiting for their key: acts already made in the register that Canton doesn't have yet.
  */
 export async function status(pool, rec) {
+  if (rec.lenderOf) return lenderStatus(pool, rec);
   const ref = await refOf(pool, rec.id), holder = await holderOf(pool, rec.id);
   return { enabled: true, onCanton: !!ref, contract: ref?.template || null, party: holder?.party || null,
     keys: (holder?.keys || []).map(({ fp, role, label, added }) => ({ fp, role, label, added })),
@@ -383,7 +391,54 @@ async function waiting(pool, rec, ref) {
   }
   // The assignee's own lock comes last: assign-outs made before it are replayed first.
   if (ref?.template === "Assignment" && rec.status === "Locked" && mine && mine.locked == null) out.push({ kind: "lock" });
+  // Unlocked in the register: theirs to lift on Canton too, unless a lender holds the pledge there.
+  if (ref?.template === "Assignment" && rec.status === "Accepted" && mine?.locked != null && mine.pledgee == null) out.push({ kind: "unlock" });
+  // Their answer to a replacement the issuer proposed.
+  if (ref?.template === "Assignment" && mine && rec.replacement && !rec.replacement.withdrawnOn) {
+    const prop = await ensureProposal(pool, rec, mine);
+    if (prop && rec.replacementAnswer === "declined") out.push({ kind: "declineReplacement" });
+    if (prop && rec.replacementAnswer === "consented" && rec.status === "Superseded") out.push({ kind: "consentReplacement" });
+  }
   return out;
+}
+
+// The issuer's proposal to replace an assignment in effect, as Canton holds it.
+async function proposalOf(pool, rec) {
+  const issuer = await issuerPartyOf(pool, rec.bond);
+  return (await activeFor(issuer)).find((e) => e.templateId.endsWith(":Registry:ReplacementProposal") && e.createArgument.recordId === rec.id) || null;
+}
+// Puts the register's pending (or just consented) proposal on Canton, as the issuer's own act, if it isn't yet.
+async function ensureProposal(pool, rec, held) {
+  const rp = rec.replacement;
+  if (!rp || rp.withdrawnOn || held?.template !== "Assignment" || !isHash(rp.docHash) || !isHash(rp.reasonDoc)) return null;
+  const found = await proposalOf(pool, rec);
+  if (found || rec.replacementAnswer === "declined") return found;
+  const issuer = await issuerPartyOf(pool, rec.bond), platform = await localParty(pool, "platform");
+  await submit([issuer], [{ CreateCommand: { templateId: tpl("ReplacementProposal"), createArguments: {
+    issuer, platform, assignee: held.assignee, bondId: rec.bond, recordId: rec.id, newRecordId: rp.newId,
+    newHash: rp.docHash, newAssigneeName: rp.party || "", reasonHash: rp.reasonDoc } } }]);
+  return proposalOf(pool, rec);
+}
+
+// ------------------------------------------------------------------ a pledge's lender
+
+// The lender's standing: their own party (keys of their own, like an assignee's), named on the
+// pledged assignment once the assignee's lock is on Canton; and their release, once they've made it.
+async function lenderStatus(pool, rec) {
+  const holder = await holderOf(pool, rec.id);
+  let held = (await heldOnCanton(pool, rec.bond)).get(rec.lenderOf);
+  const pledged = held?.template === "Assignment" && held.pledgeTo != null;
+  // Keys made before the assignee's lock reached Canton: named on it as soon as it's there.
+  if (holder && pledged && held.pledgee == null) { await bindPledgee(pool, rec, holder.party, held); held = (await heldOnCanton(pool, rec.bond)).get(rec.lenderOf); }
+  const mine = !!holder && held?.pledgee === holder.party;
+  return { enabled: true, onCanton: pledged || mine, contract: held?.template || null, party: holder?.party || null, lender: true,
+    keys: (holder?.keys || []).map(({ fp, role, label, added }) => ({ fp, role, label, added })),
+    toSign: mine && rec.status === "Accepted" ? [{ kind: "release" }] : [] };
+}
+async function bindPledgee(pool, rec, party, held) {
+  const platform = await localParty(pool, "platform");
+  const tx = await submit([platform], [{ ExerciseCommand: { templateId: tpl("Assignment"), contractId: held.cid, choice: "BindPledgee", choiceArgument: { party } } }]);
+  await setRef(pool, rec.lenderOf, "Assignment", createdOf(tx, "Assignment").contractId);
 }
 // Each record's live offer or assignment on Canton, as the bond's issuer sees it: recordId → arguments.
 async function heldOnCanton(pool, bondId) {
@@ -406,8 +461,14 @@ const child = async (pool, rec, id) => {
 // 1. The browser sends the public halves of its new recovery and device keys.
 export async function onboardStart(pool, rec, { recoverySpki, deviceSpki, deviceLabel }) {
   if (await holderOf(pool, rec.id)) throw new CantonError("This assignment already has its keys on Canton.", 409);
-  const ref = await refOf(pool, rec.id);
-  if (ref?.template !== "AssignmentOffer") throw new CantonError("This assignment isn't on Canton.", 409);
+  if (rec.lenderOf) {
+    const held = (await heldOnCanton(pool, rec.bond)).get(rec.lenderOf);
+    if (held?.template !== "Assignment" || held.pledgeTo == null) throw new CantonError("The pledge isn't on Canton yet: the assignee's lock needs their signature there first.", 409);
+    if (held.pledgee != null) throw new CantonError("This pledge's lender is already named on Canton.", 409);
+  } else {
+    const ref = await refOf(pool, rec.id);
+    if (ref?.template !== "AssignmentOffer") throw new CantonError("This assignment isn't on Canton.", 409);
+  }
   const topo = await topologyFor(recoverySpki, rec.id.replace(/[^A-Za-z0-9-]/g, "-") + "-" + crypto.randomUUID().slice(0, 8));
   const deviceFp = await fingerprintOf(deviceSpki);
   step(rec.id, { kind: "onboard", topo, recoverySpki, deviceSpki, deviceFp, deviceLabel });
@@ -430,11 +491,14 @@ export async function onboardAllocate(pool, rec, { recoverySignature }) {
 export async function onboardFinish(pool, rec, { signatures }) {
   const s = stepOf(rec.id, "onboard");
   await addSigned(s.generated, signatures);
-  const platform = await localParty(pool, "platform");
-  const ref = await refOf(pool, rec.id);
-  const tx = await submit([platform], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "Bind",
-    choiceArgument: { party: s.topo.partyId } } }]);
-  await setRef(pool, rec.id, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
+  if (rec.lenderOf) await bindPledgee(pool, rec, s.topo.partyId, (await heldOnCanton(pool, rec.bond)).get(rec.lenderOf));
+  else {
+    const platform = await localParty(pool, "platform");
+    const ref = await refOf(pool, rec.id);
+    const tx = await submit([platform], [{ ExerciseCommand: { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "Bind",
+      choiceArgument: { party: s.topo.partyId } } }]);
+    await setRef(pool, rec.id, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
+  }
   const now = new Date().toISOString();
   const keys = [{ fp: s.topo.publicKeyFingerprint, spki: s.recoverySpki, role: "recovery", label: "Recovery key", added: now },
     { fp: s.deviceFp, spki: s.deviceSpki, role: "device", label: s.deviceLabel || "This device", added: now }];
@@ -481,9 +545,9 @@ export async function prepareAct(pool, rec, { kind, child: childId }) {
     const r = await refOf(pool, id), l = live.get(id);
     return r && l && (r.template === "AssignmentOffer" || r.template === "Assignment") ? { template: l.template, cid: l.cid } : r;
   };
-  const ref = await liveRef(rec.id);
+  const ref = await liveRef(rec.lenderOf || rec.id);
   if (!holder) throw new CantonError("This assignment has no keys on Canton yet.", 409);
-  const due = await waiting(pool, rec, ref);
+  const due = rec.lenderOf ? (await lenderStatus(pool, rec)).toSign : await waiting(pool, rec, ref);
   if (!due.some((d) => d.kind === kind && (d.child || null) === (childId || null))) throw new CantonError("There's nothing like that to sign on Canton for this assignment.", 409);
   let command;
   if (kind === "accept") command = { templateId: tpl("AssignmentOffer"), contractId: ref.cid, choice: "Accept", choiceArgument: {} };
@@ -506,7 +570,15 @@ export async function prepareAct(pool, rec, { kind, child: childId }) {
           choiceArgument: { filedHash: c.filingDoc } };
   }
   if (kind === "lock") command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "Lock",
-    choiceArgument: { kind: rec.lockKind || "other", reason: rec.lockReason || "Locked by the assignee" } };
+    choiceArgument: { kind: rec.lockKind || "other", reason: rec.lockReason || "Locked by the assignee", lender: rec.lockKind === "pledge" ? rec.pledgeTo || null : null } };
+  if (kind === "unlock") command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "Unlock", choiceArgument: {} };
+  if (kind === "release") command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "ReleasePledge", choiceArgument: { lender: holder.party } };
+  if (kind === "consentReplacement" || kind === "declineReplacement") {
+    const prop = await proposalOf(pool, rec);
+    command = kind === "consentReplacement"
+      ? { templateId: tpl("ReplacementProposal"), contractId: prop.contractId, choice: "Consent", choiceArgument: { assignmentCid: ref.cid } }
+      : { templateId: tpl("ReplacementProposal"), contractId: prop.contractId, choice: "Decline", choiceArgument: {} };
+  }
   if (kind === "cancelOut") {
     await child(pool, rec, childId);
     command = { templateId: tpl("Assignment"), contractId: ref.cid, choice: "CancelAssignOut", choiceArgument: { offerCid: (await liveRef(childId)).cid } };
@@ -531,7 +603,13 @@ export async function executeAct(pool, rec, { signature, signedBy }) {
   steps.delete(rec.id + ":act");
   // What the act created, as the issuer's party sees it, so the register knows where each record now is.
   const issuer = await issuerPartyOf(pool, rec.bond);
-  if (s.act === "accept" || s.act === "assignOut" || s.act === "reclaim" || s.act === "lock" || s.act === "cancelOut") {
+  if (s.act === "release") await refresh(pool, issuer, rec.lenderOf);
+  if (s.act === "consentReplacement") {
+    const offer = await findContract(issuer, "AssignmentOffer", rec.replacement.newId);
+    if (offer) await setRef(pool, rec.replacement.newId, "AssignmentOffer", offer.contractId);
+    await setRef(pool, rec.id, "Closed", "-");
+  }
+  if (["accept", "assignOut", "reclaim", "lock", "unlock", "cancelOut"].includes(s.act)) {
     const mine = await findContract(issuer, "Assignment", rec.id);
     if (mine) await setRef(pool, rec.id, "Assignment", mine.contractId);
   }

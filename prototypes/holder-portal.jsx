@@ -26,6 +26,7 @@ const T = {
 
 const serif = "'Spectral', Georgia, serif";
 const sans = "'IBM Plex Sans', system-ui, sans-serif";
+const mono = "'IBM Plex Mono', ui-monospace, monospace";
 
 // Every amount is stored in cents and shown in dollars.
 const usd = dollars;
@@ -540,6 +541,7 @@ export default function HolderPortal() {
   const afterPasskey = async (rec) => {
     const st = await loadCanton();
     if (st?.enabled && st.onCanton && !st.party) return setView("cantonSetup");
+    if (session.current?.lender) { setView("lender"); if (st?.enabled && st.party && st.toSign?.length) runCanton(); return; }
     setView(rec.status === "Issued" ? "claim" : "position");
     if (st?.enabled && st.party && st.toSign?.length) runCanton();
   };
@@ -642,6 +644,9 @@ export default function HolderPortal() {
 
   // lock
   const [lockKind, setLockKind] = useState("pledge");
+  const [lockLender, setLockLender] = useState(""); // a pledge's lender, by legal name
+  const [lockLenderContact, setLockLenderContact] = useState("");
+  const [lenderCode, setLenderCode] = useState(null); // { code } | { error }: the code the assignee gives their lender
   const [rjReason, setRjReason] = useState(""); // why the holder rejects an assignment
   const [rjErr, setRjErr] = useState("");
 
@@ -739,10 +744,12 @@ export default function HolderPortal() {
   }
 
   async function opened(id, res) {
-    const fresh = (await reload().catch(() => null))?.reg.find((a) => a.id === id) || reg.find((a) => a.id === id);
+    // A pledge's lender signs in as the record's ID with ~P: the same record, their own passkey.
+    const lender = id.endsWith("~P"), base = lender ? id.slice(0, -2) : id;
+    const fresh = (await reload().catch(() => null))?.reg.find((a) => a.id === base) || reg.find((a) => a.id === base);
     if (!fresh) return setQErr("No assignment with that ID is on the register.");
     setQErr(""); setQKey(""); setQStep(null);
-    session.current = { id: fresh.id, token: res.token, rpId: res.rpId, enroll: res.enroll };
+    session.current = { id: lender ? id : fresh.id, lender, token: res.token, rpId: res.rpId, enroll: res.enroll };
     api.holderMine(res.token).then(setMyMail).catch(() => setMyMail(null));
     setDevice(res.device);
     setOpenId(fresh.id);
@@ -800,6 +807,7 @@ export default function HolderPortal() {
       flash("Passkey set up. The transfer code no longer works; from now on your passkey opens this assignment.");
       const st = await loadCanton();
       if (st?.enabled && st.onCanton && !st.party) return setView("cantonSetup");
+      if (s.lender) return setView("lender");
       setView(open?.status === "Issued" ? "claim" : "position");
       if (open?.status === "Issued") setTour("offer");
     } catch (e) { setDevErr(e.message); } finally { setDevBusy(false); }
@@ -924,22 +932,54 @@ export default function HolderPortal() {
 
   function lock() {
     const label = LOCK_KINDS.find(([k]) => k === lockKind)[1];
+    const pledge = lockKind === "pledge", lender = lockLender.trim();
+    if (pledge && !lender) return flash("Name the lender it's pledged to.");
     setReg((r) => r.map((a) => (a.id === open.id
-      ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: today(), unlockRequested: false }
+      ? { ...a, status: "Locked", lockKind, lockReason: label, lockedOn: today(),
+          pledgeTo: pledge ? lender : null, pledgeContact: pledge ? lockLenderContact.trim() || null : null }
       : a)));
-    emit(open.bond, open.id, "Locked", "RELAYER", "—");
-    setLockKind("pledge");
+    emit(open.bond, open.id, "Locked", "RELAYER", pledge ? "Pledged to " + lender : "—");
+    setLockKind("pledge"); setLockLender(""); setLockLenderContact("");
     setView("position");
-    flash("Locked. Only the issuer can unlock it.");
+    flash(pledge ? "Locked and pledged to " + lender + ". Give them the code below; once they claim it, only they can release it."
+      : "Locked. You can unlock it yourself whenever you're ready.");
+    if (pledge) loadLenderCode(open.id, 20);
     if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
-
-  // Holder requests are register entries for the issuer queue.
-  function requestUnlock() {
-    setReg((r) => r.map((a) => (a.id === open.id ? { ...a, unlockRequested: true } : a)));
-    flash(open.lockKind === "pledge"
-      ? "Unlock requested. The issuer will need your lender's signed release."
-      : "Unlock requested. The issuer will verify your identity first.");
+  // The lender's one-time code, for the assignee to give them: shown until the lender uses it.
+  async function loadLenderCode(id, tries = 0) {
+    try { const r = await api.assigneeCode(session.current?.token, id + "~P"); setLenderCode({ code: r.code }); }
+    catch (e) {
+      if (e.status === 404 && tries > 0) return setTimeout(() => loadLenderCode(id, tries - 1), 1000);
+      setLenderCode({ error: e.message });
+    }
+  }
+  // The assignee lifts their own lock: any but a pledge its lender has claimed (that one is the lender's to release).
+  function unlock() {
+    const wasPledge = open.lockKind === "pledge";
+    setReg((r) => r.map((a) => (a.id === open.id
+      ? { ...a, status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, pledgeTo: null, pledgeContact: null } : a)));
+    emit(open.bond, open.id, "Unlocked", "RELAYER", wasPledge ? "Pledge withdrawn before the lender claimed it" : "—");
+    setLenderCode(null);
+    flash(wasPledge ? "Pledge withdrawn and unlocked. Your lender's code no longer works." : "Unlocked. It's back in effect.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
+  }
+  // The lender releases the pledge: the one thing they do here.
+  function releasePledge() {
+    setReg((r) => r.map((a) => (a.id === open.id
+      ? { ...a, status: "Accepted", lockKind: null, lockReason: null, lockedOn: null, pledgeTo: null, pledgeContact: null } : a)));
+    emit(open.bond, open.id, "PledgeReleased", "LENDER", "—");
+    flash("Released. The assignment is unlocked; you no longer hold it as security.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
+  }
+  // A replacement the issuer proposed: nothing changes unless the assignee agrees.
+  function answerReplacement(answer) {
+    setReg((r) => r.map((a) => (a.id === open.id
+      ? { ...a, replacementAnswer: answer, ...(answer === "consented" ? { status: "Superseded" } : {}) } : a)));
+    emit(open.bond, open.id, answer === "consented" ? "ReplacementConsented" : "ReplacementDeclined", "RELAYER", open.replacement?.newId || "—");
+    flash(answer === "consented" ? "Agreed. " + open.id + " is replaced by " + open.replacement.newId + "; you no longer hold it."
+      : "Declined. Your assignment stays as it is.");
+    if (canton?.enabled && canton.party) runCanton({ wait: true });
   }
 
 
@@ -1066,10 +1106,11 @@ export default function HolderPortal() {
 
         {/* ============ Canton keys (pilot) ============ */}
         {inHolder && view === "cantonSetup" && open && session.current && (
-          <CantonSetup recordId={open.id} token={session.current.token} ui={cantonUi}
+          <CantonSetup recordId={session.current.id} token={session.current.token} ui={cantonUi}
             onDone={async () => {
               const st = await loadCanton();
               flash("Your keys are set up. Keep the recovery code offline.");
+              if (session.current?.lender) { setView("lender"); if (st?.toSign?.length) runCanton(); return; }
               setView(open.status === "Issued" ? "claim" : "position");
               if (open.status === "Issued") setTour("offer");
               else if (st?.toSign?.length) runCanton(); // acts made before Canton was switched on, signed now
@@ -1191,7 +1232,7 @@ export default function HolderPortal() {
                     : canton.contract === "Assignment" ? "in effect, signed with your own key" : "offered to you"}
                   {canton.toSign?.length ? <> · <button onClick={() => runCanton()} style={{ ...cantonLink }}>Review and sign</button></> : null}
                 </div>
-                <CantonKeys recordId={open.id} token={session.current.token} status={canton} ui={cantonUi}
+                <CantonKeys recordId={session.current.id} token={session.current.token} status={canton} ui={cantonUi}
                   onChanged={async (m) => { flash(m); const st = await loadCanton(); if (st?.toSign?.length) runCanton(); }} />
               </>
             )}
@@ -1200,13 +1241,48 @@ export default function HolderPortal() {
               <div className="mt-4">
                 <Note kind="warn">
                   This record is locked{open.lockReason ? " (" + open.lockReason.toLowerCase() + ")" : ""}.
-                  Assigning out is blocked until the issuer unlocks it.
-                  {open.lockKind === "pledge" && " The issuer will need your lender's signed release to unlock it."}
+                  Assigning out, redemption and replacement are blocked while it's locked.
+                  {open.lockKind === "pledge"
+                    ? open.pledgeClaimed
+                      ? " Pledged to " + open.pledgeTo + ", who has claimed it: only they can release it."
+                      : " Pledged to " + open.pledgeTo + ", who hasn't claimed it yet. Until they do, you can withdraw it."
+                    : " You can unlock it whenever you're ready."}
+                </Note>
+                {open.lockKind === "pledge" && !open.pledgeClaimed && (
+                  <div className="mt-3" style={{ fontSize: 14, color: T.ink, lineHeight: 1.55 }}>
+                    {lenderCode?.code ? (
+                      <>
+                        Give {open.pledgeTo} this code with your pledge agreement. They open{" "}
+                        <span style={{ fontFamily: mono }}>{(typeof window !== "undefined" ? window.location.origin : "") + "/assignee?id=" + open.id + "~P"}</span>{" "}
+                        and claim the pledge with it, on their own device.
+                        <div data-testid="lender-code" style={{ fontFamily: mono, fontSize: 18, letterSpacing: 1, margin: "8px 0" }}>{lenderCode.code}</div>
+                      </>
+                    ) : lenderCode?.error ? <span style={{ color: T.red }}>{lenderCode.error}</span>
+                      : <Button variant="quiet" onClick={() => loadLenderCode(open.id)}>Show {open.pledgeTo}'s code</Button>}
+                  </div>
+                )}
+                {!(open.lockKind === "pledge" && open.pledgeClaimed) && (
+                  <div className="mt-3 space-y-3">
+                    <Button variant="quiet" onClick={unlock}>
+                      {open.lockKind === "pledge" ? "Withdraw the pledge and unlock: confirm with your passkey" : "Unlock: confirm with your passkey"}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            {open.replacement && !open.replacement.withdrawnOn && !open.replacementAnswer && ["Accepted", "Locked"].includes(open.status) && (
+              <div className="mt-4" data-testid="replacement">
+                <Note kind="caution">
+                  The issuer proposes replacing this assignment with {open.replacement.newId}, to {open.replacement.party}, for
+                  the same {usd(open.units)}. Proposed {open.replacement.proposedOn}. Replacement memo: {shortHash(open.replacement.reasonDoc)};
+                  new signed instrument: {shortHash(open.replacement.docHash)}. Nothing changes unless you agree. If you do,
+                  this record ends and you no longer hold it.
                 </Note>
                 <div className="mt-3 space-y-3">
-                  <Button variant="quiet" disabled={open.unlockRequested} onClick={requestUnlock}>
-                    {open.unlockRequested ? "Unlock requested — with the issuer" : "Request unlock"}
-                  </Button>
+                  {open.status === "Locked"
+                    ? <p style={{ fontSize: 14, color: T.inkSoft }}>It's locked; it can't be replaced until it's unlocked.</p>
+                    : <Button danger onClick={() => answerReplacement("consented")}>Agree to the replacement: confirm with your passkey</Button>}
+                  <Button variant="quiet" onClick={() => answerReplacement("declined")}>Decline: confirm with your passkey</Button>
                 </div>
               </div>
             )}
@@ -1221,8 +1297,9 @@ export default function HolderPortal() {
             {open.status === "Superseded" && (
               <div className="mt-4">
                 <Note>
-                  Every unit under this record has been assigned out and is in effect elsewhere, so it is
-                  superseded. It stays on the register as the parent of what came after it.
+                  {open.replacementAnswer === "consented" && open.replacement
+                    ? "Replaced by " + open.replacement.newId + ", with your consent. It stays on the register as history."
+                    : "Every unit under this record has been assigned out and is in effect elsewhere, so it is superseded. It stays on the register as the parent of what came after it."}
                 </Note>
               </div>
             )}
@@ -1475,6 +1552,36 @@ export default function HolderPortal() {
           </div>
         )}
 
+        {/* ============ a pledge's lender ============ */}
+        {inHolder && view === "lender" && open && session.current?.lender && (
+          <div>
+            <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Pledge of {open.id}</h1>
+            <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 20px", maxWidth: "62ch" }}>
+              {open.status === "Locked"
+                ? open.party + " pledged this assignment to " + open.pledgeTo + ". While it's pledged it can't be assigned out, redeemed or replaced, and only you can release it: not the assignee, not the issuer."
+                : "The pledge is released. Nothing else is yours to do here."}
+            </p>
+            <Rows data={[
+              ["Assignee", open.party],
+              ["Amount", usd(open.units)],
+              ["Bond", open.bond],
+              ["Issuer", issuerOf(open)],
+              ...(open.status === "Locked" ? [["Pledged on", open.lockedOn || "—"]] : []),
+            ]} />
+            {canton?.enabled && canton.party && (
+              <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 10 }} data-testid="canton-standing">
+                On Canton: {canton.toSign?.length ? "your release is waiting for your key's signature" : open.status === "Locked" ? "you're named as its lender" : "released"}
+                {canton.toSign?.length ? <> · <button onClick={() => runCanton()} style={{ ...cantonLink }}>Review and sign</button></> : null}
+              </div>
+            )}
+            {open.status === "Locked" && (
+              <div className="mt-5 space-y-3">
+                <Button danger onClick={releasePledge}>Release the pledge: confirm with your passkey</Button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ============ lock confirm ============ */}
         {inHolder && view === "lockConfirm" && open && (
           <div>
@@ -1495,16 +1602,19 @@ export default function HolderPortal() {
               ))}
             </div>
 
+            {lockKind === "pledge" && (
+              <div className="mb-4">
+                <Field label="Lender's legal name" value={lockLender} onChange={setLockLender} placeholder="First Bank, N.A." />
+                <Field label="Lender's contact (optional)" value={lockLenderContact} onChange={setLockLenderContact} placeholder="Name, email or address" />
+              </div>
+            )}
             <Note kind="caution">
-              Only the issuer can unlock it.{" "}
               {lockKind === "pledge"
-                ? "For a pledge, they will need your lender's signed release first."
-                : "They will verify your identity first."}{" "}
-              If the access code may be compromised, request a new one — it is mailed to you and the
-              old one stops working.
+                ? "You'll get a one-time code to give your lender. Once they claim the pledge with it, on their own device, only they can release it: not you, not the issuer. Until then you can withdraw it."
+                : "You can unlock it yourself at any time, with your passkey. Nobody else can, not even the issuer."}
             </Note>
             <div className="mt-5 space-y-3">
-              <Button onClick={lock}>Lock it</Button>
+              <Button disabled={lockKind === "pledge" && !lockLender.trim()} onClick={lock}>Lock it</Button>
               <Button variant="quiet" onClick={() => setView("position")}>Cancel</Button>
             </div>
           </div>
