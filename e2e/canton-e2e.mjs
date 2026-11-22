@@ -39,7 +39,11 @@ const procs = [];
 process.on("exit", () => { procs.forEach((c) => c.kill()); fs.rmSync(PROTOS, { recursive: true, force: true }); });
 const start = (app, port) => new Promise((res, rej) => {
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env: { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0",
-    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", RESPONSE_CHECK_MS: "1500", CANTON_JSON_URL: CANTON, CANTON_ADMIN: "localhost:6866", CANTON_PROTOS: PROTOS } });
+    ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", RESPONSE_CHECK_MS: "1500",
+    // GATEWAY_URL and GATEWAY_KEY: the servers reach the node through its gateway, as on Railway;
+    // this test's own checks still read the node directly.
+    ...(process.env.GATEWAY_URL ? { CANTON_JSON_URL: process.env.GATEWAY_URL, CANTON_API_KEY: process.env.GATEWAY_KEY }
+      : { CANTON_JSON_URL: CANTON, CANTON_ADMIN: "localhost:6866", CANTON_PROTOS: PROTOS }) } });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; process.env.VERBOSE && process.stdout.write("[" + app + "] " + d); if (out.includes("listening")) res(c); });
   c.stderr.on("data", (d) => process.stdout.write("[" + app + " err] " + d));

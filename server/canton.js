@@ -15,6 +15,8 @@
 //   CANTON_ADMIN      its admin API (gRPC), e.g. localhost:6866
 //   CANTON_PROTOS     a folder with the admin API's .proto files (from the Daml SDK's canton.jar)
 //   CANTON_USER       the ledger user to submit as (default participant_admin)
+//   CANTON_API_KEY    this app's key for the node's gateway (the shared node on Railway): sent with
+//                     every call; key changes then go through the gateway, with no CANTON_ADMIN or CANTON_PROTOS
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -49,16 +51,31 @@ function onBond(bondId, fn) {
 class CantonError extends Error { constructor(m, status = 502) { super(m); this.status = status; } }
 
 async function json(method, p, body) {
-  const r = await fetch(API + p, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const r = await fetch(API + p, { method, headers: { "Content-Type": "application/json", ...authHeader() }, body: body ? JSON.stringify(body) : undefined });
   const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = { raw: t }; }
   if (!r.ok) throw new CantonError("Canton refused " + p.split("/").slice(-2).join("/") + ": " + String(j.cause || j.raw || JSON.stringify(j)).slice(0, 300), r.status === 400 ? 422 : 502);
   return j;
 }
 
-// ---- the admin API (topology), loaded on first use
+const authHeader = () => (process.env.CANTON_API_KEY ? { Authorization: "Bearer " + process.env.CANTON_API_KEY } : {});
+
+// ---- the admin API (topology), loaded on first use: direct, or through the shared node's gateway
 let admin = null;
 async function adminApi() {
   if (admin) return admin;
+  if (!process.env.CANTON_ADMIN && process.env.CANTON_API_KEY) {
+    // Bytes travel as base64 in JSON; the gateway checks each change is for this app's own parties.
+    const enc = (v) => JSON.parse(JSON.stringify(v, (k, x) => (x && x.type === "Buffer" && Array.isArray(x.data) ? Buffer.from(x.data).toString("base64") : x)));
+    admin = { rpc: async (m, req) => {
+      const out = await json("POST", m === "GenerateTransactions" ? "/admin/topology/generate" : "/admin/topology/add", enc(req)).catch((e) => {
+        throw new CantonError("Canton refused the key change: " + e.message, 422); });
+      if (m === "GenerateTransactions") for (const t of out.generated_transactions || []) {
+        t.serialized_transaction = Buffer.from(t.serialized_transaction, "base64"); t.transaction_hash = Buffer.from(t.transaction_hash, "base64");
+      }
+      return out;
+    } };
+    return admin;
+  }
   const dir = process.env.CANTON_PROTOS;
   if (!dir || !process.env.CANTON_ADMIN) throw new CantonError("Canton's admin API isn't configured (CANTON_ADMIN, CANTON_PROTOS).", 503);
   const [{ default: grpc }, { default: loader }, { default: protobuf }] = await Promise.all([import("@grpc/grpc-js"), import("@grpc/proto-loader"), import("protobufjs")]);
