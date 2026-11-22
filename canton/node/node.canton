@@ -1,0 +1,14 @@
+// Run on every start: sets up the synchronizer and connects the participant the first time only.
+import com.digitalasset.canton.config.RequireTypes.PositiveInt
+import com.digitalasset.canton.version.ProtocolVersion
+
+if (!sequencer1.health.initialized()) {
+  val params = StaticSynchronizerParameters.defaults(sequencer1.config.crypto, ProtocolVersion.forSynchronizer,
+    topologyChangeDelay = NonNegativeFiniteDuration.Zero)
+  bootstrap.synchronizer("registry", Seq(sequencer1), Seq(mediator1), Seq(sequencer1, mediator1), PositiveInt.one, params)
+}
+if (node.synchronizers.list_connected().isEmpty) {
+  if (node.synchronizers.list_registered().isEmpty) node.synchronizers.connect_local(sequencer1, "registry")
+  else node.synchronizers.reconnect_all()
+}
+println("Canton node is ready: ledger API 6865, JSON API 7575, admin API 6866.")
