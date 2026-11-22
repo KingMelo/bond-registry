@@ -6,4 +6,4 @@ for db in canton_participant canton_sequencer canton_sequencer_driver canton_med
     || psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/${PGDATABASE:-postgres}" -c "create database $db"
 done
 exec java ${JAVA_OPTS:--Xms512m -Xmx1536m} -jar /canton/canton.jar daemon --no-tty \
-  -c /canton/node.conf --bootstrap /canton/node.canton --log-file-appender off --log-level-stdout INFO
+  -c /canton/node.conf --bootstrap /canton/node.canton --log-file-appender off --log-level-stdout WARN
