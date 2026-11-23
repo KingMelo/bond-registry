@@ -37,6 +37,11 @@ ok((await call(OMNI, "POST", "/admin/topology/generate", { proposals: [{ operati
   "nor change an assignee's keys");
 ok((await call(OMNI, "POST", "/admin/topology/add", { store: { synchronizer: { id: sync } }, force_changes: [], transactions: [{ transaction: "AAAA", proposal: false, signatures: [] }] })).status === 403,
   "nor add any change the gateway didn't generate for it");
+const hist = (key, f) => call(key, "POST", "/v2/updates?limit=5&stream_idle_timeout_ms=500", { beginExclusive: 0, verbose: false, filter: f });
+ok((await hist(OMNI, { filtersByParty: { [bondParty]: { cumulative: [] } } })).status === 403 && (await hist(OMNI, { filtersForAnyParty: { cumulative: [] } })).status === 403,
+  "nor read the bond registry's history, or everyone's");
+ok((await hist(BOND, { filtersByParty: { [bondParty]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } })).status === 200,
+  "the bond registry reads its own history");
 ok((await call(OMNI, "GET", "/v2/users")).status === 404 && (await call(BOND, "GET", "/v2/parties")).status === 404, "and anything else on the node isn't reachable at all");
 const bondDar = fs.readFileSync(new URL("../canton/.daml/dist/bond-registry-0.7.0.dar", import.meta.url));
 ok((await call(OMNI, "POST", "/v2/packages", bondDar, true)).status === 403, "Omni-Stance can't upload the bond registry's package");

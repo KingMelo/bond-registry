@@ -699,3 +699,53 @@ export async function keysFinish(pool, rec, { signatures }) {
   steps.delete(rec.id + ":keys");
   return { keys: keys.map(({ fp, role, label, added }) => ({ fp, role, label, added })) };
 }
+
+// ------------------------------------------------------------------ the record, as Canton holds it
+
+const NAMES = {
+  Issue: "Issued", Accept: "Accepted", Reject: "Rejected", AssignOut: "Assigned out", ReclaimToAssignment: "Units taken back",
+  RecordMailing: "Certified mailing recorded", RecordReceipt: "Delivery receipt recorded", RecordReceiptOnAssignment: "Delivery receipt recorded",
+  RecordUcc3: "UCC-3 recorded", RecordUcc3OnAssignment: "UCC-3 recorded", RecordNoResponse: "No authenticated response recorded",
+  Lock: "Locked", Unlock: "Unlocked", BindPledgee: "Lender named on the pledge", ReleasePledge: "Pledge released by its lender",
+  Bind: "Your party named on it", Consent: "Replacement agreed", Decline: "Replacement declined", Redeem: "Redeemed",
+  SupersedeOffer: "Replaced by the issuer", CancelAssignOut: "Assign-out cancelled", IssuerCancel: "Cancelled by the issuer",
+  ReclaimToBond: "Units back to the bond",
+};
+const nameOf = (p) => String(p || "").split("::")[0].replace(/-[0-9a-f]{8}$/, "");
+
+/**
+ * One record as Canton holds it, for its own assignee (or lender): its live contract (what it says,
+ * who signed it) and every transaction that touched it, oldest first. Null when it isn't on Canton.
+ */
+export async function recordOnCanton(pool, rec) {
+  const id = rec.lenderOf || rec.id;
+  if (!(await refOf(pool, id)) && !(await refOf(pool, rec.bond))) return null;
+  const issuer = await issuerPartyOf(pool, rec.bond);
+  const live = (await activeFor(issuer)).find((e) => /:Registry:(AssignmentOffer|Assignment)$/.test(e.templateId) && e.createArgument?.recordId === id) || null;
+  const end = (await json("GET", "/v2/state/ledger-end")).offset;
+  const updates = await json("POST", "/v2/updates?limit=2000&stream_idle_timeout_ms=1500", { beginExclusive: 0, endInclusive: end, verbose: true,
+    filter: { filtersByParty: { [issuer]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } } });
+  const mine = new Set(), history = [];
+  for (const tx of (Array.isArray(updates) ? updates : []).map((u) => u.update?.Transaction?.value).filter(Boolean)) {
+    const ex = tx.events.map((e) => e.ExercisedEvent).filter(Boolean);
+    const made = tx.events.map((e) => e.CreatedEvent).filter(Boolean);
+    const touches = ex.some((x) => mine.has(x.contractId)) || made.some((c) => c.createArgument?.recordId === id && /:Registry:(AssignmentOffer|Assignment)$/.test(c.templateId));
+    for (const c of made) if (c.createArgument?.recordId === id) mine.add(c.contractId);
+    if (!touches) continue;
+    const root = ex.find((x) => mine.has(x.contractId)) || ex[0];
+    history.push({ at: tx.effectiveAt, what: root ? NAMES[root.choice] || root.choice : "Created", by: (root?.actingParties || []).map(nameOf),
+      transaction: tx.updateId, offset: tx.offset });
+  }
+  const a = live?.createArgument;
+  return {
+    onCanton: !!live || history.length > 0,
+    contract: live && {
+      kind: live.templateId.split(":").pop() === "Assignment" ? "Assignment in effect" : "Offer",
+      id: live.contractId, since: live.createdAt, signedBy: (live.signatories || []).map(nameOf),
+      issuer: a.issuerName, assignor: a.assignorName, assignee: a.assigneeName, units: a.units,
+      paper: a.instrumentHash, carveOuts: a.carveOuts || [], ucc3: a.ucc3Hash || null, mailing: a.deliveryRef || null,
+      receipt: a.receiptRef || null, locked: a.locked || null, pledgedTo: a.pledgeTo || null,
+    },
+    history,
+  };
+}

@@ -278,3 +278,77 @@ export function CantonKeys({ recordId, token, status, onChanged, ui }) {
     </div>
   );
 }
+
+/**
+ * The assignee's own record as Canton holds it: the contract (its parties, amount, the signed
+ * paper's fingerprint, who signed it) and every transaction that touched it. Read live from the
+ * node for the signed-in assignee only. "Check your copy" hashes their signed paper in this browser
+ * (it isn't uploaded) and compares it with the fingerprint on Canton.
+ */
+export function CantonRecord({ token, ui }) {
+  const { T } = ui;
+  const [rec, setRec] = useState(null);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+  const [check, setCheck] = useState(null); // { ok, hash }
+  const load = () => { setErr(""); api.canton("record", { token }).then(setRec).catch((e) => setErr(e.message)); };
+  React.useEffect(() => { if (open && !rec) load(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const c = rec?.contract;
+  const row = (k, v) => v ? <div style={{ display: "flex", gap: 10, padding: "4px 0", borderTop: "1px solid " + T.rule, fontSize: 13.5 }}>
+    <span style={{ color: T.inkSoft, flex: "0 0 128px" }}>{k}</span><span style={{ minWidth: 0, overflowWrap: "anywhere", color: T.ink }}>{v}</span></div> : null;
+  const when = (t) => (t ? new Date(t).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "");
+  async function checkCopy(file) {
+    const hash = "0x" + [...new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    setCheck({ ok: hash === c?.paper, hash });
+  }
+  return (
+    <div className="mt-4" data-testid="canton-record" style={{ border: "1px solid " + T.rule, borderRadius: 2, padding: "10px 12px", background: T.white }}>
+      <button onClick={() => setOpen(!open)} style={{ background: "none", border: 0, padding: 0, cursor: "pointer", fontSize: 14, fontWeight: 600, color: T.ink }}>
+        {open ? "▾" : "▸"} Your record on Canton
+      </button>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          {err && <p style={{ color: T.red, fontSize: 13 }}>{err}</p>}
+          {!rec && !err && <p style={{ color: T.inkSoft, fontSize: 13 }}>Reading it from the node…</p>}
+          {rec && !rec.onCanton && <p style={{ color: T.inkSoft, fontSize: 13 }}>This record isn't on Canton yet.</p>}
+          {rec?.onCanton && (
+            <>
+              <p style={{ color: T.inkSoft, fontSize: 13, margin: "0 0 6px" }}>Exactly what the Canton node holds for your record, read just now. Only you see this.</p>
+              {c ? <div>
+                {row("What it is", c.kind)}
+                {row("Amount", dollars(c.units))}
+                {row("Issuer", c.issuer)}
+                {row("Assignor", c.assignor)}
+                {row("Assignee", c.assignee)}
+                {row("Signed by", c.signedBy.join(", "))}
+                {row("Signed paper", <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{c.paper}</span>)}
+                {c.carveOuts.length > 0 && row("Assigned out", c.carveOuts.length + " portion" + (c.carveOuts.length === 1 ? "" : "s") + ", each with its own paper")}
+                {row("UCC-3", c.ucc3 && "Recorded · " + short(c.ucc3))}
+                {row("Mailing", c.mailing && "Recorded · " + short(c.mailing))}
+                {row("Delivery receipt", c.receipt && "Recorded · " + short(c.receipt))}
+                {row("Locked", c.locked && c.locked + (c.pledgedTo ? " · pledged to " + c.pledgedTo : ""))}
+                {row("Since", when(c.since))}
+                {row("Contract", <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>{c.id}</span>)}
+                <div style={{ marginTop: 8, fontSize: 13 }}>
+                  <label style={{ color: T.ink }}>Check your copy of the signed paper: <input type="file" aria-label="Check your copy" onChange={(e) => e.target.files[0] && checkCopy(e.target.files[0])} /></label>
+                  {check && <p data-testid="canton-check" style={{ margin: "6px 0 0", color: check.ok ? T.green || T.ink : T.red }}>
+                    {check.ok ? "It matches: this is the paper Canton holds for your record." : "It doesn't match the paper on Canton (" + short(check.hash) + ")."}</p>}
+                  <p style={{ color: T.inkSoft, margin: "4px 0 0" }}>Fingerprinted in this browser; the file isn't uploaded.</p>
+                </div>
+              </div> : <p style={{ color: T.inkSoft, fontSize: 13 }}>It has no live contract any more (it was closed); its history is below.</p>}
+              <div style={{ marginTop: 10, fontSize: 13.5, fontWeight: 600, color: T.ink }}>History on Canton</div>
+              <ol style={{ listStyle: "none", padding: 0, margin: "4px 0 0" }}>
+                {rec.history.map((h) => (
+                  <li key={h.transaction} style={{ padding: "4px 0", borderTop: "1px solid " + T.rule, fontSize: 13.5 }}>
+                    <span style={{ color: T.inkSoft }}>{when(h.at)}</span> · {h.what}{h.by.length ? <span style={{ color: T.inkSoft }}> · by {h.by.join(", ")}</span> : null}
+                  </li>
+                ))}
+              </ol>
+              <button onClick={load} style={{ marginTop: 6, background: "none", border: 0, padding: 0, textDecoration: "underline", cursor: "pointer", color: T.ink, fontSize: 13 }}>Read it again</button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -149,6 +149,14 @@ async function handle(req, res) {
       if (!parties.length) throw new Refused(400, "Name whose contracts to read.");
       await owned(app, parties); r = await pass(); break;
     }
+    case "POST /v2/updates": case "POST /v2/updates/flats": {
+      // A record's history: read as this app's own parties only.
+      const f = body.filter || body.updateFormat?.includeTransactions?.eventFormat || {};
+      if (f.filtersForAnyParty) throw new Refused(403, "Read as this app's own parties only.");
+      const parties = Object.keys(f.filtersByParty || {});
+      if (!parties.length) throw new Refused(400, "Name whose history to read.");
+      await owned(app, parties); r = await pass(); break;
+    }
     case "POST /v2/interactive-submission/prepare":
       await owned(app, [...(body.actAs || []), ...(body.readAs || [])]);
       if (!(body.actAs || []).length) throw new Refused(400, "Name who acts.");

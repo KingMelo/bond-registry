@@ -91,7 +91,8 @@ await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A1, passkey
 await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A2, passkey: "JJJJ-KKKK-LLLL-MMMM" });
 await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A3, passkey: "NNNN-PPPP-QQQQ-RRRR" });
 await icommit({ bonds: [{ ...(await st()).bonds[0], unassigned: TOTAL - 7000 - 1_000_000 - 4200 - 3300 }],
-  reg: [rec(A1, "Company A", 1_000_000), rec(A2, "Company B", 4200), rec(A3, "Company C", 3300)] });
+  reg: [{ ...rec(A1, "Company A", 1_000_000), docHash: "0x" + crypto.createHash("sha256").update("signed paper for A00001").digest("hex") },
+    rec(A2, "Company B", 4200), rec(A3, "Company C", 3300)] });
 {
   const r = (await st()).reg.find((a) => a.id === A1);
   await icommit({ reg: [{ ...r, instrumentMail: "9407 1000 0000 0000 0000 01", passkeyMail: "9407 1000 0000 0000 0000 01",
@@ -204,6 +205,25 @@ ok(offerD?.createArgument.units === "1040" && offerD.createArgument.instrumentHa
 await page.getByText(/On Canton: in effect, signed with your own key/).waitFor({ timeout: 20000 }).catch(() => {});
 ok((await page.getByText(/On Canton: in effect, signed with your own key/).count()) > 0 && !(await page.getByText(/waiting for your key's signature/).count()),
   "Company A's page shows it in effect on Canton, with nothing left waiting for its key");
+
+// ---- Company A's own record, as Canton holds it, on its page.
+{
+  await page.getByText("Your record on Canton").click();
+  const panel = page.getByTestId("canton-record");
+  await panel.getByText("History on Canton").waitFor({ timeout: 20000 });
+  const t = (await panel.innerText()).replace(/\s+/g, " ");
+  ok(/Assignment in effect/.test(t) && /Amount \$9,989\.60/.test(t) && /Issuer Penson Trust/.test(t) && /Assignee Company A/.test(t),
+    "Company A sees its record as Canton holds it: in effect, $9,989.60, with its parties by name");
+  ok(/Issued/.test(t) && /Accepted/.test(t) && /Assigned out/.test(t) && /Certified mailing recorded/.test(t),
+    "and its history on Canton: issued, mailed, accepted, assigned out");
+  await panel.getByLabel("Check your copy").setInputFiles({ name: "paper.pdf", mimeType: "application/pdf", buffer: Buffer.from("signed paper for A00001") });
+  await panel.getByTestId("canton-check").waitFor({ timeout: 5000 });
+  const good = await panel.getByTestId("canton-check").innerText();
+  await panel.getByLabel("Check your copy").setInputFiles({ name: "other.pdf", mimeType: "application/pdf", buffer: Buffer.from("some other paper") });
+  await page.waitForTimeout(500);
+  const bad = await panel.getByTestId("canton-check").innerText();
+  ok(/It matches/.test(good) && /doesn't match/.test(bad), "checking its copy of the paper: the right one matches, another doesn't");
+}
 
 // ---- 4. The issuer proposes replacing A00001; Company A consents with its own key, and Canton follows.
 {

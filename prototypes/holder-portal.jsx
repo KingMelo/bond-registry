@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passkey.js";
 import { nextChildId } from "../src/registry.jsx";
-import { CantonSetup, CantonKeys, CantonAsk, signWaiting } from "./canton-keys-ui.jsx";
+import { CantonSetup, CantonKeys, CantonAsk, CantonRecord, signWaiting } from "./canton-keys-ui.jsx";
 import { printPacket } from "../src/print-packet.js";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, shortHash, responseDeadline } from "../src/registry.jsx";
 
@@ -1234,6 +1234,7 @@ export default function HolderPortal() {
                 </div>
                 <CantonKeys recordId={session.current.id} token={session.current.token} status={canton} ui={cantonUi}
                   onChanged={async (m) => { flash(m); const st = await loadCanton(); if (st?.toSign?.length) runCanton(); }} />
+                <CantonRecord token={session.current.token} ui={cantonUi} />
               </>
             )}
 
@@ -1574,6 +1575,7 @@ export default function HolderPortal() {
                 {canton.toSign?.length ? <> · <button onClick={() => runCanton()} style={{ ...cantonLink }}>Review and sign</button></> : null}
               </div>
             )}
+            {canton?.enabled && canton.party && <CantonRecord token={session.current.token} ui={cantonUi} />}
             {open.status === "Locked" && (
               <div className="mt-5 space-y-3">
                 <Button danger onClick={releasePledge}>Release the pledge: confirm with your passkey</Button>

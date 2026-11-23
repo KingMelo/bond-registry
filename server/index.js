@@ -1051,6 +1051,12 @@ if (APP === "holder") {
     const rec = await cantonRecord(req.body);
     res.json(await canton.status(pool, rec));
   }));
+  // The signed-in assignee's own record as Canton holds it: the contract and its history.
+  app.post("/api/holder/canton/record", wrap(async (req, res) => {
+    if (!canton.enabled) return res.json({ enabled: false });
+    const rec = await cantonRecord(req.body);
+    res.json({ enabled: true, ...(await canton.recordOnCanton(pool, rec)) });
+  }));
   const b64 = (v) => (typeof v === "string" && /^[A-Za-z0-9+/=_-]{16,}$/.test(v) ? v : (() => { throw new Reject(400, "A key or signature is missing."); })());
   app.post("/api/holder/canton/onboard/start", cantonCall((rec, b) => canton.onboardStart(pool, rec,
     { recoverySpki: b64(b.recoverySpki), deviceSpki: b64(b.deviceSpki), deviceLabel: String(b.deviceLabel || "").slice(0, 60) })));
