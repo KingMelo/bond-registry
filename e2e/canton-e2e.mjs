@@ -8,7 +8,7 @@
 //      then replace the first browser as lost: its key stops working on Canton; the new one works.
 //
 // Needs Postgres on 127.0.0.1:54329, the apps built, and a Canton sandbox with the registry's DAR:
-//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.7.0.dar)
+//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar dist/bond-registry-0.8.0.dar)
 // Run from the repo root: node e2e/canton-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -387,9 +387,12 @@ await shot(page2, "c5-replaced");
   const A2 = "PENS-0001-BD-A00002";
   await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A2, passkey: "EEEE-FFFF-GGGG-HHHH" });
   const b = (await st()).bonds[0];
-  await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 2000 }], reg: [{ origin: "Issuer", parent: null, assignor: "Penson Trust", party: "Company E",
+  await icommit({ bonds: [{ ...b, unassigned: b.unassigned - 2000 }], reg: [{ origin: "Issuer", parent: null, assignor: "Old Holder, LLC", party: "Company E",
     contact: "E", position: "", address: "addr", status: "Issued", created: "Oct 1, 2026", accepted: null, filingRef: null, deliveryRef: null,
     instrumentMail: null, passkeyMail: null, id: A2, bond: "PENS-0001-BD", units: 2000, issuedUnits: 2000, docHash: H32() }] });
+  const named = await until(() => onCanton("AssignmentOffer", A2), 30000);
+  ok(named?.createArgument.assignorName === "Old Holder, LLC" && named?.createArgument.issuerName === "Penson Trust",
+    "the issuer's own assignment names the assignor the issuer typed, on the register and on Canton");
   const sent = new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10);
   await icommit({ reg: [{ ...(await st()).reg.find((a) => a.id === A2), instrumentMail: "9407 0002", passkeyMail: "9407 0002", mailedOn: sent, mailingDoc: H32() }] });
   const noted = await until(async () => { const o = await onCanton("AssignmentOffer", A2); return o?.createArgument.noResponseAsOf ? o : null; }, 40000);

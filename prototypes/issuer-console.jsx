@@ -243,6 +243,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
   const [nUnits, setNUnits] = useState("");
   const [nParty, setNParty] = useState("");
+  const [nAssignor, setNAssignor] = useState(""); // who this assignment is from; the bond's assignor if blank
   const [nContact, setNContact] = useState("");
   const [nPosition, setNPosition] = useState("");
   const [nAddress, setNAddress] = useState("");
@@ -511,7 +512,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     setNErr("");
     const newId = nextIssuedId(reg, activeBond);
     const rec = {
-      bond: activeBond, id: newId, parent: null, origin: "Issuer", assignor: bond.assignor || issuerName,
+      bond: activeBond, id: newId, parent: null, origin: "Issuer", assignor: nAssignor.trim() || bond.assignor || issuerName,
       party: nParty.trim(), contact: nContact.trim(), position: nPosition.trim(), address: nAddress.trim(),
       units: u, issuedUnits: u, status: "Issued", created: today(), accepted: null,
       docHash: nDoc.hash, docFile: nDoc.name,
@@ -524,7 +525,7 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
     setBonds((bs) => bs.map((b) => (b.id === activeBond ? { ...b, unassigned: b.unassigned - u } : b)));
     emit(activeBond, rec.id, "AssignmentIssued", "ISSUER", rec.docHash);
     if (rec.filingNumber) emit(activeBond, rec.id, "FilingRecorded", "ISSUER", rec.filingNumber);
-    setNUnits(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress(""); setNDoc(null); setNUcc(""); setNUccDoc(null);
+    setNUnits(""); setNAssignor(""); setNParty(""); setNContact(""); setNPosition(""); setNAddress(""); setNDoc(null); setNUcc(""); setNUccDoc(null);
     setTab("records");
     flash(rec.id + " issued. Mail the instrument and passkey document together by certified post, then record the tracking number.");
     showPasskey(rec.id, passkey, rec.id + " issued to " + rec.party + ".", rec);
@@ -828,6 +829,10 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
 
             <Field label="Amount" value={nUnits} onChange={setNUnits} placeholder="30,000.00" mono
               hint={unitsHint(nUnits, bond.total)} />
+
+            <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Assignor</div>
+            <Field label="Legal name" value={nAssignor} onChange={setNAssignor} placeholder={bond.assignor || issuerName}
+              hint={"Who this assignment is from, as the signed instrument names it. Leave blank for " + (bond.assignor || issuerName) + "."} />
 
             <div style={{ fontFamily: serif, fontSize: 17, color: T.ink, margin: "16px 0 12px" }}>Assignee</div>
             <Field label="Legal name" value={nParty} onChange={setNParty} placeholder="Company F, LLC" />

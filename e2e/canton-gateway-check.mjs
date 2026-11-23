@@ -43,7 +43,7 @@ ok((await hist(OMNI, { filtersByParty: { [bondParty]: { cumulative: [] } } })).s
 ok((await hist(BOND, { filtersByParty: { [bondParty]: { cumulative: [{ identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } }] } } })).status === 200,
   "the bond registry reads its own history");
 ok((await call(OMNI, "GET", "/v2/users")).status === 404 && (await call(BOND, "GET", "/v2/parties")).status === 404, "and anything else on the node isn't reachable at all");
-const bondDar = fs.readFileSync(new URL("../canton/.daml/dist/bond-registry-0.7.0.dar", import.meta.url));
+const bondDar = fs.readFileSync(new URL("../canton/dist/bond-registry-0.8.0.dar", import.meta.url));
 ok((await call(OMNI, "POST", "/v2/packages", bondDar, true)).status === 403, "Omni-Stance can't upload the bond registry's package");
 if (process.env.RECEIVABLES_DAR) {
   const rDar = fs.readFileSync(process.env.RECEIVABLES_DAR);

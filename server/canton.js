@@ -104,7 +104,7 @@ async function sync() {
 }
 
 // The registry's own contract package, uploaded once per process (uploading it again is harmless).
-const DAR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "canton", "dist", "bond-registry-0.7.0.dar");
+const DAR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "canton", "dist", "bond-registry-0.8.0.dar");
 let uploaded = null;
 function ensurePackage() {
   uploaded ??= (async () => {
@@ -162,7 +162,9 @@ async function issueOne(pool, rec, units) {
   const issuer = await issuerPartyOf(pool, rec.bond), bond = await refOf(pool, rec.bond);
   const tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "Issue", choiceArgument: {
     recordId: rec.id, units: String(units), docHash: rec.docHash, ucc3Hash: isHash(rec.filingDoc) ? rec.filingDoc : null,
-    assigneeName: rec.party || "", assignee: null } } }]);
+    assigneeName: rec.party || "", assignee: null,
+    // The issuer's own assignments name whoever the issuer typed as assignor (the issuer if blank).
+    assignorAs: rec.origin === "Issuer" && rec.assignor?.trim() ? rec.assignor.trim() : null } } }]);
   await setRef(pool, rec.bond, "Bond", createdOf(tx, "Bond").contractId);
   await setRef(pool, rec.id, "AssignmentOffer", createdOf(tx, "AssignmentOffer").contractId);
 }

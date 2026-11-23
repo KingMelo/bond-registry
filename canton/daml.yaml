@@ -1,7 +1,8 @@
 sdk-version: 3.4.0-rc2
 name: bond-registry
 source: daml
-version: 0.7.0
+version: 0.8.0
+upgrades: dist/bond-registry-0.7.0.dar
 dependencies:
   - daml-prim
   - daml-stdlib

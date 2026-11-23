@@ -60,6 +60,7 @@ template Bond
         ucc3Hash : Optional Text    -- the issuer's UCC-3, if filed already
         assigneeName : Text
         assignee : Optional Party   -- Some party when they're already on Canton
+        assignorAs : Optional Text  -- who the issuer names as assignor; the issuer's own name if none
       controller issuer
       do
         assertMsg "Attach the signed assignment instrument (its SHA-256)." (isHash docHash)
@@ -72,7 +73,9 @@ template Bond
           issuer; platform; assignor = issuer; bondId; recordId; parentId = None
           units; instrumentHash = docHash; ucc3Hash; assigneeName; assignee
           mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None; noResponseAsOf = None; observers
-          issuerName; assignorName = issuerName
+          issuerName; assignorName = case assignorAs of
+            Some n | T.trim n /= "" -> n
+            _ -> issuerName
         bond <- create this with unassigned = unassigned - units
         pure (bond, offer)
 
