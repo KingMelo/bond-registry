@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { nextIssuedId } from "../src/registry.jsx";
 import { printPacket } from "../src/print-packet.js";
+import { openExtract } from "../src/registry.jsx";
 import { useRegistry, api, today, stamp, newEid, generatePasskey, Loading, parseUnits, dollars, shortHash, responseDeadline } from "../src/registry.jsx";
 
 /* ================================================================
@@ -1177,6 +1178,12 @@ export default function IssuerConsole({ issuerId, header, extraTabs = [], onIssu
                     ? (a.passkeyMail || a.instrumentMail) + (isChild ? " · passkey (instrument from the assignor)" : " · instrument and passkey")
                     : "Not yet mailed"]]),
             ]} />
+            <div className="mt-2 mb-4" data-testid="print-extract">
+              <TextBtn onClick={() => openExtract("/api/issuer/extract", { issuer: issuerId, id: a.id }).catch((e) => flash(e.message))}>
+                Print a certified extract of {a.id}
+              </TextBtn>
+              <div style={{ fontSize: 12, color: T.inkSoft, marginTop: 3 }}>The full record, its chain of title, history and signatures, with a records custodian's certification to sign.</div>
+            </div>
 
             {a.credLocked && (
               <div className="mt-4">

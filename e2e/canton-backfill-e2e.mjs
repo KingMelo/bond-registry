@@ -225,6 +225,41 @@ ok((await page.getByText(/On Canton: in effect, signed with your own key/).count
   ok(/It matches/.test(good) && /doesn't match/.test(bad), "checking its copy of the paper: the right one matches, another doesn't");
 }
 
+// ---- A certified extract of A00001, printed by its assignee and by the issuer, and confirmed on Verify.
+{
+  const { digestOf } = await import("../server/extract.js");
+  const [pop] = await Promise.all([page.waitForEvent("popup"), page.getByTestId("print-extract").first().click()]);
+  await pop.getByText("Certified extract from the register").waitFor({ timeout: 30000 });
+  const t = (await pop.locator("main").innerText()).replace(/\s+/g, " ");
+  const exId = t.match(/Extract number (EX-[A-Z0-9-]+)/)?.[1], dig = t.match(/Contents SHA-256 (0x[0-9a-f]{64})/)?.[1];
+  ok(!!exId && !!dig && new RegExp("records Company A as the assignee of record " + A1 + ", holding \\$9,989\\.60").test(t),
+    "Company A prints a certified extract of its record: numbered " + exId + ", with its contents' SHA-256 and what it holds");
+  ok(/Chain of title/.test(t) && /History in the register/.test(t) && /Certification of the records custodian/.test(t) && /penalty of perjury/.test(t),
+    "the extract has the chain of title, the register's history and a records custodian's certification to sign");
+  const signed = (t.match(/ Valid /g) || []).length;
+  ok(signed >= 3 && !/Not verified/.test(t) && /Appendix A\. Signed acts, in full/.test(t),
+    "every act Company A signed is re-checked as valid (" + signed + "), with the key, challenge and response to check again");
+  ok(/The record on Canton/.test(t) && /Contract ID/.test(t) && /Transaction/.test(t), "and the record as Canton holds it, with its transactions");
+  const kept = (await q("select content, digest from extracts where id = $1", [exId]))[0];
+  ok(kept?.digest === dig && digestOf(kept.content) === dig, "the register kept the extract, and its contents still hash to the printed SHA-256");
+  const conf = await call(H, "GET", "/api/extract/" + exId);
+  ok(conf.record === A1 && conf.digest === dig && !conf.content, "anyone can confirm the number: the record, when, the SHA-256, and nothing more");
+  await pop.close();
+  const r = await fetch(I + "/api/issuer/extract", { method: "POST", headers: { "Content-Type": "application/json", Origin: I, Cookie: jar[I] }, body: JSON.stringify({ issuer: issuerId, id: A1 }) });
+  const ih = await r.text();
+  ok(r.ok && /Certified extract from the register/.test(ih) && ih.includes(A1) && /for Penson Trust \(issuer\)/.test(ih), "the issuer prints one of the same record from its console");
+  const anon = await fetch(I + "/api/issuer/extract", { method: "POST", headers: { "Content-Type": "application/json", Origin: I }, body: JSON.stringify({ issuer: issuerId, id: A1 }) });
+  ok(anon.status === 401 || anon.status === 403, "nobody signed out can make one");
+  const v = await browser.newPage();
+  await v.goto(H + "/assignee#verify");
+  await v.getByText("Assignment, bond or extract number").waitFor();
+  await v.locator("input").first().fill(exId);
+  await v.getByRole("button", { name: "Check the register" }).click();
+  await v.getByTestId("extract-confirmed").waitFor({ timeout: 10000 });
+  ok((await v.getByTestId("extract-confirmed").innerText()).includes(dig), "and the public Verify page confirms the extract number with the same SHA-256");
+  await v.close();
+}
+
 // ---- 4. The issuer proposes replacing A00001; Company A consents with its own key, and Canton follows.
 {
   const rp = { newId: BOND + "-A00004", party: "Company A Holdings", contact: "Treasurer", address: "1 Main St", docHash: H32(), reasonDoc: H32(), proposedOn: "Nov 21, 2026", assignor: "Penson Trust (replacement)" };

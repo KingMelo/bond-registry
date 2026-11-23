@@ -3,6 +3,7 @@ import { createDeviceKey, signWithDevice, passkeysAvailable } from "../src/passk
 import { nextChildId } from "../src/registry.jsx";
 import { CantonSetup, CantonKeys, CantonAsk, CantonRecord, signWaiting } from "./canton-keys-ui.jsx";
 import { printPacket } from "../src/print-packet.js";
+import { openExtract } from "../src/registry.jsx";
 import { useRegistry, api, today, stamp, newEid, Loading, parseUnits, dollars, shortHash, responseDeadline } from "../src/registry.jsx";
 
 /* ================================================================
@@ -400,10 +401,15 @@ function VerifyRegister({ reg, bonds = [], events = [], issuerOf }) {
   const [res, setRes] = useState(null); // { kind: "record" | "bond", id }
   const [doc, setDoc] = useState(null);
 
-  function check(value = q) {
+  async function check(value = q) {
     const id = String(value).trim().toUpperCase();
     if (!id) return;
     setErr(""); setRes(null); setDoc(null);
+    if (/^EX-/.test(id)) {
+      try { setRes({ kind: "extract", id, ex: await api.extractConfirm(id) }); }
+      catch { setErr("The register made no extract numbered " + id + ". Check the number printed at the top of the extract."); }
+      return;
+    }
     if (reg.some((a) => a.id.toUpperCase() === id)) setRes({ kind: "record", id });
     else if (bonds.some((x) => x.id.toUpperCase() === id)) setRes({ kind: "bond", id });
     else setErr("Nothing with the ID " + id + " is on the register. Check the ID on your paperwork.");
@@ -427,15 +433,30 @@ function VerifyRegister({ reg, bonds = [], events = [], issuerOf }) {
     <div>
       <h1 style={{ fontFamily: serif, fontSize: 27, color: T.ink, lineHeight: 1.25 }}>Verify an assignment</h1>
       <p style={{ color: T.inkSoft, fontSize: 15, lineHeight: 1.6, margin: "10px 0 22px", maxWidth: "62ch" }}>
-        Enter an assignment ID, or a bond ID, from your paperwork to see how it stands on the register,
+        Enter an assignment ID, a bond ID or a certified extract number (EX-…) from your paperwork to see how it stands on the register,
         and check your copy of the signed instrument. No names or contact details are shown here.
         Public notice of each assignment is its UCC filing with the state.
       </p>
 
-      <Field label="Assignment or bond ID" value={q} onChange={(v) => { setQ(v); setErr(""); }} placeholder="KJPII-0001-BD-A00001" mono />
+      <Field label="Assignment, bond or extract number" value={q} onChange={(v) => { setQ(v); setErr(""); }} placeholder="KJPII-0001-BD-A00001" mono />
       <Button disabled={!q.trim()} onClick={() => check()}>Check the register</Button>
 
       {err && <div className="mt-4"><Note kind="warn">{err}</Note></div>}
+
+      {res?.kind === "extract" && (
+        <div className="mt-6" data-testid="extract-confirmed">
+          <div style={{ fontFamily: serif, fontSize: 21, color: T.ink, fontVariantNumeric: "tabular-nums", marginBottom: 8 }}>{res.ex.id}</div>
+          <p style={{ fontSize: 15, color: T.ink, lineHeight: 1.6, marginBottom: 14 }}>
+            The register made this extract. A printed copy is genuine only if the contents SHA-256 on it is exactly the one below.
+          </p>
+          <Rows data={[
+            ["Record", res.ex.record],
+            ["Made", new Date(res.ex.madeAt).toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC")],
+            ["Made for", res.ex.madeBy],
+            ["Contents SHA-256", res.ex.digest],
+          ]} />
+        </div>
+      )}
 
       {r && (
         <div className="mt-6">
@@ -1225,6 +1246,13 @@ export default function HolderPortal() {
                 {(device.since || open.deviceKey?.since) ? " · set up " + (device.since || open.deviceKey?.since) : ""}
               </div>
             )}
+            {session.current && (
+              <div style={{ fontSize: 13, marginTop: 8 }}>
+                <button data-testid="print-extract" style={{ ...cantonLink }}
+                  onClick={() => openExtract("/api/holder/extract", { token: session.current.token }).catch((e) => flash(e.message))}>
+                  Print a certified extract of this record</button>
+              </div>
+            )}
             {canton?.enabled && canton.party && session.current && (
               <>
                 <div style={{ fontSize: 13, color: T.inkSoft, marginTop: 4 }} data-testid="canton-standing">
@@ -1576,6 +1604,13 @@ export default function HolderPortal() {
               </div>
             )}
             {canton?.enabled && canton.party && <CantonRecord token={session.current.token} ui={cantonUi} />}
+            {session.current && (
+              <div style={{ fontSize: 13, marginTop: 10 }}>
+                <button data-testid="print-extract" style={{ ...cantonLink }}
+                  onClick={() => openExtract("/api/holder/extract", { token: session.current.token }).catch((e) => flash(e.message))}>
+                  Print a certified extract of this record</button>
+              </div>
+            )}
             {open.status === "Locked" && (
               <div className="mt-5 space-y-3">
                 <Button danger onClick={releasePledge}>Release the pledge: confirm with your passkey</Button>

@@ -15,6 +15,7 @@ import { ISSUERS, BONDS, ASSIGNMENTS, PASSKEYS, EVENTS } from "./seed.js";
 import * as records from "./records.js";
 import * as canton from "./canton.js";
 import * as holderKeys from "./holder-keys.js";
+import * as extract from "./extract.js";
 
 const APP = ["issuer", "platform"].includes(process.env.APP) ? process.env.APP : "holder";
 const PORT = Number(process.env.PORT) || 3000;
@@ -69,6 +70,7 @@ async function migrate() {
       create table if not exists meta (k text primary key, version bigint not null);
       ${records.SCHEMA}
       ${canton.SCHEMA}
+      ${extract.SCHEMA}
       create table if not exists bonds (id text primary key, data jsonb not null);
       create table if not exists assignments (
         id text primary key, bond text not null, data jsonb not null,
@@ -1057,6 +1059,21 @@ if (APP === "holder") {
     const rec = await cantonRecord(req.body);
     res.json({ enabled: true, ...(await canton.recordOnCanton(pool, rec)) });
   }));
+  // A certified extract of the signed-in assignee's (or lender's) own record, to print.
+  app.post("/api/holder/extract", wrap(async (req, res) => {
+    const session = needSession(req.body?.token);
+    const rec = await subjectOf(pool, session.id, { signing: true });
+    if (!rec) throw new Reject(404, "No such record.");
+    const madeBy = isLender(session.id) ? rec.party + ", lender on the pledge of " + rec.lenderOf : rec.party + ", assignee of record";
+    const ex = await extract.make(pool, baseOf(rec.id), { madeBy, canton });
+    res.type("html").send(extract.render(ex, { verifyAt: PUBLIC_URL + "/assignee#verify" }));
+  }));
+  // Anyone can confirm an extract number: which record, when, and its contents' SHA-256. Never the contents.
+  app.get("/api/extract/:id", wrap(async (req, res) => {
+    const c = await extract.confirm(pool, req.params.id);
+    if (!c) throw new Reject(404, "The register made no extract with that number.");
+    res.json(c);
+  }));
   const b64 = (v) => (typeof v === "string" && /^[A-Za-z0-9+/=_-]{16,}$/.test(v) ? v : (() => { throw new Reject(400, "A key or signature is missing."); })());
   app.post("/api/holder/canton/onboard/start", cantonCall((rec, b) => canton.onboardStart(pool, rec,
     { recoverySpki: b64(b.recoverySpki), deviceSpki: b64(b.deviceSpki), deviceLabel: String(b.deviceLabel || "").slice(0, 60) })));
@@ -1462,6 +1479,15 @@ if (APP === "issuer") {
     await pool.query(`insert into sealed_codes (id, sealed) values ($1, $2)
       on conflict (id) do update set sealed = excluded.sealed, created_at = now(), revealed_at = null, revealed_by = null`, [id, seal(passkey)]);
     res.json({ ok: true });
+  }));
+
+  // A certified extract of one of the issuer's records, to print.
+  app.post("/api/issuer/extract", wrap(async (req, res) => {
+    const m = await recordAccess(req);
+    const id = String(req.body?.id || "");
+    if (!(await pool.query("select 1 from assignments where id = $1", [id])).rowCount) throw new Reject(404, "No such record.");
+    const ex = await extract.make(pool, id, { madeBy: m.user.name + " for " + m.legal_name + " (issuer)", canton });
+    res.type("html").send(extract.render(ex, { verifyAt: (process.env.ASSIGNEE_URL || process.env.VITE_ASSIGNEE_SITE || "https://registry.omni-stance.com").replace(/\/+$/, "") + "/assignee#verify" }));
   }));
 
   // A new assignee's transfer code, for the issuer to review: any number of times, until it's used.

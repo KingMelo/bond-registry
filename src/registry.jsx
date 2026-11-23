@@ -30,6 +30,22 @@ async function call(method, url, body) {
   return data;
 }
 
+/**
+ * Opens a certified extract (a page the server builds) in a new tab, ready to print.
+ * The tab is opened at the click, before the request, so the browser doesn't block it.
+ */
+export async function openExtract(url, body) {
+  const w = window.open("", "_blank");
+  if (w) w.document.write("<p style='font:15px system-ui;padding:24px'>Preparing the certified extract…</p>");
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), credentials: "same-origin" });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "The extract couldn't be made (" + res.status + ").");
+    const html = await res.text();
+    if (w) { w.document.open(); w.document.write(html); w.document.close(); }
+    else { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = "register-extract.html"; a.click(); }
+  } catch (e) { if (w) w.close(); throw e; }
+}
+
 export const api = {
   signIn: (id, passkey) => call("POST", "/api/holder/signin", { id, passkey }),
   holderPrepare: (body) => call("POST", "/api/holder/prepare", body),
@@ -41,6 +57,7 @@ export const api = {
   holderKey: (body) => call("POST", "/api/holder/key", body),
   // Canton (pilot): status, key setup and changes, and acts signed on Canton.
   canton: (step, body) => call("POST", "/api/holder/canton/" + step, body),
+  extractConfirm: (id) => call("GET", "/api/extract/" + encodeURIComponent(id)),
   setPasskey: (issuer, id, passkey) => call("POST", "/api/issuer/passkey", { issuer, id, passkey }),
   revealAccessCode: (issuer, id) => call("POST", "/api/issuer/access-code/reveal", { issuer, id }),
   clearLockout: (issuer, id) => call("POST", "/api/issuer/clear-lockout", { issuer, id }),
