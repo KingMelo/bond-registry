@@ -1,0 +1,67 @@
+# The Canton node on an Unraid server (Compose Manager plugin, or `docker compose up -d`).
+# Four containers on one private network: Postgres, the node, its gateway (the only piece the apps
+# talk to, with the read-only dashboard at /dashboard), and a Cloudflare Tunnel that publishes the
+# gateway over HTTPS without opening a port on your router. Data lives under APPDATA.
+#
+#   cp .env.example .env   # then fill it in (see README.md)
+#   docker compose up -d --build
+name: canton-node
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: canton
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: canton
+    volumes:
+      - ${APPDATA:-/mnt/user/appdata/canton-node}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canton -d canton"]
+      interval: 10s
+      retries: 10
+
+  canton:
+    build:
+      context: ${SOURCE:-https://github.com/KingMelo/bond-registry.git#claude/laughing-babbage-0zuuuw}:canton/node
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: canton
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: canton
+      CANTON_BIND: 0.0.0.0          # Docker's default network is IPv4 only
+      JAVA_OPTS: ${CANTON_JAVA_OPTS:--Xms512m -Xmx1300m}
+    mem_limit: ${CANTON_MEMORY:-3g}
+    # No ports published: only the gateway reaches the node.
+
+  gateway:
+    build:
+      context: ${SOURCE:-https://github.com/KingMelo/bond-registry.git#claude/laughing-babbage-0zuuuw}:canton/gateway
+    restart: unless-stopped
+    depends_on: [canton, postgres]
+    environment:
+      BIND: 0.0.0.0
+      PORT: "8080"
+      NODE_JSON_URL: http://canton:7575
+      NODE_ADMIN: canton:6866
+      DATABASE_URL: postgres://canton:${POSTGRES_PASSWORD}@postgres:5432/canton
+      KEY_BOND_REGISTRY: ${KEY_BOND_REGISTRY:?set KEY_BOND_REGISTRY in .env}
+      KEY_OMNI_STANCE: ${KEY_OMNI_STANCE:?set KEY_OMNI_STANCE in .env}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+    # Reachable on your LAN for the dashboard (http://<unraid-ip>:8686/dashboard); the tunnel
+    # publishes it to the apps. Remove this line to keep it off the LAN too.
+    ports:
+      - "${GATEWAY_LAN_PORT:-8686}:8080"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest   # pin a version once it runs
+    restart: unless-stopped
+    depends_on: [gateway]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
