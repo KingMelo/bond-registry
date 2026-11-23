@@ -104,7 +104,7 @@ async function sync() {
 }
 
 // The registry's own contract package, uploaded once per process (uploading it again is harmless).
-const DAR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "canton", "dist", "bond-registry-0.6.0.dar");
+const DAR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "canton", "dist", "bond-registry-0.7.0.dar");
 let uploaded = null;
 function ensurePackage() {
   uploaded ??= (async () => {
@@ -189,7 +189,7 @@ async function replayedUnits(pool, rec) {
 export const backfill = (pool, bondId) => onBond(bondId, () => backfillNow(pool, bondId));
 async function backfillNow(pool, bondId) {
   if (await refOf(pool, bondId)) return { bondId, already: true };
-  const b = (await pool.query("select b.data, b.review, i.code from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [bondId])).rows[0];
+  const b = (await pool.query("select b.data, b.review, i.code, i.legal_name from bonds b join issuers i on i.id = b.issuer_id where b.id = $1", [bondId])).rows[0];
   if (!b || b.review !== "approved" || !isHash(b.data.instrumentHash) || !isHash(b.data.ucc1?.hash)) return { bondId, skipped: "the bond isn't approved with its papers' fingerprints" };
   const roots = (await pool.query(`select data from assignments where bond = $1 and data->>'origin' in ('Issuer', 'Replacement')
     and data->>'status' = any($2) order by id`, [bondId, LIVE])).rows.map((r) => r.data);
@@ -203,7 +203,8 @@ async function backfillNow(pool, bondId) {
   const issuer = await localParty(pool, "issuer-" + b.code), platform = await localParty(pool, "platform");
   const tx = await submit([issuer, platform], [{ CreateCommand: { templateId: tpl("Bond"), createArguments: {
     issuer, platform, bondId, total: String(b.data.total), unassigned: String(Number(b.data.unassigned) + issuing + priorHeld),
-    redeemed: String(b.data.redeemed || 0), prior: "0", instrumentHash: b.data.instrumentHash, ucc1Hash: b.data.ucc1.hash, observers: [] } } }]);
+    redeemed: String(b.data.redeemed || 0), prior: "0", instrumentHash: b.data.instrumentHash, ucc1Hash: b.data.ucc1.hash, observers: [],
+    issuerName: b.legal_name || b.code } } }]);
   await setRef(pool, bondId, "Bond", createdOf(tx, "Bond").contractId);
   await syncBondNow(pool, bondId);
   for (const r of ok) await issueOne(pool, r, units.get(r.id));
@@ -213,11 +214,10 @@ async function backfillNow(pool, bondId) {
   return out;
 }
 
-/** Every approved bond with live assignments that isn't on Canton yet: run when the issuer service starts. */
+/** Every approved bond that isn't on Canton yet, with its prior instruments and live assignments: run when the issuer service starts. */
 export async function backfillAll(pool) {
   const ids = (await pool.query(`select b.id from bonds b where b.review = 'approved'
-    and exists (select 1 from assignments a where a.bond = b.id and a.data->>'status' = any($1))
-    and not exists (select 1 from canton_refs r where r.ref = b.id)`, [LIVE])).rows.map((r) => r.id);
+    and not exists (select 1 from canton_refs r where r.ref = b.id)`)).rows.map((r) => r.id);
   const done = [];
   for (const id of ids) done.push(await backfill(pool, id).catch((e) => ({ bondId: id, error: e.message })));
   return done;
@@ -321,7 +321,8 @@ const priorFp = (bondId, ref) => fp("prior", [bondId, String(ref).trim().toUpper
  * (its amount off what's left to assign), and each one reversed in the register is reversed there,
  * with its reason's fingerprint. Compared with what Canton holds, so each happens once.
  */
-export const syncBond = (pool, bondId) => onBond(bondId, () => syncBondNow(pool, bondId));
+// A bond saved that isn't on Canton yet is brought across first (with its prior instruments).
+export const syncBond = (pool, bondId) => onBond(bondId, async () => ((await refOf(pool, bondId)) ? syncBondNow(pool, bondId) : backfillNow(pool, bondId)));
 async function syncBondNow(pool, bondId) {
   let bond = await refOf(pool, bondId);
   if (bond?.template !== "Bond") return;
@@ -335,7 +336,7 @@ async function syncBondNow(pool, bondId) {
     let tx = null;
     if (!p.reversed && !live.has(p.id) && !reversed.has(p.id))
       tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "RecordPrior",
-        choiceArgument: { entryId: p.id, identifierHash: priorFp(bondId, p.ref), units: String(p.units) } } }]);
+        choiceArgument: { entryId: p.id, identifierHash: priorFp(bondId, p.ref), units: String(p.units), holderName: String(p.holder || "").trim() || "Not named" } } }]);
     else if (p.reversed && live.has(p.id))
       tx = await submit([issuer], [{ ExerciseCommand: { templateId: tpl("Bond"), contractId: bond.cid, choice: "ReversePrior",
         choiceArgument: { priorCid: live.get(p.id).contractId, reasonHash: fp("reason", [bondId, p.id, p.reversedReason || ""]) } } }]);

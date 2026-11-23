@@ -28,7 +28,7 @@ setup = do
   outsider <- allocateParty "Outsider"
   bond <- submitMulti [issuer, platform] [] $ createCmd Bond with
     issuer; platform; bondId = "PENS-0001-BD"; total = 10_000_000_000; unassigned = 10_000_000_000; redeemed = 0; prior = 0
-    instrumentHash = h "bond"; ucc1Hash = h "ucc1"; observers = [trustee]
+    instrumentHash = h "bond"; ucc1Hash = h "ucc1"; observers = [trustee]; issuerName = "Penson Trust"
   let cast = Cast with issuer; platform; alice; bob; trustee; outsider
   pure (cast, bond)
 
@@ -87,6 +87,8 @@ test_partial_assignment = script do
     childId = "PENS-0001-BD-A00001-1"; childUnits = 1_000_001; childHash = h "d1"; childName = "Company D"; childParty = None
   (rest, offer) <- submit c.alice $ exerciseCmd a1 AssignOut with
     childId = "PENS-0001-BD-A00001-1"; childUnits = 1040; childHash = h "d1"; childName = "Company D"; childParty = None
+  Some ov <- queryContractId c.alice offer
+  (ov.issuerName, ov.assignorName, ov.assigneeName) === ("Penson Trust", "Company A", "Company D")  -- all three, by name
   -- The remainder keeps its original paper and lists the carve-out: original minus carve-outs = held.
   Some r <- queryContractId c.alice rest
   r.units === 1_000_000 - 1040
@@ -273,9 +275,11 @@ test_lock_cancel_redeem = script do
 test_prior_and_replacement = script do
   (c, bond) <- setup
   -- A prior instrument comes off what's left to assign; only the issuer records or reverses it.
-  submitMustFail c.alice $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 5_000
-  submitMustFail c.issuer $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 10_000_000_001
-  (bond, p1) <- submit c.issuer $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 5_000
+  submitMustFail c.alice $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 5_000; holderName = "Old Note Holder LLC"
+  submitMustFail c.issuer $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 10_000_000_001; holderName = "X"
+  (bond, p1) <- submit c.issuer $ exerciseCmd bond RecordPrior with entryId = "P001"; identifierHash = h "pn7"; units = 5_000; holderName = "Old Note Holder LLC"
+  Some pv <- queryContractId c.issuer p1
+  pv.holderName === "Old Note Holder LLC"   -- who holds it is on the contract
   Some b <- queryContractId c.issuer bond
   (b.unassigned, b.prior) === (10_000_000_000 - 5_000, 5_000)
   length <$> query @PriorInstrument c.trustee >>= (=== 1)   -- the bond's trustee sees it
@@ -292,6 +296,7 @@ test_prior_and_replacement = script do
   o2 <- submit c.issuer $ exerciseCmd offer SupersedeOffer with newRecordId = "PENS-0001-BD-A00002"; newHash = h "a2"; newAssigneeName = "Company A Holdings"; reasonHash = h "why"
   Some v <- queryContractId c.issuer o2
   (v.recordId, v.units, v.instrumentHash, v.parentId) === ("PENS-0001-BD-A00002", 1_000, h "a2", Some "PENS-0001-BD-A00001")
+  (v.issuerName, v.assignorName) === ("Penson Trust", "Penson Trust")
   -- An accepted assignment: the issuer can only propose replacing it; its assignee consents or declines.
   o2 <- submit c.platform $ exerciseCmd o2 Bind with party = c.bob
   a2 <- submit c.bob $ exerciseCmd o2 Accept

@@ -38,7 +38,9 @@ const logs = [];
 const start = (app, port, withCanton) => new Promise((res, rej) => {
   const env = { ...process.env, APP: app, PORT: String(port), DATABASE_URL: DB, SEED_SAMPLE: "0", ADMIN_SETUP_CODE: "setup-123", PASSKEY_PEPPER: "x", RESPONSE_CHECK_MS: "60000" };
   delete env.CANTON_JSON_URL;
-  if (withCanton) Object.assign(env, { CANTON_JSON_URL: CANTON, CANTON_ADMIN: "localhost:6866", CANTON_PROTOS: PROTOS });
+  // GATEWAY_URL and GATEWAY_KEY: through the node's gateway, as on Railway.
+  if (withCanton) Object.assign(env, process.env.GATEWAY_URL ? { CANTON_JSON_URL: process.env.GATEWAY_URL, CANTON_API_KEY: process.env.GATEWAY_KEY }
+    : { CANTON_JSON_URL: CANTON, CANTON_ADMIN: "localhost:6866", CANTON_PROTOS: PROTOS });
   const c = spawn("node", ["server/index.js"], { cwd: ROOT, env });
   procs.push(c); let out = "";
   c.stdout.on("data", (d) => { out += d; logs.push("[" + app + "] " + d); process.env.VERBOSE && process.stdout.write("[" + app + "] " + d); if (out.includes("listening")) res(c); });
@@ -79,6 +81,10 @@ const CODE = "7KQM-R4XW-9TPH-C2NV";
 await icommit({ bonds: [{ id: BOND, title: "Series A", face: TOTAL, total: TOTAL, unassigned: TOTAL - 7000, redeemed: 0,
   prior: [{ id: "P001", ref: "PN-2024-007", holder: "Old Note Holder LLC", mail: "9407 7777", units: 7000, recordedOn: "Nov 1, 2026", reversed: false }],
   registered: "Nov 8, 2026", instrumentHash: H32(), ucc1: { number: "DE-1", office: "Delaware", date: "Nov 7, 2026", hash: H32(), file: "u.pdf" } }] });
+// A second bond with only prior instruments, no assignments (as the live register has now).
+await icommit({ bonds: [{ id: "PENS-0002-BD", title: "Series B", face: TOTAL, total: TOTAL, unassigned: TOTAL - 5_000_000, redeemed: 0,
+  prior: [{ id: "P001", ref: "KJ-012825", holder: "Capital One", mail: "9589 0710", units: 5_000_000, recordedOn: "Nov 8, 2026", reversed: false }],
+  registered: "Nov 8, 2026", instrumentHash: H32(), ucc1: { number: "DE-2", office: "Delaware", date: "Nov 7, 2026", hash: H32(), file: "u2.pdf" } }] });
 const rec = (id, party, units) => ({ origin: "Issuer", parent: null, assignor: "Penson Trust", party, contact: "D", position: "", address: "addr", status: "Issued",
   created: "Nov 9, 2026", accepted: null, filingRef: null, deliveryRef: null, instrumentMail: null, passkeyMail: null, id, bond: BOND, units, issuedUnits: units, docHash: H32() });
 await call(I, "POST", "/api/issuer/passkey", { issuer: issuerId, id: A1, passkey: CODE });
@@ -143,8 +149,14 @@ const on = async (template, key, v) => (await acsFor(issuerParty)).find((e) => e
   const regBond = (await st()).bonds[0], b = await on("Bond", "bondId", BOND);
   ok(b && Number(b.createArgument.unassigned) === regBond.unassigned && b.createArgument.prior === "7000" && Number(b.createArgument.total) === TOTAL,
     "Canton's bond matches the register: $" + (regBond.unassigned / 100).toLocaleString() + " left to assign, $70.00 held as prior");
-  const p = await on("PriorInstrument", "entryId", "P001");
-  ok(p?.createArgument.units === "7000" && !JSON.stringify(p).includes("Old Note Holder"), "the prior instrument is there as a fingerprint, its holder not");
+  const p = (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:PriorInstrument") && e.createArgument.bondId === BOND && e.createArgument.entryId === "P001");
+  ok(p?.createArgument.units === "7000" && p.createArgument.holderName === "Old Note Holder LLC" && !JSON.stringify(p).includes("PN-2024-007"),
+    "the prior instrument is there with its holder, its identifier as a fingerprint");
+  ok(b?.createArgument.issuerName === "Penson Trust", "and the bond names its issuer");
+  const b2 = await on("Bond", "bondId", "PENS-0002-BD");
+  const p2 = (await acsFor(issuerParty)).find((e) => e.templateId.endsWith(":Registry:PriorInstrument") && e.createArgument.bondId === "PENS-0002-BD");
+  ok(b2?.createArgument.prior === "5000000" && p2?.createArgument.holderName === "Capital One" && p2.createArgument.units === "5000000",
+    "a bond with only prior instruments is brought across too: Capital One's $50,000.00 instrument is on Canton");
   const o1 = await on("AssignmentOffer", "recordId", A1), o2 = await on("AssignmentOffer", "recordId", A2);
   const r1 = (await st()).reg.find((a) => a.id === A1);
   ok(o1?.createArgument.units === "1000000" && o1.createArgument.instrumentHash === r1.docHash,

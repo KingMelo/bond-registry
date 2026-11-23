@@ -44,6 +44,7 @@ template Bond
     instrumentHash : Text   -- the bond instrument
     ucc1Hash : Text         -- the filed UCC-1
     observers : [Party]     -- e.g. a trustee or auditor
+    issuerName : Text       -- the issuer, by legal name
   where
     signatory issuer, platform
     observer observers
@@ -71,6 +72,7 @@ template Bond
           issuer; platform; assignor = issuer; bondId; recordId; parentId = None
           units; instrumentHash = docHash; ucc3Hash; assigneeName; assignee
           mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None; noResponseAsOf = None; observers
+          issuerName; assignorName = issuerName
         bond <- create this with unassigned = unassigned - units
         pure (bond, offer)
 
@@ -85,18 +87,20 @@ template Bond
         create this with unassigned = unassigned + r.units
 
     -- An instrument from before the registry (a promissory note, say): its amount comes off what's
-    -- left to assign. Its identifier is kept as a fingerprint; who holds it stays in the register.
+    -- left to assign. Its identifier is kept as a fingerprint, with who holds it.
     choice RecordPrior : (ContractId Bond, ContractId PriorInstrument)
       with
         entryId : Text
         identifierHash : Text
         units : Int
+        holderName : Text
       controller issuer
       do
+        assertMsg "Name who holds it." (T.length holderName > 0)
         assertMsg "The amount must be above zero." (units > 0)
         assertMsg "Not enough left to assign on this bond." (units <= unassigned)
         assertMsg "The identifier needs its fingerprint." (isHash identifierHash)
-        p <- create PriorInstrument with issuer; platform; bondId; entryId; identifierHash; units; observers
+        p <- create PriorInstrument with issuer; platform; bondId; entryId; identifierHash; units; observers; holderName
         b <- create this with unassigned = unassigned - units; prior = prior + units
         pure (b, p)
 
@@ -111,7 +115,7 @@ template Bond
         assertMsg "That instrument is on another bond." (p.bondId == bondId)
         assertMsg "The reversal needs its reason's fingerprint." (isHash reasonHash)
         archive priorCid
-        _ <- create PriorReversed with issuer; platform; bondId; entryId = p.entryId; identifierHash = p.identifierHash; units = p.units; reasonHash; observers
+        _ <- create PriorReversed with issuer; platform; bondId; entryId = p.entryId; identifierHash = p.identifierHash; units = p.units; reasonHash; observers; holderName = p.holderName
         create this with unassigned = unassigned + p.units; prior = prior - p.units
 
     choice Retire : ContractId Bond
@@ -128,6 +132,7 @@ template PriorInstrument
     identifierHash : Text
     units : Int
     observers : [Party]
+    holderName : Text        -- who holds it
   where
     signatory issuer, platform
     observer observers
@@ -143,6 +148,7 @@ template PriorReversed
     units : Int
     reasonHash : Text
     observers : [Party]
+    holderName : Text
   where
     signatory issuer, platform
     observer observers
@@ -162,11 +168,12 @@ template Superseded
     observer platform, observers
 
 -- A replacement offer, from the issuer, for the same amount, with its own new paper.
-replacementOffer : Party -> Party -> Text -> Text -> Int -> Text -> Text -> [Party] -> AssignmentOffer
-replacementOffer issuer platform bondId oldId units newRecordId newHash observers = AssignmentOffer with
+replacementOffer : Party -> Party -> Text -> Text -> Int -> Text -> Text -> [Party] -> Text -> AssignmentOffer
+replacementOffer issuer platform bondId oldId units newRecordId newHash observers issuerName = AssignmentOffer with
   issuer; platform; assignor = issuer; bondId; recordId = newRecordId; parentId = Some oldId
   units; instrumentHash = newHash; ucc3Hash = None; assigneeName = ""; assignee = None
   mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None; noResponseAsOf = None; observers
+  issuerName; assignorName = issuerName
 
 ------------------------------------------------------------------ replacing an accepted assignment
 
@@ -224,6 +231,8 @@ template AssignmentOffer
     receiptRef : Optional Text  -- and its fingerprint: tracking number, date and receipt copy
     noResponseAsOf : Optional Time -- set when the response period passed with no authenticated answer
     observers : [Party]
+    issuerName : Text           -- the issuer, the assignor and (above) the assignee, by name
+    assignorName : Text
   where
     signatory issuer, assignor
     observer platform, observers, optional [] (\p -> [p]) assignee
@@ -279,6 +288,7 @@ template AssignmentOffer
       do create Assignment with
            issuer; platform; assignee = fromSomeNote "" assignee; assignor; assigneeName; bondId; recordId; parentId
            units; instrumentHash; carveOuts = []; ucc3Hash; mailedOn; deliveryRef; receivedOn; receiptRef; locked = None; pledgeTo = None; pledgee = None; observers
+           issuerName; assignorName
 
     -- The assignee rejects, with a reason of 255+ characters. The units go back where they came
     -- from: a UnitsReturned record the assignor (or the issuer) reclaims. The assignee never sees
@@ -302,7 +312,7 @@ template AssignmentOffer
         assertMsg "The replacement needs its new signed instrument." (isHash newHash)
         assertMsg "The replacement needs its reason's fingerprint." (isHash reasonHash)
         _ <- create Superseded with issuer; platform; bondId; recordId; replacedBy = newRecordId; reasonHash; observers
-        create (replacementOffer issuer platform bondId recordId units newRecordId newHash observers) with assigneeName = newAssigneeName
+        create (replacementOffer issuer platform bondId recordId units newRecordId newHash observers issuerName) with assigneeName = newAssigneeName
 
     -- The issuer cancels a disputed assign-out, with its reason. The units wait for the assignor to
     -- take back, as after a rejection.
@@ -370,6 +380,8 @@ template Assignment
     pledgeTo : Optional Text  -- a pledge's lender, by name, as the assignee named them
     pledgee : Optional Party  -- that lender's party, once they've claimed the pledge: only they release it
     observers : [Party]
+    issuerName : Text         -- the issuer, the assignor and (above) the assignee, by name
+    assignorName : Text
   where
     signatory issuer, assignee
     observer assignor, platform, observers, optional [] (\p -> [p]) pledgee
@@ -398,7 +410,7 @@ template Assignment
           issuer; platform; assignor = assignee; bondId; recordId = childId; parentId = Some recordId
           units = childUnits; instrumentHash = childHash; ucc3Hash = None; assigneeName = childName
           assignee = childParty; mailedOn = None; deliveryRef = None; receivedOn = None; receiptRef = None
-          noResponseAsOf = None; observers
+          noResponseAsOf = None; observers; issuerName; assignorName = assigneeName
         pure (rest, offer)
 
     -- Cancel an assign-out nobody has claimed yet: its units come straight back, in one act.
@@ -501,7 +513,7 @@ template Assignment
         assertMsg "The replacement needs its new signed instrument." (isHash newHash)
         assertMsg "The replacement needs its reason's fingerprint." (isHash reasonHash)
         _ <- create Superseded with issuer; platform; bondId; recordId; replacedBy = newRecordId; reasonHash; observers
-        create (replacementOffer issuer platform bondId recordId units newRecordId newHash observers) with assigneeName = newAssigneeName
+        create (replacementOffer issuer platform bondId recordId units newRecordId newHash observers issuerName) with assigneeName = newAssigneeName
 
     -- The issuer pays under the paperwork and records it, with the payment confirmation's hash.
     choice Redeem : ()

@@ -8,7 +8,7 @@
 //      then replace the first browser as lost: its key stops working on Canton; the new one works.
 //
 // Needs Postgres on 127.0.0.1:54329, the apps built, and a Canton sandbox with the registry's DAR:
-//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.6.0.dar)
+//   (cd canton && daml build && daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.7.0.dar)
 // Run from the repo root: node e2e/canton-e2e.mjs [screenshot-dir]
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -541,8 +541,8 @@ await shot(page2, "c5-replaced");
   const c1 = (await bondOn()).createArgument;
   ok(p1?.createArgument.units === "7000" && Number(c1.prior) === Number(c0.prior) + 7000 && Number(c1.unassigned) === Number(c0.unassigned) - 7000,
     "a prior instrument the issuer records is on Canton: $70.00 off what's left to assign, held as prior");
-  ok(/^0x[0-9a-f]{64}$/.test(p1.createArgument.identifierHash) && !JSON.stringify(await acsFor(issuerParty)).includes("Old Note Holder") && !JSON.stringify(p1).includes("PN-2024-007"),
-    "its identifier is a fingerprint there, and its holder and mail number stay in the register");
+  ok(/^0x[0-9a-f]{64}$/.test(p1.createArgument.identifierHash) && p1.createArgument.holderName === "Old Note Holder LLC" && !JSON.stringify(p1).includes("PN-2024-007") && !JSON.stringify(p1).includes("9407 7777"),
+    "it names its holder; its identifier is a fingerprint there, and its mail number stays in the register");
   // Reversed: the entry stays on record as reversed, and the amount goes back.
   const b1 = (await st()).bonds[0];
   await icommit({ bonds: [{ ...b1, unassigned: b1.unassigned + 7000,

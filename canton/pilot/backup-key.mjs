@@ -105,7 +105,7 @@ const submit = (actAs, commands) => must("POST", "/v2/commands/submit-and-wait-f
 const created = (tx, tpl) => tx.transaction.events.map((e) => e.CreatedEvent).filter(Boolean).find((e) => e.templateId.endsWith(":" + tpl));
 let bond = created(await submit([issuer, platform], [{ CreateCommand: { templateId: PKG + ":Registry:Bond", createArguments: {
   issuer, platform, bondId: "PENS-0001-BD", total: "10000000000", unassigned: "10000000000", redeemed: "0", prior: "0",
-  instrumentHash: hash("bond"), ucc1Hash: hash("ucc1"), observers: [] } } }]), "Bond").contractId;
+  instrumentHash: hash("bond"), ucc1Hash: hash("ucc1"), observers: [], issuerName: "Penson Trust" } } }]), "Bond").contractId;
 let issued = 0;
 async function offer() {
   const t = await submit([issuer], [{ ExerciseCommand: { templateId: PKG + ":Registry:Bond", contractId: bond, choice: "Issue",

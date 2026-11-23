@@ -20,7 +20,7 @@ from Docker Hub: `docker create digitalasset/daml-sdk:3.4.0-rc2`, then copy `/ho
 cd canton
 daml build
 daml test                                                   # the template tests
-daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.6.0.dar &
+daml sandbox --json-api-port 7575 --dar .daml/dist/bond-registry-0.7.0.dar &
 node pilot/passkey-signing.mjs                              # signing pilot (key in Node)
 BROWSER=1 node pilot/passkey-signing.mjs                    # the same, key made in Chromium's WebCrypto
 (cd pilot && npm install && node backup-key.mjs)            # backup key; uses the node's admin API (port 6866)
@@ -148,5 +148,11 @@ and node kinds these contracts produce (records, text, numbers, dates and times,
 optionals, lists, contract IDs, creates, exercises, fetches); a transaction with anything else is
 refused rather than signed.
 
-The package is at 0.6.0: changing a template means a new version, since a shared Canton network
+**Parties by name (0.7.0).** Every contract names its parties, not only their Canton IDs: the bond
+its issuer, each prior instrument its holder, each offer and assignment its issuer, assignor and
+assignee. A prior instrument's identifier and mail number stay fingerprints. Any approved bond is
+brought onto Canton when the issuer service starts or the bond is saved, even before its first
+assignment, so its prior instruments are there from the start.
+
+The package is at 0.7.0: changing a template means a new version, since a shared Canton network
 keeps every version that was uploaded.

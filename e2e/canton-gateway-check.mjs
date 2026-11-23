@@ -38,7 +38,7 @@ ok((await call(OMNI, "POST", "/admin/topology/generate", { proposals: [{ operati
 ok((await call(OMNI, "POST", "/admin/topology/add", { store: { synchronizer: { id: sync } }, force_changes: [], transactions: [{ transaction: "AAAA", proposal: false, signatures: [] }] })).status === 403,
   "nor add any change the gateway didn't generate for it");
 ok((await call(OMNI, "GET", "/v2/users")).status === 404 && (await call(BOND, "GET", "/v2/parties")).status === 404, "and anything else on the node isn't reachable at all");
-const bondDar = fs.readFileSync(new URL("../canton/.daml/dist/bond-registry-0.6.0.dar", import.meta.url));
+const bondDar = fs.readFileSync(new URL("../canton/.daml/dist/bond-registry-0.7.0.dar", import.meta.url));
 ok((await call(OMNI, "POST", "/v2/packages", bondDar, true)).status === 403, "Omni-Stance can't upload the bond registry's package");
 if (process.env.RECEIVABLES_DAR) {
   const rDar = fs.readFileSync(process.env.RECEIVABLES_DAR);

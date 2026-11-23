@@ -58,7 +58,24 @@ const amountOf = (t, a) => {
   if (a.face != null) return usd(a.face);
   return "";
 };
-const holderOf = (a) => partyName(a?.holder || a?.assignee || a?.seller || a?.issuer || a?.originator || "");
+// Everyone a contract names, by role: what each party is to it.
+function partiesOf(t, a) {
+  if (!a) return "";
+  const list = [];
+  const add = (role, name) => { if (name) list.push(role + ": " + name); };
+  if (t === "Bond") add("Issuer", a.issuerName || partyName(a.issuer));
+  else if (t === "PriorInstrument" || t === "PriorReversed") add("Holder", a.holderName);
+  else if (t === "AssignmentOffer" || t === "Assignment") {
+    add("Issuer", a.issuerName); add("Assignor", a.assignorName); add("Assignee", a.assigneeName);
+    if (a.pledgeTo) add("Pledged to", a.pledgeTo);
+  } else if (["Receivable", "Settled", "SaleOffer", "SaleReturned"].includes(t)) {
+    add("Claimant", a.claimantName); add("Debtor", a.debtorName);
+    if (a.holderName && a.holderName !== a.claimantName) add("Held by", a.holderName);
+    if (t === "SaleOffer") add("Buyer", a.buyerName);
+    if (a.pledgeTo) add("Pledged to", a.pledgeTo);
+  }
+  return list.length ? list.join(" · ") : (a.signatories || []).map(partyName).join(", ");
+}
 // One line per transaction: what it did, in plain words.
 function saying(tx) {
   const ex = tx.events.map((e) => e.ExercisedEvent).filter(Boolean)[0];
@@ -110,7 +127,8 @@ const page = (title, nav, body) => `<!doctype html><html lang="en"><head><meta c
 const table = (head, rows) => `<div class="tbl"><table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${
   rows.length ? rows.join("") : `<tr><td colspan="${head.length}" class="soft">Nothing yet.</td></tr>`}</tbody></table></div>`;
 const contractRow = (c) => { const t = tplName(c.templateId), a = c.createArgument;
-  return `<tr><td>${esc(t)}</td><td>${esc(recordOf(a))}</td><td>${esc(amountOf(t, a))}</td><td>${esc(holderOf(a))}</td>
+  return `<tr><td>${esc(t)}</td><td>${esc(recordOf(a))}</td><td>${esc(amountOf(t, a))}</td>
+  <td class="wrap">${esc(partiesOf(t, a) || (c.signatories || []).map(partyName).join(", "))}</td>
   <td><span class="chip">${esc(pkgApp(c.packageName))}</span></td><td class="soft">${esc(when(c.createdAt))}</td>
   <td class="mono"><a href="/dashboard/contract/${encodeURIComponent(c.contractId)}">${esc(shortId(c.contractId))}</a></td></tr>`; };
 const activityRow = (tx) => { const ex = tx.events.map((e) => e.ExercisedEvent || e.CreatedEvent).filter(Boolean)[0];
@@ -146,7 +164,7 @@ async function contractsPage(url) {
   list.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   return page("Contracts", "contracts", `<h2>Live contracts${t ? " · " + esc(t) : ""}${app ? " · " + esc(pkgApp(app)) : ""}</h2>
   <p class="filters"><a href="/dashboard/contracts">All</a><a href="/dashboard/contracts?app=bond-registry">Bond registry</a><a href="/dashboard/contracts?app=omni-receivables">Omni-Stance</a></p>
-  ${table(["Kind", "Record", "Amount", "Held by", "App", "Since", "Contract"], list.slice(0, 500).map(contractRow))}`);
+  ${table(["Kind", "Record", "Amount", "Parties", "App", "Since", "Contract"], list.slice(0, 500).map(contractRow))}`);
 }
 async function partiesPage(db) {
   const [rows, contracts] = await Promise.all([db.query("select party, app, created_at from gateway_parties order by created_at desc"), activeContracts()]);
@@ -169,6 +187,7 @@ async function contractPage(cid) {
   <div class="cards"><div class="card"><div class="n">${esc(amountOf(t, c.createArgument) || "—")}</div><div class="l">Amount</div></div>
   <div class="card"><div class="n">${ev.archived ? "Archived" : "Live"}</div><div class="l">Since ${esc(when(c.createdAt))}</div></div>
   <div class="card"><div class="n">${esc(pkgApp(c.packageName))}</div><div class="l">App</div></div></div>
+  <h2>Parties</h2><p>${esc(partiesOf(t, c.createArgument) || "—")}</p>
   <h2>Signed by</h2><p>${esc((c.signatories || []).map(partyName).join(", "))}${(c.observers || []).length ? ` <span class="soft">· seen by ${esc(c.observers.map(partyName).join(", "))}</span>` : ""}</p>
   <h2>Everything it holds</h2><pre>${esc(JSON.stringify(c.createArgument, null, 2))}</pre>
   <p class="soft mono">${esc(cid)}</p>`);
