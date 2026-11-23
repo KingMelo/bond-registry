@@ -13,6 +13,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import pg from "pg";
 import AdmZip from "adm-zip";
+import { dashboard } from "./dashboard.js";
 
 const NODE = (process.env.NODE_JSON_URL || "http://localhost:7575").replace(/\/+$/, "");
 const NODE_USER = "participant_admin";
@@ -104,6 +105,8 @@ const readBody = (req) => new Promise((res, rej) => { const parts = []; let n = 
 
 async function handle(req, res) {
   const url = new URL(req.url, "http://x"), path = url.pathname;
+  // The owner's read-only view of the node, behind its own password (dashboard.js).
+  if (await dashboard(req, res, { db: pool, nodeUrl: NODE, readBody })) return;
   if (req.method === "GET" && path === "/healthz") {
     const v = await node("GET", "/v2/version").catch(() => ({ status: 0 }));
     return send(res, v.status === 200 ? 200 : 503, { ok: v.status === 200 });

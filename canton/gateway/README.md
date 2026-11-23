@@ -13,8 +13,16 @@ What each app can do with its key:
 - change keys only for its own parties, and add only changes the gateway generated for it.
 Everything else on the node returns 404.
 
+**The dashboard** (`dashboard.js`), at `/dashboard` on the gateway's address: a read-only view of
+the node for its owner, behind its own password (`DASHBOARD_PASSWORD`; off when unset), separate
+from the apps' keys. It shows the node's health (synchronizer, version, ledger position), live
+contracts by app and kind with what each holds, every party by the app that made it, and recent
+activity in plain words ("Payment of $2,500.00 recorded · REC-…", "Pledge released by its lender").
+It only reads; any other method is refused. Sign-ins last 8 hours; five wrong passwords pause
+sign-in from that address for 10 minutes.
+
 Settings: `NODE_JSON_URL`, `NODE_ADMIN` (the node's private addresses), `DATABASE_URL` (which app
-owns which party), `KEY_BOND_REGISTRY`, `KEY_OMNI_STANCE`, `PORT`; `BIND` only to listen on IPv4 locally.
+owns which party), `KEY_BOND_REGISTRY`, `KEY_OMNI_STANCE`, `DASHBOARD_PASSWORD`, `PORT`; `BIND` only to listen on IPv4 locally.
 
 Tested locally (Nov 22, 2026): `e2e/canton-e2e.mjs` through the gateway on the bond registry's key
 (all 74 checks, including assignees' key setup, a second device and recovery), then
