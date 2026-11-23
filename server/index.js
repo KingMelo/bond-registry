@@ -305,6 +305,19 @@ app.disable("x-powered-by");
 const BUILD = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RAILWAY_DEPLOYMENT_ID || String(Date.now());
 app.use((req, res, next) => { res.set("X-Registry-Build", BUILD); next(); });
 
+// omni-stance.com is the landing page for all three applications. On that bare domain only the
+// landing page itself is served: the assignee portal stays on its own address (an assignee's
+// passkey belongs to it), and every other path is an older Omni-Stance link, sent to the records.
+const LANDING_HOSTS = (process.env.LANDING_HOSTS || "omni-stance.com,www.omni-stance.com").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+const ASSIGNEE_SITE = (process.env.ASSIGNEE_URL || "https://registry.omni-stance.com").replace(/\/+$/, "");
+const RECORDS_SITE = (process.env.RECORDS_URL || "https://record.omni-stance.com").replace(/\/+$/, "");
+if (APP === "holder") app.use((req, res, next) => {
+  if (!LANDING_HOSTS.includes(String(req.hostname || "").toLowerCase())) return next();
+  if (req.method === "GET" && ["/", "/home.html"].includes(req.path)) return next();
+  const to = /^\/(assignee|holder|api)(\/|$)/.test(req.path) ? ASSIGNEE_SITE : RECORDS_SITE;
+  res.redirect(req.method === "GET" || req.method === "HEAD" ? 301 : 308, to + req.originalUrl);
+});
+
 const version = async (c) => Number((await c.query("select version from meta where k = 'v'")).rows[0].version);
 const bump = (c) => c.query("update meta set version = version + 1 where k = 'v' returning version")
   .then((r) => Number(r.rows[0].version));
