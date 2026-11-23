@@ -96,9 +96,23 @@ async function adminApi() {
 let syncId = null;
 async function sync() {
   if (syncId) return syncId;
-  syncId = (await json("GET", "/v2/state/connected-synchronizers")).connectedSynchronizers?.[0]?.synchronizerId;
-  if (!syncId) throw new CantonError("The Canton node isn't connected to a synchronizer yet.", 503);
+  const id = (await json("GET", "/v2/state/connected-synchronizers")).connectedSynchronizers?.[0]?.synchronizerId;
+  if (!id) throw new CantonError("The Canton node isn't connected to a synchronizer yet.", 503);
+  await ensurePackage(); // before the first command: a shared node may not have this app's contracts yet
+  syncId = id;
   return syncId;
+}
+
+// The registry's own contract package, uploaded once per process (uploading it again is harmless).
+const DAR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "canton", "dist", "bond-registry-0.6.0.dar");
+let uploaded = null;
+function ensurePackage() {
+  uploaded ??= (async () => {
+    const r = await fetch(API + "/v2/packages", { method: "POST", headers: { "Content-Type": "application/octet-stream", ...authHeader() },
+      body: await (await import("node:fs/promises")).readFile(DAR) });
+    if (!r.ok) throw new CantonError("Canton refused the registry's contract package: " + (await r.text()).slice(0, 300), 502);
+  })().catch((e) => { uploaded = null; throw e; });
+  return uploaded;
 }
 
 /** The node's party for a name (the platform, or an issuer), made the first time it's needed. */

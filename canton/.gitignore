@@ -2,3 +2,4 @@
 *.dar
 log/
 pilot/node_modules/
+!dist/*.dar
