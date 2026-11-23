@@ -10,7 +10,7 @@ FROM node:22-slim
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY gateway.js ./
+COPY gateway.js dashboard.js ./
 COPY --from=protos /protos /protos
 ENV PROTOS=/protos
 CMD ["node", "gateway.js"]
