@@ -1690,13 +1690,15 @@ const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist"
 // Issuer sign-in buttons. The assignee portal itself lives at /assignee (it was /holder; old links redirect).
 if (APP === "holder") {
   const ISSUER_URL = process.env.ISSUER_URL || "https://issuer.omni-stance.com";
+  // Omni-Stance's records directory, the third application.
+  const RECORDS_URL = process.env.RECORDS_URL || "https://record.omni-stance.com";
   const esc = (v) => String(v).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
   let home = null;
   const sendHome = async (req, res, next) => {
     try {
       if (home === null) {
         const raw = await fs.readFile(path.join(dir, "home.html"), "utf8");
-        home = raw.replaceAll("__ISSUER_URL__", esc(ISSUER_URL));
+        home = raw.replaceAll("__ISSUER_URL__", esc(ISSUER_URL)).replaceAll("__RECORDS_URL__", esc(RECORDS_URL));
       }
       res.type("html").send(home);
     } catch (e) { next(e); }
