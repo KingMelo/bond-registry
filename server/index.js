@@ -313,7 +313,7 @@ const ASSIGNEE_SITE = (process.env.ASSIGNEE_URL || "https://registry.omni-stance
 const RECORDS_SITE = (process.env.RECORDS_URL || "https://record.omni-stance.com").replace(/\/+$/, "");
 if (APP === "holder") app.use((req, res, next) => {
   if (!LANDING_HOSTS.includes(String(req.hostname || "").toLowerCase())) return next();
-  if (req.method === "GET" && ["/", "/home.html"].includes(req.path)) return next();
+  if (["GET", "HEAD"].includes(req.method) && ["/", "/home.html"].includes(req.path)) return next();
   const to = /^\/(assignee|holder|api)(\/|$)/.test(req.path) ? ASSIGNEE_SITE : RECORDS_SITE;
   res.redirect(req.method === "GET" || req.method === "HEAD" ? 301 : 308, to + req.originalUrl);
 });
