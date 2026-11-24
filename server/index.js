@@ -311,6 +311,14 @@ app.use((req, res, next) => { res.set("X-Registry-Build", BUILD); next(); });
 const LANDING_HOSTS = (process.env.LANDING_HOSTS || "omni-stance.com,www.omni-stance.com").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
 const ASSIGNEE_SITE = (process.env.ASSIGNEE_URL || "https://registry.omni-stance.com").replace(/\/+$/, "");
 const RECORDS_SITE = (process.env.RECORDS_URL || "https://record.omni-stance.com").replace(/\/+$/, "");
+// www.omni-stance.com forwards to omni-stance.com, path and query kept. It can be attached to any
+// of the three services (a service has only so many custom domains), so every one of them does this.
+const WWW_HOSTS = (process.env.WWW_HOSTS || "www.omni-stance.com").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+const LANDING_URL = (process.env.LANDING_URL || "https://omni-stance.com").replace(/\/+$/, "");
+app.use((req, res, next) => {
+  if (!WWW_HOSTS.includes(String(req.hostname || "").toLowerCase())) return next();
+  res.redirect(["GET", "HEAD"].includes(req.method) ? 301 : 308, LANDING_URL + req.originalUrl);
+});
 if (APP === "holder") app.use((req, res, next) => {
   if (!LANDING_HOSTS.includes(String(req.hostname || "").toLowerCase())) return next();
   if (["GET", "HEAD"].includes(req.method) && ["/", "/home.html"].includes(req.path)) return next();
