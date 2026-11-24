@@ -86,13 +86,15 @@ html.lk-js [data-rise] { opacity: 0; }
   border-bottom: 1px solid var(--d-line); color: #fff;
   font-size: var(--d-nav-fs); font-weight: 400; line-height: 1;
 }
-.lk-divide .lkx-navmain { display: flex; align-items: stretch; width: var(--d-split); }
+/* The name on the left; the links together on the right, each the width a link had before. */
+.lk-divide .lkx-nav .lkx-navbrand { flex: none; width: calc(var(--d-split) / 5); }
+.lk-divide .lkx-navlinks { display: flex; align-items: stretch; margin-left: auto; width: calc(var(--d-split) * 4 / 5); }
+.lk-divide .lkx-navlinks .lkx-navcell { border-right: 0; border-left: 1px solid var(--d-line); }
 .lk-divide .lkx-navcell {
   display: flex; flex: 1 0 0; min-width: 0; align-items: center; justify-content: center;
   padding: var(--d-nav-py) var(--d-nav-px); border-right: 1px solid var(--d-line);
   white-space: nowrap; pointer-events: auto; cursor: pointer;
 }
-.lk-divide .lkx-navcontact { flex: none; width: calc(var(--d-split) / 4); border-right: 0; border-left: 1px solid var(--d-line); }
 .lk-divide .lkx-navcell:hover { background: rgba(255, 255, 255, 0.16); }
 .lk-divide .lk-brand { gap: var(--d-brand-gap); font-size: inherit; font-weight: 400; letter-spacing: 0; }
 .lk-divide .lk-mark { width: var(--d-mark); height: var(--d-mark); border-width: 1px; border-color: #fff; }
@@ -183,8 +185,9 @@ html.lk-js [data-rise] { opacity: 0; }
     --d-pad-x: 32px; --d-pad-b: 32px; --d-foot-gap: 24px;
     --d-gap-a: 48px; --d-gap-b: 36px; --d-ring: 392px;
   }
-  .lk-divide .lkx-navmain { flex: 1; width: auto; }
-  .lk-divide .lkx-navcontact { width: auto; padding-inline: calc(var(--d-nav-px) + 6px); }
+  .lk-divide .lkx-nav .lkx-navbrand { flex: 1 0 0; width: auto; border-right: 1px solid var(--d-line); }
+  .lk-divide .lkx-navlinks { flex: 4 0 0; width: auto; margin-left: 0; }
+  .lk-divide .lkx-navlinks .lkx-navcell:first-child { border-left: 0; }
   .lk-divide .lkx-cols { flex-direction: column; }
   .lk-divide .lkx-colcopy { width: 100%; flex: none; }
   .lk-divide .lkx-colviz { width: 100%; flex: 1 1 auto; min-height: 160px; }
@@ -238,16 +241,15 @@ html.lk-js [data-rise] { opacity: 0; }
 
   <div class="uip-layer lk lk-divide">
     <nav class="lkx-nav" data-rise="0" aria-label="Main">
-      <div class="lkx-navmain">
-        <a class="lkx-navcell" href="/">
+      <a class="lkx-navcell lkx-navbrand" href="/">
           <span class="lk-brand"><span class="lk-mark" aria-hidden="true"></span><span>Omni<span class="lk-wide">-Stance</span></span></span>
-        </a>
+      </a>
+      <div class="lkx-navlinks">
         <a class="lkx-navcell" href="/assignee">Assignees</a>
         <a class="lkx-navcell" href="__ISSUER_URL__">Issuers</a>
         <a class="lkx-navcell" href="__RECORDS_URL__">Records</a>
         <a class="lkx-navcell" href="/assignee#verify">Verify</a>
       </div>
-      <a class="lkx-navcell lkx-navcontact" href="/assignee">Assignee<span class="lk-wide">&nbsp;access</span></a>
     </nav>
 
     <div class="lkx-cols">
